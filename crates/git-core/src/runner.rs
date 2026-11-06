@@ -14,12 +14,15 @@ use crate::Error;
 /// refresh cannot make the user's own `git commit` fail.
 ///
 /// A repository's own config is untrusted: opening a directory that came with its
-/// `.git` must not run code it chose. Two defences apply to every call:
+/// `.git` must not run code it chose. These defences apply to every call:
 /// - `core.fsmonitor` is forced off, because it names a command `git status` runs.
 /// - Filter drivers (`filter.<name>.clean/smudge/process`) defined in the repo's own
 ///   config are blanked, because git runs them whenever it compares or stages a
 ///   file. Filters from the user's global or system config are left alone, as are
-///   `git-lfs` ones, so legitimate setups keep working.
+///   `git-lfs` ones, so legitimate setups keep working. A blanked filter also loses its
+///   `required` flag, or git would fail on every file it applies to.
+/// - Submodule working trees are not scanned (`diff.ignoreSubmodules=dirty`), because git
+///   would run `git status` inside them under their own, unexamined, config.
 ///
 /// Diff callers also pass `--no-ext-diff` and `--no-textconv`. Hooks are left alone so
 /// they still run for commits, as they would in a terminal.
@@ -109,6 +112,7 @@ fn blank_untrusted_filters(config: &[u8]) -> Vec<ConfigOverride> {
     });
 
     let mut overrides = Vec::new();
+    let mut required_cleared: Vec<&[u8]> = Vec::new();
     for (key, value) in entries {
         let Some((driver, command)) = key.strip_prefix(b"filter.").and_then(|rest| {
             rest.iter()
@@ -123,6 +127,15 @@ fn blank_untrusted_filters(config: &[u8]) -> Vec<ConfigOverride> {
             continue;
         }
         overrides.push((OsString::from_vec(key.to_vec()), OsString::new()));
+        // A blanked filter that is also `required` would make git fail on every file it
+        // applies to, so the requirement goes too.
+        if !required_cleared.contains(&driver) {
+            required_cleared.push(driver);
+            let mut required = b"filter.".to_vec();
+            required.extend_from_slice(driver);
+            required.extend_from_slice(b".required");
+            overrides.push((OsString::from_vec(required), OsString::from("false")));
+        }
     }
     overrides
 }
@@ -192,6 +205,11 @@ fn exec(
         .arg("-C")
         .arg(dir)
         .args(["-c", "core.fsmonitor=false"])
+        // Git runs a nested `git status` inside each submodule, under the submodule's own
+        // config, which the filter overrides above know nothing about. Not scanning
+        // submodule working trees keeps that from running; a moved submodule commit still
+        // shows as a change.
+        .args(["-c", "diff.ignoreSubmodules=dirty"])
         .args(args)
         .env("GIT_TERMINAL_PROMPT", "0")
         .env("GIT_OPTIONAL_LOCKS", "0")
@@ -248,13 +266,12 @@ mod tests {
         out
     }
 
+    /// The keys that were blanked, ignoring the `required = false` companions.
     fn keys(overrides: &[ConfigOverride]) -> Vec<Vec<u8>> {
         overrides
             .iter()
-            .map(|(key, value)| {
-                assert!(value.is_empty(), "overrides must blank the value");
-                key.as_bytes().to_vec()
-            })
+            .filter(|(_, value)| value.is_empty())
+            .map(|(key, _)| key.as_bytes().to_vec())
             .collect()
     }
 
@@ -423,6 +440,31 @@ mod tests {
             keys(&blank_untrusted_filters(&output)),
             [b"filter.evil.clean".to_vec()]
         );
+    }
+
+    #[test]
+    fn a_blanked_driver_also_has_its_required_flag_cleared_once() {
+        let output = config(&[
+            ("local", b"filter.x.clean", b"run-me"),
+            ("local", b"filter.x.smudge", b"run-me-too"),
+            ("local", b"filter.x.required", b"true"),
+        ]);
+        let overrides = blank_untrusted_filters(&output);
+        let required: Vec<_> = overrides
+            .iter()
+            .filter(|(key, _)| key.as_bytes() == b"filter.x.required")
+            .collect();
+        assert_eq!(required.len(), 1);
+        assert_eq!(required[0].1, "false");
+    }
+
+    #[test]
+    fn a_trusted_filter_keeps_its_required_flag() {
+        let output = config(&[
+            ("local", b"filter.lfs.clean", b"git-lfs clean -- %f"),
+            ("local", b"filter.lfs.required", b"true"),
+        ]);
+        assert!(blank_untrusted_filters(&output).is_empty());
     }
 
     #[test]

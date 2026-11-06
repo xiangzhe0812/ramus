@@ -5,7 +5,7 @@ use gpui::{
 };
 
 use crate::{
-    actions::OpenRepository,
+    actions::{OpenRepository, ToggleBranches},
     repo_state::RepoState,
     theme::{MONO_FONT, Theme},
 };
@@ -84,7 +84,14 @@ impl Render for TitleBar {
                     ),
             )
             .children(branch_label.map(|label| {
-                let pill = pill(&theme).font_family(MONO_FONT);
+                let pill = pill(&theme)
+                    .id("branch-pill")
+                    .cursor_pointer()
+                    .hover(|style| style.bg(theme.surface_selected))
+                    .on_click(cx.listener(|_, _, window, cx| {
+                        window.dispatch_action(Box::new(ToggleBranches), cx)
+                    }))
+                    .font_family(MONO_FONT);
                 if detached {
                     pill.bg(theme.modified.background)
                         .text_color(theme.modified.text)

@@ -523,6 +523,21 @@ mod staging {
     }
 
     #[test]
+    fn stage_all_handles_more_files_than_fit_in_one_command() {
+        let dir = new_repo();
+        commit_file(dir.path(), "base.txt", "b\n");
+        for n in 0..1_234 {
+            fs::write(dir.path().join(format!("file-{n}.txt")), "x\n").unwrap();
+        }
+        let repo = Repo::open(dir.path()).unwrap();
+
+        repo.stage_all().unwrap();
+        let files = repo.status().unwrap().files;
+        assert_eq!(files.len(), 1_234);
+        assert!(files.iter().all(|f| f.is_fully_staged()));
+    }
+
+    #[test]
     fn stage_all_and_unstage_all() {
         let dir = new_repo();
         commit_file(dir.path(), "a.txt", "a\n");
@@ -660,8 +675,9 @@ mod untrusted_filters {
         if required {
             git(dir.path(), &["config", "filter.evil.required", "true"]);
         }
-        // Different size, so git has to look at the content rather than trust the stat.
-        fs::write(dir.path().join("a.txt"), "one and a bit more\n").unwrap();
+        // Same size but different content, so git can't tell from the stat alone and has
+        // to run the file through the filter to compare it.
+        fs::write(dir.path().join("a.txt"), "uno\n").unwrap();
         (dir, marker)
     }
 
@@ -672,6 +688,18 @@ mod untrusted_filters {
 
         Repo::open(dir.path()).unwrap().status().unwrap();
         assert!(!marker.exists(), "status ran the repository's clean filter");
+    }
+
+    #[test]
+    fn the_harness_detects_a_filter_that_status_does_run_under_plain_git() {
+        let outside = TempDir::new().unwrap();
+        let (dir, marker) = repo_with_hostile_filter(outside.path(), false);
+
+        git(dir.path(), &["status", "--porcelain"]);
+        assert!(
+            marker.exists(),
+            "plain git status should run the repo's filter"
+        );
     }
 
     #[test]
@@ -1087,5 +1115,368 @@ mod hunk_staging {
             .unwrap_err();
         assert!(matches!(error, Error::Git { .. }), "{error:?}");
         assert_eq!(git_out(dir.path(), &["show", ":a.txt"]), index_before);
+    }
+}
+
+mod branches {
+    use git_core::BranchKind;
+
+    use super::*;
+
+    fn head_branch(dir: &Path) -> String {
+        let out = Command::new("git")
+            .arg("-C")
+            .arg(dir)
+            .args(["rev-parse", "--abbrev-ref", "HEAD"])
+            .output()
+            .unwrap();
+        String::from_utf8(out.stdout).unwrap().trim().to_owned()
+    }
+
+    fn commit_at(dir: &Path, message: &str, date: &str) {
+        let out = Command::new("git")
+            .arg("-C")
+            .arg(dir)
+            .args(["commit", "-q", "--allow-empty", "-m", message])
+            .env("GIT_AUTHOR_DATE", date)
+            .env("GIT_COMMITTER_DATE", date)
+            .status()
+            .unwrap();
+        assert!(out.success());
+    }
+
+    #[test]
+    fn lists_branches_newest_first_and_marks_the_current_one() {
+        let dir = new_repo();
+        commit_at(dir.path(), "old", "2024-01-01T00:00:00Z");
+        git(dir.path(), &["branch", "older"]);
+        git(dir.path(), &["switch", "-q", "-c", "newer"]);
+        commit_at(dir.path(), "new", "2025-06-01T00:00:00Z");
+
+        let list = Repo::open(dir.path()).unwrap().branches().unwrap();
+        let names: Vec<_> = list.local.iter().map(|b| b.name.as_str()).collect();
+        assert_eq!(names, ["newer", "main", "older"]);
+        let current: Vec<_> = list.local.iter().filter(|b| b.is_current).collect();
+        assert_eq!(current.len(), 1);
+        assert_eq!(current[0].name, "newer");
+        assert!(list.local[0].last_commit > list.local[2].last_commit);
+    }
+
+    #[test]
+    fn a_fresh_repo_with_no_commits_lists_no_branches() {
+        let dir = new_repo();
+        let list = Repo::open(dir.path()).unwrap().branches().unwrap();
+        assert!(list.local.is_empty() && list.remote_only.is_empty());
+    }
+
+    #[test]
+    fn switching_checks_out_the_branch() {
+        let dir = new_repo();
+        commit_file(dir.path(), "a.txt", "a\n");
+        git(dir.path(), &["branch", "other"]);
+        let repo = Repo::open(dir.path()).unwrap();
+        let other = repo
+            .branches()
+            .unwrap()
+            .local
+            .into_iter()
+            .find(|b| b.name == "other")
+            .unwrap();
+
+        repo.switch_branch(&other).unwrap();
+        assert_eq!(head_branch(dir.path()), "other");
+    }
+
+    #[test]
+    fn a_remote_only_branch_is_listed_and_switching_creates_a_tracking_branch() {
+        let remote = TempDir::new().unwrap();
+        git(remote.path(), &["init", "-q", "--bare", "-b", "main"]);
+        let dir = new_repo();
+        commit_file(dir.path(), "a.txt", "a\n");
+        git(
+            dir.path(),
+            &["remote", "add", "origin", remote.path().to_str().unwrap()],
+        );
+        git(dir.path(), &["push", "-q", "origin", "main"]);
+        git(dir.path(), &["branch", "teammate"]);
+        git(dir.path(), &["push", "-q", "origin", "teammate"]);
+        git(dir.path(), &["branch", "-D", "teammate"]);
+        git(dir.path(), &["fetch", "-q", "origin"]);
+        let repo = Repo::open(dir.path()).unwrap();
+
+        let list = repo.branches().unwrap();
+        let names: Vec<_> = list.remote_only.iter().map(|b| b.name.as_str()).collect();
+        assert_eq!(names, ["origin/teammate"], "origin/main has a local twin");
+        assert_eq!(list.remote_only[0].kind, BranchKind::Remote);
+
+        repo.switch_branch(&list.remote_only[0]).unwrap();
+        assert_eq!(head_branch(dir.path()), "teammate");
+        let after = repo.branches().unwrap();
+        let tracking = after.local.iter().find(|b| b.name == "teammate").unwrap();
+        assert_eq!(tracking.upstream.as_deref(), Some("origin/teammate"));
+        assert!(after.remote_only.is_empty());
+    }
+
+    #[test]
+    fn creating_a_branch_switches_to_it_at_the_current_commit() {
+        let dir = new_repo();
+        commit_file(dir.path(), "a.txt", "a\n");
+        let repo = Repo::open(dir.path()).unwrap();
+
+        repo.create_branch("  feat/new-thing ").unwrap();
+        assert_eq!(head_branch(dir.path()), "feat/new-thing");
+    }
+
+    #[test]
+    fn creating_a_branch_keeps_uncommitted_work() {
+        let dir = new_repo();
+        commit_file(dir.path(), "a.txt", "a\n");
+        fs::write(dir.path().join("a.txt"), "edited\n").unwrap();
+        let repo = Repo::open(dir.path()).unwrap();
+
+        repo.create_branch("keep-going").unwrap();
+        assert_eq!(
+            fs::read_to_string(dir.path().join("a.txt")).unwrap(),
+            "edited\n"
+        );
+        assert_eq!(repo.status().unwrap().files.len(), 1);
+    }
+
+    #[test]
+    fn invalid_branch_names_are_refused_before_git_sees_them() {
+        let dir = new_repo();
+        commit_file(dir.path(), "a.txt", "a\n");
+        let repo = Repo::open(dir.path()).unwrap();
+
+        for name in [
+            "",
+            "  ",
+            "has space",
+            "a..b",
+            "-force",
+            "--detach",
+            "x.lock",
+            "a@{b",
+            "end/",
+            "~tilde",
+        ] {
+            let error = repo.create_branch(name).unwrap_err();
+            assert!(
+                matches!(error, Error::InvalidBranchName(_)),
+                "{name:?}: {error:?}"
+            );
+        }
+        assert_eq!(
+            head_branch(dir.path()),
+            "main",
+            "nothing should have been created"
+        );
+    }
+
+    #[test]
+    fn creating_a_branch_that_exists_is_an_error() {
+        let dir = new_repo();
+        commit_file(dir.path(), "a.txt", "a\n");
+        git(dir.path(), &["branch", "taken"]);
+        let repo = Repo::open(dir.path()).unwrap();
+
+        assert!(matches!(
+            repo.create_branch("taken").unwrap_err(),
+            Error::Git { .. }
+        ));
+        assert_eq!(head_branch(dir.path()), "main");
+    }
+
+    #[test]
+    fn switching_that_would_overwrite_local_changes_fails_and_changes_nothing() {
+        let dir = new_repo();
+        commit_file(dir.path(), "a.txt", "one\n");
+        git(dir.path(), &["switch", "-q", "-c", "other"]);
+        commit_file(dir.path(), "a.txt", "two\n");
+        git(dir.path(), &["switch", "-q", "main"]);
+        fs::write(dir.path().join("a.txt"), "my unsaved edit\n").unwrap();
+        let repo = Repo::open(dir.path()).unwrap();
+        let other = repo
+            .branches()
+            .unwrap()
+            .local
+            .into_iter()
+            .find(|b| b.name == "other")
+            .unwrap();
+
+        let error = repo.switch_branch(&other).unwrap_err();
+        assert!(error.to_string().contains("overwritten"), "{error}");
+        assert_eq!(head_branch(dir.path()), "main");
+        assert_eq!(
+            fs::read_to_string(dir.path().join("a.txt")).unwrap(),
+            "my unsaved edit\n"
+        );
+    }
+
+    #[test]
+    fn a_branch_named_like_an_option_cannot_be_switched_to() {
+        let dir = new_repo();
+        commit_file(dir.path(), "a.txt", "a\n");
+        let repo = Repo::open(dir.path()).unwrap();
+        let hostile = git_core::Branch {
+            name: "--detach".into(),
+            kind: BranchKind::Local,
+            is_current: false,
+            last_commit: None,
+            upstream: None,
+        };
+        assert!(matches!(
+            repo.switch_branch(&hostile),
+            Err(Error::InvalidBranchName(_))
+        ));
+    }
+}
+
+mod untrusted_submodules {
+    use std::os::unix::fs::PermissionsExt;
+
+    use git_core::DiffOptions;
+
+    use super::*;
+
+    /// A superproject with one submodule whose own config names a hostile clean filter
+    /// (under a driver name the superproject doesn't define) and whose working tree has a
+    /// stat-dirty file, so git must run the filter to compare it.
+    pub(super) fn superproject_with_hostile_submodule() -> (TempDir, TempDir, std::path::PathBuf) {
+        let outside = TempDir::new().unwrap();
+        let marker = outside.path().join("PWNED");
+        let script = outside.path().join("evil.sh");
+        fs::write(
+            &script,
+            format!("#!/bin/sh\ntouch '{}'\ncat\n", marker.display()),
+        )
+        .unwrap();
+        fs::set_permissions(&script, fs::Permissions::from_mode(0o755)).unwrap();
+
+        let upstream = new_repo();
+        commit_file(upstream.path(), "inner.txt", "one\n");
+
+        let dir = new_repo();
+        commit_file(dir.path(), "outer.txt", "outer\n");
+        git(
+            dir.path(),
+            &[
+                "-c",
+                "protocol.file.allow=always",
+                "submodule",
+                "add",
+                "-q",
+                upstream.path().to_str().unwrap(),
+                "sub",
+            ],
+        );
+        git(dir.path(), &["commit", "-q", "-m", "add submodule"]);
+
+        let sub = dir.path().join("sub");
+        fs::write(sub.join(".gitattributes"), "*.txt filter=subevil\n").unwrap();
+        git(
+            &sub,
+            &["config", "filter.subevil.clean", script.to_str().unwrap()],
+        );
+        // Same size, different content: git has to run the file through the filter.
+        fs::write(sub.join("inner.txt"), "uno\n").unwrap();
+        (dir, outside, marker)
+    }
+
+    #[test]
+    fn status_does_not_run_a_filter_configured_inside_a_submodule() {
+        let (dir, _outside, marker) = superproject_with_hostile_submodule();
+        Repo::open(dir.path()).unwrap().status().unwrap();
+        assert!(
+            !marker.exists(),
+            "status ran a filter from the submodule's config"
+        );
+    }
+
+    #[test]
+    fn diff_does_not_run_a_filter_configured_inside_a_submodule() {
+        let (dir, _outside, marker) = superproject_with_hostile_submodule();
+        let repo = Repo::open(dir.path()).unwrap();
+        // The submodule shows up as a changed entry in the superproject.
+        let status = repo.status().unwrap();
+        for change in &status.files {
+            let _ = repo.file_diffs(change, DiffOptions::default());
+        }
+        assert!(
+            !marker.exists(),
+            "diff ran a filter from the submodule's config"
+        );
+    }
+
+    #[test]
+    fn staging_does_not_run_a_filter_configured_inside_a_submodule() {
+        let (dir, _outside, marker) = superproject_with_hostile_submodule();
+        let repo = Repo::open(dir.path()).unwrap();
+        repo.stage_all().unwrap();
+        assert!(
+            !marker.exists(),
+            "staging ran a filter from the submodule's config"
+        );
+    }
+
+    #[test]
+    fn staging_a_submodule_by_path_does_not_run_its_filter_either() {
+        let (dir, _outside, marker) = superproject_with_hostile_submodule();
+        let sub = dir.path().join("sub");
+        git(&sub, &["add", "-A"]);
+        git(&sub, &["commit", "-q", "--no-verify", "-m", "advance"]);
+        // The setup above ran the hostile filter itself (it is configured in `sub`), so
+        // clear the marker, then dirty the submodule again with a same-size edit.
+        fs::remove_file(&marker).unwrap();
+        fs::write(sub.join("inner.txt"), "dos\n").unwrap();
+
+        Repo::open(dir.path()).unwrap().stage(&["sub"]).unwrap();
+        assert!(
+            !marker.exists(),
+            "staging the submodule path ran its filter"
+        );
+    }
+
+    #[test]
+    fn a_submodule_whose_commit_moved_still_shows_as_changed() {
+        // Ignoring a submodule's working tree must not hide that it points somewhere new.
+        let (dir, _outside, _marker) = superproject_with_hostile_submodule();
+        let sub = dir.path().join("sub");
+        git(&sub, &["add", "-A"]);
+        git(
+            &sub,
+            &[
+                "-c",
+                "core.hooksPath=/dev/null",
+                "commit",
+                "-q",
+                "--no-verify",
+                "-m",
+                "advance",
+            ],
+        );
+
+        let status = Repo::open(dir.path()).unwrap().status().unwrap();
+        assert!(
+            status.files.iter().any(|f| f.path == "sub"),
+            "{:?}",
+            status.files
+        );
+    }
+}
+
+mod submodule_control {
+    use super::untrusted_submodules::superproject_with_hostile_submodule;
+    use super::*;
+
+    #[test]
+    fn the_harness_detects_a_filter_that_does_run_under_plain_git() {
+        let (dir, _outside, marker) = superproject_with_hostile_submodule();
+        // No runner, no defences: this is what an unprotected `git status` would do.
+        git(dir.path(), &["status", "--porcelain"]);
+        assert!(
+            marker.exists(),
+            "plain git status should run the submodule's filter"
+        );
     }
 }

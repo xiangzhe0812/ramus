@@ -10,6 +10,8 @@ pub enum Error {
     Git { command: String, stderr: String },
     #[error("the diff is larger than {limit_mib} MiB and was not loaded")]
     DiffTooLarge { limit_mib: usize },
+    #[error("\"{0}\" is not a valid branch name")]
+    InvalidBranchName(String),
     #[error("unexpected git output: {0}")]
     Parse(String),
 }

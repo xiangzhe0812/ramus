@@ -2,7 +2,7 @@ use std::path::PathBuf;
 
 use crate::settings::{self, Settings};
 
-use git_core::{DiffHunk, Repo, RepoStatus};
+use git_core::{Branch, BranchList, DiffHunk, Repo, RepoStatus};
 use gpui::{Context, EventEmitter, SharedString, Task};
 
 /// Things views react to that aren't just "state changed".
@@ -31,6 +31,9 @@ pub struct RepoState {
     /// The open repository may run programs its own config names (hooks, credential
     /// helpers). Until it is trusted, commit and network operations are refused.
     trusted: bool,
+    /// Branches for the branch switcher, loaded when it opens.
+    branches: Option<BranchList>,
+    branches_task: Option<Task<()>>,
 }
 
 impl EventEmitter<RepoEvent> for RepoState {}
@@ -62,6 +65,8 @@ impl RepoState {
             settings,
             settings_path,
             trusted: false,
+            branches: None,
+            branches_task: None,
         }
     }
 
@@ -83,6 +88,56 @@ impl RepoState {
             self.error = Some(format!("Couldn't save the trust setting: {error}").into());
         }
         cx.notify();
+    }
+
+    pub fn branches(&self) -> Option<&BranchList> {
+        self.branches.as_ref()
+    }
+
+    /// Reads the branch list in the background; the switcher shows it when it arrives.
+    pub fn load_branches(&mut self, cx: &mut Context<Self>) {
+        let Some(repo) = self.repo.clone() else {
+            return;
+        };
+        self.branches_task = Some(cx.spawn(async move |this, cx| {
+            let result = cx
+                .background_executor()
+                .spawn(async move { repo.branches() })
+                .await;
+            this.update(cx, |this, cx| {
+                match result {
+                    Ok(branches) => this.branches = Some(branches),
+                    Err(error) => this.error = Some(error.to_string().into()),
+                }
+                cx.notify();
+            })
+            .ok();
+        }));
+    }
+
+    /// Whether `action` may run: refused, with an explanation, in a repository that
+    /// hasn't been trusted, because checkouts and commits run the repo's own hooks.
+    fn require_trust(&mut self, action: &str, cx: &mut Context<Self>) -> bool {
+        if !self.trusted {
+            self.error =
+                Some(format!("Trust this repository to {action}: its hooks would run.").into());
+            cx.notify();
+        }
+        self.trusted
+    }
+
+    pub fn switch_branch(&mut self, branch: Branch, cx: &mut Context<Self>) {
+        if self.require_trust("switch branches", cx) {
+            self.branches = None;
+            self.write(cx, None, move |repo| repo.switch_branch(&branch));
+        }
+    }
+
+    pub fn create_branch(&mut self, name: String, cx: &mut Context<Self>) {
+        if self.require_trust("create a branch", cx) {
+            self.branches = None;
+            self.write(cx, None, move |repo| repo.create_branch(&name));
+        }
     }
 
     pub fn repo(&self) -> Option<&Repo> {
@@ -197,9 +252,7 @@ impl RepoState {
 
     pub fn commit(&mut self, summary: String, description: String, cx: &mut Context<Self>) {
         // Committing runs the repository's hooks, which are programs it chose.
-        if !self.trusted {
-            self.error = Some("Trust this repository to commit: its hooks would run.".into());
-            cx.notify();
+        if !self.require_trust("commit", cx) {
             return;
         }
         self.write(cx, Some(RepoEvent::Committed), move |repo| {
@@ -496,5 +549,144 @@ mod tests {
         second.update(cx, |state, cx| state.open(other.path().to_owned(), cx));
         cx.executor().run_until_parked();
         assert!(!second.read_with(cx, |state, _| state.is_trusted()));
+    }
+
+    fn current_branch(dir: &Path) -> String {
+        let out = Command::new("git")
+            .arg("-C")
+            .arg(dir)
+            .args(["rev-parse", "--abbrev-ref", "HEAD"])
+            .output()
+            .unwrap();
+        String::from_utf8(out.stdout).unwrap().trim().to_owned()
+    }
+
+    #[gpui::test]
+    async fn the_branch_list_loads_on_request(cx: &mut TestAppContext) {
+        let dir = repo_without_hooks();
+        git(dir.path(), &["branch", "other"]);
+        let state = cx.new(|_| RepoState::default());
+        state.update(cx, |state, cx| state.open(dir.path().to_owned(), cx));
+        cx.executor().run_until_parked();
+        assert!(state.read_with(cx, |state, _| state.branches().is_none()));
+
+        state.update(cx, |state, cx| state.load_branches(cx));
+        cx.executor().run_until_parked();
+
+        state.read_with(cx, |state, _| {
+            let names: Vec<_> = state
+                .branches()
+                .unwrap()
+                .local
+                .iter()
+                .map(|b| b.name.clone())
+                .collect();
+            assert!(names.contains(&"main".to_owned()) && names.contains(&"other".to_owned()));
+        });
+    }
+
+    #[gpui::test]
+    async fn an_untrusted_repository_will_not_switch_or_create_branches(cx: &mut TestAppContext) {
+        let dir = repo_without_hooks();
+        git(dir.path(), &["branch", "other"]);
+        let state = cx.new(|_| RepoState::default());
+        state.update(cx, |state, cx| state.open(dir.path().to_owned(), cx));
+        cx.executor().run_until_parked();
+        state.update(cx, |state, cx| state.load_branches(cx));
+        cx.executor().run_until_parked();
+        let other = state.read_with(cx, |state, _| {
+            state
+                .branches()
+                .unwrap()
+                .local
+                .iter()
+                .find(|b| b.name == "other")
+                .unwrap()
+                .clone()
+        });
+
+        state.update(cx, |state, cx| state.switch_branch(other, cx));
+        cx.executor().run_until_parked();
+        assert_eq!(current_branch(dir.path()), "main");
+        state.read_with(cx, |state, _| {
+            assert!(
+                state
+                    .error()
+                    .unwrap()
+                    .contains("Trust this repository to switch branches")
+            );
+        });
+
+        state.update(cx, |state, cx| state.create_branch("new-one".into(), cx));
+        cx.executor().run_until_parked();
+        assert_eq!(current_branch(dir.path()), "main");
+        state.read_with(cx, |state, _| {
+            assert!(
+                state
+                    .error()
+                    .unwrap()
+                    .contains("Trust this repository to create a branch")
+            );
+        });
+    }
+
+    #[gpui::test]
+    async fn a_trusted_repository_switches_and_creates_branches(cx: &mut TestAppContext) {
+        let dir = repo_without_hooks();
+        git(dir.path(), &["branch", "other"]);
+        let state = cx.new(|_| RepoState::default());
+        state.update(cx, |state, cx| state.open(dir.path().to_owned(), cx));
+        cx.executor().run_until_parked();
+        state.update(cx, |state, cx| state.trust(cx));
+        state.update(cx, |state, cx| state.load_branches(cx));
+        cx.executor().run_until_parked();
+        let other = state.read_with(cx, |state, _| {
+            state
+                .branches()
+                .unwrap()
+                .local
+                .iter()
+                .find(|b| b.name == "other")
+                .unwrap()
+                .clone()
+        });
+
+        state.update(cx, |state, cx| state.switch_branch(other, cx));
+        cx.executor().run_until_parked();
+        assert_eq!(current_branch(dir.path()), "other");
+        // The status the UI shows follows the checkout.
+        state.read_with(cx, |state, _| {
+            assert_eq!(
+                state.status().unwrap().branch.head,
+                git_core::Head::Branch("other".into())
+            );
+            assert!(
+                state.branches().is_none(),
+                "a stale list must not be shown after a switch"
+            );
+        });
+
+        state.update(cx, |state, cx| state.create_branch("brand-new".into(), cx));
+        cx.executor().run_until_parked();
+        assert_eq!(current_branch(dir.path()), "brand-new");
+    }
+
+    #[gpui::test]
+    async fn a_bad_branch_name_reports_git_and_leaves_the_branch_alone(cx: &mut TestAppContext) {
+        let dir = repo_without_hooks();
+        let state = cx.new(|_| RepoState::default());
+        state.update(cx, |state, cx| state.open(dir.path().to_owned(), cx));
+        cx.executor().run_until_parked();
+        state.update(cx, |state, cx| state.trust(cx));
+
+        state.update(cx, |state, cx| {
+            state.create_branch("not a valid name".into(), cx)
+        });
+        cx.executor().run_until_parked();
+
+        assert_eq!(current_branch(dir.path()), "main");
+        state.read_with(cx, |state, _| {
+            assert!(state.error().unwrap().contains("not a valid branch name"));
+        });
     }
 }

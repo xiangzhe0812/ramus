@@ -5,7 +5,8 @@ use gpui::{
 };
 
 use crate::{
-    actions::OpenRepository,
+    actions::{OpenRepository, ToggleBranches},
+    branch_popover::BranchPopover,
     changes_view::ChangesView,
     repo_state::RepoState,
     theme::{MONO_FONT, Theme},
@@ -18,6 +19,7 @@ pub struct Workspace {
     title_bar: Entity<TitleBar>,
     changes: Entity<ChangesView>,
     welcome: Entity<Welcome>,
+    branch_popover: Option<Entity<BranchPopover>>,
     focus_handle: FocusHandle,
 }
 
@@ -40,9 +42,37 @@ impl Workspace {
             title_bar: cx.new(|cx| TitleBar::new(repo_state.clone(), cx)),
             changes: cx.new(|cx| ChangesView::new(repo_state.clone(), window, cx)),
             welcome: cx.new(|_| Welcome),
+            branch_popover: None,
             repo_state,
             focus_handle,
         }
+    }
+
+    fn close_branches(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.branch_popover.take().is_some() {
+            // Keyboard shortcuts work from the workspace, so hand focus back to it.
+            window.focus(&self.focus_handle, cx);
+            cx.notify();
+        }
+    }
+
+    fn toggle_branches(&mut self, _: &ToggleBranches, window: &mut Window, cx: &mut Context<Self>) {
+        if self.branch_popover.is_some() {
+            self.close_branches(window, cx);
+            return;
+        }
+        if self.repo_state.read(cx).repo().is_none() {
+            return;
+        }
+        let popover = cx.new(|cx| BranchPopover::new(self.repo_state.clone(), window, cx));
+        cx.subscribe_in(
+            &popover,
+            window,
+            |this, _, _: &gpui::DismissEvent, window, cx| this.close_branches(window, cx),
+        )
+        .detach();
+        self.branch_popover = Some(popover);
+        cx.notify();
     }
 
     fn open_repository(&mut self, _: &OpenRepository, _: &mut Window, cx: &mut Context<Self>) {
@@ -236,10 +266,25 @@ impl Render for Workspace {
                 .into_any_element()
         };
 
+        let popover = self.branch_popover.clone().map(|popover| {
+            // A transparent layer under the popover: a click anywhere else closes it.
+            div()
+                .id("popover-backdrop")
+                .absolute()
+                .inset_0()
+                .on_mouse_down(
+                    gpui::MouseButton::Left,
+                    cx.listener(|this, _, window, cx| this.close_branches(window, cx)),
+                )
+                .child(div().absolute().top(px(64.)).left(px(246.)).child(popover))
+        });
+
         div()
             .key_context("Workspace")
             .track_focus(&self.focus_handle)
             .on_action(cx.listener(Self::open_repository))
+            .on_action(cx.listener(Self::toggle_branches))
+            .relative()
             .size_full()
             .flex()
             .flex_col()
@@ -251,5 +296,6 @@ impl Render for Workspace {
             .children(self.error_banner(&theme, cx))
             .child(body)
             .child(self.status_bar(&theme, cx))
+            .children(popover)
     }
 }

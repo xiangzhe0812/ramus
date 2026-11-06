@@ -1,4 +1,5 @@
 mod actions;
+mod branch_popover;
 mod changes_view;
 mod component_theme;
 mod diff_rows;
@@ -11,7 +12,12 @@ mod workspace;
 
 use gpui::{AppContext, Bounds, KeyBinding, WindowBounds, WindowOptions, px, size};
 
-use crate::{actions::OpenRepository, repo_state::RepoState, theme::Theme, workspace::Workspace};
+use crate::{
+    actions::{OpenRepository, ToggleBranches},
+    repo_state::RepoState,
+    theme::Theme,
+    workspace::Workspace,
+};
 
 fn main() {
     gpui_platform::application().run(|cx| {
@@ -19,7 +25,10 @@ fn main() {
         let theme = Theme::dark();
         component_theme::apply(&theme, cx);
         cx.set_global(theme);
-        cx.bind_keys([KeyBinding::new("cmd-o", OpenRepository, None)]);
+        cx.bind_keys([
+            KeyBinding::new("cmd-o", OpenRepository, None),
+            KeyBinding::new("cmd-b", ToggleBranches, None),
+        ]);
 
         let repo_state = cx.new(|_| RepoState::persistent());
         if let Some(path) = std::env::args_os().nth(1) {

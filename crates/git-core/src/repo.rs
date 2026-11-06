@@ -1,7 +1,9 @@
 use std::path::{Path, PathBuf};
 
 use crate::{
-    ChangeKind, DiffHunk, Error, FileChange, FileDiff, FileDiffs, RepoStatus,
+    Branch, BranchKind, BranchList, ChangeKind, DiffHunk, Error, FileChange, FileDiff, FileDiffs,
+    RepoStatus,
+    branch::{LIST_ARGS, is_safe_branch_name, parse_branches},
     diff::{parse_diff, patch_for},
     runner::{run_git, run_git_allowing, run_git_with_input},
     status::parse_status,
@@ -56,6 +58,7 @@ impl Repo {
             &self.root,
             &[
                 "status",
+                "--ignore-submodules=dirty",
                 "--porcelain=v2",
                 "--branch",
                 "--untracked-files=all",
@@ -103,6 +106,7 @@ impl Repo {
             "--no-color",
             "--no-ext-diff",
             "--no-textconv",
+            "--ignore-submodules=dirty",
             "-U3",
         ];
         if options.ignore_whitespace {
@@ -148,8 +152,19 @@ impl Repo {
     }
 
     /// Stages every change in the working tree.
+    ///
+    /// This adds the paths our own status lists rather than running `git add -A`, because
+    /// `add -A` checks every submodule for uncommitted work by running `git status` inside
+    /// it, under that submodule's own config, which is not ours to trust.
     pub fn stage_all(&self) -> Result<(), Error> {
-        run_git(&self.root, &["add", "-A"]).map(drop)
+        // Chunked so a very large change never exceeds the operating system's argument limit.
+        const PATHS_PER_COMMAND: usize = 500;
+        let status = self.status()?;
+        for chunk in status.files.chunks(PATHS_PER_COMMAND) {
+            let paths: Vec<&str> = chunk.iter().flat_map(|file| file.pathspecs()).collect();
+            self.stage(&paths)?;
+        }
+        Ok(())
     }
 
     /// Removes `paths` from the index, leaving the working tree alone. Works on a
@@ -175,5 +190,35 @@ impl Repo {
         }
         message.push('\n');
         run_git_with_input(&self.root, &["commit", "-q", "-F", "-"], message.as_bytes()).map(drop)
+    }
+
+    /// Local branches, and remote branches that have no local counterpart.
+    pub fn branches(&self) -> Result<BranchList, Error> {
+        parse_branches(&run_git(&self.root, LIST_ARGS)?)
+    }
+
+    /// Checks out `branch`. A remote-only branch gets a local branch that tracks it.
+    /// Fails, changing nothing, if local changes would be overwritten.
+    pub fn switch_branch(&self, branch: &Branch) -> Result<(), Error> {
+        if !is_safe_branch_name(&branch.name) {
+            return Err(Error::InvalidBranchName(branch.name.clone()));
+        }
+        let mut args = vec!["switch"];
+        if branch.kind == BranchKind::Remote {
+            args.push("--track");
+        }
+        args.push(&branch.name);
+        run_git(&self.root, &args).map(drop)
+    }
+
+    /// Creates a branch at the current commit and switches to it.
+    pub fn create_branch(&self, name: &str) -> Result<(), Error> {
+        let name = name.trim();
+        if !is_safe_branch_name(name)
+            || run_git(&self.root, &["check-ref-format", "--branch", name]).is_err()
+        {
+            return Err(Error::InvalidBranchName(name.to_owned()));
+        }
+        run_git(&self.root, &["switch", "-c", name]).map(drop)
     }
 }
