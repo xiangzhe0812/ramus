@@ -745,3 +745,97 @@ mod untrusted_filter_allowlist {
         assert!(Repo::open(dir.path()).is_err());
     }
 }
+
+mod unusual_filter_names {
+    use std::{ffi::OsString, os::unix::ffi::OsStringExt, os::unix::fs::PermissionsExt};
+
+    use super::*;
+
+    /// Runs `status`, `diff` and `stage` on a repo whose hostile filter driver is called
+    /// `driver` (raw bytes), and reports whether the payload ran.
+    fn payload_ran(driver: &[u8]) -> bool {
+        let outside = TempDir::new().unwrap();
+        let marker = outside.path().join("PWNED");
+        let script = outside.path().join("evil.sh");
+        fs::write(
+            &script,
+            format!("#!/bin/sh\ntouch '{}'\ncat\n", marker.display()),
+        )
+        .unwrap();
+        fs::set_permissions(&script, fs::Permissions::from_mode(0o755)).unwrap();
+
+        let dir = new_repo();
+        commit_file(dir.path(), "a.txt", "one\n");
+
+        let mut attributes = b"*.txt filter=".to_vec();
+        attributes.extend_from_slice(driver);
+        attributes.push(b'\n');
+        fs::write(dir.path().join(".gitattributes"), attributes).unwrap();
+
+        let mut key = b"filter.".to_vec();
+        key.extend_from_slice(driver);
+        key.extend_from_slice(b".clean");
+        let configured = Command::new("git")
+            .arg("-C")
+            .arg(dir.path())
+            .arg("config")
+            .arg(OsString::from_vec(key))
+            .arg(&script)
+            .status()
+            .unwrap();
+        assert!(configured.success(), "could not set up the hostile filter");
+
+        fs::write(dir.path().join("a.txt"), "one and a bit more\n").unwrap();
+        let repo = Repo::open(dir.path()).unwrap();
+        let change = repo
+            .status()
+            .unwrap()
+            .files
+            .into_iter()
+            .find(|f| f.path == "a.txt")
+            .unwrap();
+        repo.diff(&change, git_core::DiffOptions::default())
+            .unwrap();
+        repo.stage(&["a.txt"]).unwrap();
+        marker.exists()
+    }
+
+    #[test]
+    fn a_driver_name_containing_an_equals_sign_is_still_neutralised() {
+        assert!(!payload_ran(b"evil=z"));
+    }
+
+    #[test]
+    fn a_driver_name_that_is_not_valid_utf8_is_still_neutralised() {
+        assert!(!payload_ran(b"bad\xffname"));
+    }
+
+    #[test]
+    fn the_harness_does_detect_a_payload_that_does_run() {
+        // Guards the two tests above against passing vacuously: run the same hostile
+        // setup with git directly, bypassing the runner's defences.
+        let outside = TempDir::new().unwrap();
+        let marker = outside.path().join("PWNED");
+        let script = outside.path().join("evil.sh");
+        fs::write(
+            &script,
+            format!("#!/bin/sh\ntouch '{}'\ncat\n", marker.display()),
+        )
+        .unwrap();
+        fs::set_permissions(&script, fs::Permissions::from_mode(0o755)).unwrap();
+        let dir = new_repo();
+        commit_file(dir.path(), "a.txt", "one\n");
+        fs::write(dir.path().join(".gitattributes"), "*.txt filter=evil\n").unwrap();
+        git(
+            dir.path(),
+            &["config", "filter.evil.clean", script.to_str().unwrap()],
+        );
+        fs::write(dir.path().join("a.txt"), "changed\n").unwrap();
+
+        git(dir.path(), &["add", "a.txt"]);
+        assert!(
+            marker.exists(),
+            "an unprotected `git add` should run the filter"
+        );
+    }
+}
