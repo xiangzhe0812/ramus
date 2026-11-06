@@ -1,11 +1,26 @@
-use git_core::{DiffLineKind, FileDiff};
+use git_core::{DiffLineKind, FileDiff, FileDiffs};
 use gpui::SharedString;
+
+/// What a hunk's button does, and which hunk it acts on.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct HunkAction {
+    /// The hunk is in the staged diff, so the action unstages it.
+    pub staged: bool,
+    /// Index into that diff's hunks.
+    pub index: usize,
+}
 
 /// One display row of a diff. Flattened up front so a virtualized list can
 /// render any range of rows without walking hunks.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum DiffRow {
-    Hunk(SharedString),
+    /// Divides a file's unstaged changes from its staged ones.
+    Section(SharedString),
+    Hunk {
+        header: SharedString,
+        /// `None` when the file can't be staged hunk by hunk.
+        action: Option<HunkAction>,
+    },
     Line {
         kind: DiffLineKind,
         old_number: Option<u32>,
@@ -20,10 +35,19 @@ fn display_text(text: &str) -> SharedString {
     text.replace('\t', "    ").replace('\r', "").into()
 }
 
-pub fn flatten(diff: &FileDiff) -> Vec<DiffRow> {
-    let mut rows = Vec::with_capacity(diff.hunks.iter().map(|hunk| hunk.lines.len() + 1).sum());
-    for hunk in &diff.hunks {
-        rows.push(DiffRow::Hunk(hunk.header().into()));
+/// Which hunks of a file get a stage or unstage button.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct HunkControls {
+    pub stage: bool,
+    pub unstage: bool,
+}
+
+fn push_section(rows: &mut Vec<DiffRow>, diff: &FileDiff, staged: bool, enabled: bool) {
+    for (index, hunk) in diff.hunks.iter().enumerate() {
+        rows.push(DiffRow::Hunk {
+            header: hunk.header().into(),
+            action: enabled.then_some(HunkAction { staged, index }),
+        });
         rows.extend(hunk.lines.iter().map(|line| DiffRow::Line {
             kind: line.kind,
             old_number: line.old_number,
@@ -31,6 +55,22 @@ pub fn flatten(diff: &FileDiff) -> Vec<DiffRow> {
             text: display_text(&line.text),
         }));
     }
+}
+
+/// Unstaged changes first, then staged ones. The two sections are labelled only when
+/// both exist, since a file with just one kind of change needs no explanation.
+pub fn flatten(diffs: &FileDiffs, controls: HunkControls) -> Vec<DiffRow> {
+    let both = !diffs.unstaged.hunks.is_empty() && !diffs.staged.hunks.is_empty();
+    let mut rows = Vec::new();
+
+    if both {
+        rows.push(DiffRow::Section("Unstaged changes".into()));
+    }
+    push_section(&mut rows, &diffs.unstaged, false, controls.stage);
+    if both {
+        rows.push(DiffRow::Section("Staged changes".into()));
+    }
+    push_section(&mut rows, &diffs.staged, true, controls.unstage);
     rows
 }
 
@@ -50,31 +90,126 @@ mod tests {
         }
     }
 
+    fn diff(hunk_count: usize) -> FileDiff {
+        FileDiff {
+            hunks: (0..hunk_count)
+                .map(|_| DiffHunk {
+                    old_start: 1,
+                    old_lines: 1,
+                    new_start: 1,
+                    new_lines: 1,
+                    section: String::new(),
+                    lines: vec![
+                        line(DiffLineKind::Added, "a"),
+                        line(DiffLineKind::Removed, "b"),
+                    ],
+                })
+                .collect(),
+            binary: false,
+        }
+    }
+
+    fn on() -> HunkControls {
+        HunkControls {
+            stage: true,
+            unstage: true,
+        }
+    }
+
     #[test]
     fn each_hunk_contributes_a_header_row_then_its_lines() {
-        let hunk = |lines| DiffHunk {
-            old_start: 1,
-            old_lines: 1,
-            new_start: 1,
-            new_lines: 1,
-            section: String::new(),
-            lines,
+        let diffs = FileDiffs {
+            staged: FileDiff::default(),
+            unstaged: diff(2),
         };
-        let diff = FileDiff {
-            hunks: vec![
-                hunk(vec![
-                    line(DiffLineKind::Added, "a"),
-                    line(DiffLineKind::Removed, "b"),
-                ]),
-                hunk(vec![line(DiffLineKind::Context, "c")]),
-            ],
-            binary: false,
-        };
+        let rows = flatten(&diffs, on());
+        assert_eq!(rows.len(), 6);
+        assert!(matches!(rows[0], DiffRow::Hunk { .. }));
+        assert!(matches!(rows[3], DiffRow::Hunk { .. }));
+    }
 
-        let rows = flatten(&diff);
-        assert_eq!(rows.len(), 5);
-        assert!(matches!(rows[0], DiffRow::Hunk(_)));
-        assert!(matches!(rows[3], DiffRow::Hunk(_)));
+    #[test]
+    fn a_file_with_one_kind_of_change_has_no_section_labels() {
+        let diffs = FileDiffs {
+            staged: FileDiff::default(),
+            unstaged: diff(1),
+        };
+        assert!(
+            !flatten(&diffs, on())
+                .iter()
+                .any(|row| matches!(row, DiffRow::Section(_)))
+        );
+    }
+
+    #[test]
+    fn a_file_with_both_kinds_is_labelled_unstaged_first_then_staged() {
+        let diffs = FileDiffs {
+            staged: diff(1),
+            unstaged: diff(1),
+        };
+        let sections: Vec<_> = flatten(&diffs, on())
+            .into_iter()
+            .filter_map(|row| match row {
+                DiffRow::Section(title) => Some(title.to_string()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(sections, ["Unstaged changes", "Staged changes"]);
+    }
+
+    #[test]
+    fn hunk_actions_point_at_the_right_diff_and_index() {
+        let diffs = FileDiffs {
+            staged: diff(1),
+            unstaged: diff(2),
+        };
+        let actions: Vec<_> = flatten(&diffs, on())
+            .into_iter()
+            .filter_map(|row| match row {
+                DiffRow::Hunk { action, .. } => action,
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            actions,
+            [
+                HunkAction {
+                    staged: false,
+                    index: 0
+                },
+                HunkAction {
+                    staged: false,
+                    index: 1
+                },
+                HunkAction {
+                    staged: true,
+                    index: 0
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn controls_can_be_withheld_per_side() {
+        let diffs = FileDiffs {
+            staged: diff(1),
+            unstaged: diff(1),
+        };
+        let rows = flatten(
+            &diffs,
+            HunkControls {
+                stage: true,
+                unstage: false,
+            },
+        );
+        let actions: Vec<_> = rows
+            .iter()
+            .filter_map(|row| match row {
+                DiffRow::Hunk { action, .. } => Some(action.is_some()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(actions, [true, false]);
     }
 
     #[test]

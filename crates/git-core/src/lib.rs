@@ -7,7 +7,7 @@ mod repo;
 mod runner;
 mod status;
 
-pub use diff::{DiffHunk, DiffLine, DiffLineKind, FileDiff};
+pub use diff::{DiffHunk, DiffLine, DiffLineKind, FileDiff, FileDiffs};
 pub use error::Error;
 pub use repo::{DiffOptions, Repo};
 pub use status::{BranchStatus, ChangeKind, FileChange, Head, RepoStatus};

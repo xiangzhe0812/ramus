@@ -64,6 +64,33 @@ impl FileChange {
         self.index.is_some() && self.worktree.is_none()
     }
 
+    /// Whether the file is a plain modified file on both sides, the only case where
+    /// staging or unstaging a single hunk is well defined. Added, deleted, renamed,
+    /// untracked and conflicted files are staged as a whole.
+    fn is_plain_modification(&self) -> bool {
+        use ChangeKind::*;
+        self.original_path.is_none()
+            && !matches!(
+                self.index,
+                Some(Deleted | Renamed | Copied | TypeChanged | Conflicted)
+            )
+            && !matches!(
+                self.worktree,
+                Some(Deleted | Renamed | Copied | TypeChanged | Conflicted | Untracked)
+            )
+    }
+
+    /// Whether a hunk of the unstaged changes can be staged on its own.
+    pub fn can_stage_hunks(&self) -> bool {
+        self.is_plain_modification() && self.worktree == Some(ChangeKind::Modified)
+    }
+
+    /// Whether a hunk of the staged changes can be unstaged on its own. A file added
+    /// in the index is excluded: reversing part of "this file is new" is not meaningful.
+    pub fn can_unstage_hunks(&self) -> bool {
+        self.is_plain_modification() && self.index == Some(ChangeKind::Modified)
+    }
+
     /// The paths git needs to act on this file as one change: for a rename that is
     /// both the new and the old path.
     pub fn pathspecs(&self) -> Vec<&str> {
@@ -334,6 +361,38 @@ mod tests {
         ])
         .unwrap();
         assert_eq!(status.files[0].kind(), ChangeKind::Conflicted);
+    }
+
+    fn change(
+        index: Option<ChangeKind>,
+        worktree: Option<ChangeKind>,
+        original: Option<&str>,
+    ) -> FileChange {
+        FileChange {
+            path: "f".into(),
+            original_path: original.map(str::to_owned),
+            index,
+            worktree,
+        }
+    }
+
+    #[test]
+    fn only_plain_modifications_support_hunk_staging() {
+        use ChangeKind::*;
+        let m = Some(Modified);
+        assert!(change(None, m, None).can_stage_hunks());
+        assert!(change(m, m, None).can_stage_hunks());
+        assert!(change(Some(Added), m, None).can_stage_hunks());
+        assert!(!change(None, Some(Untracked), None).can_stage_hunks());
+        assert!(!change(None, Some(Deleted), None).can_stage_hunks());
+        assert!(!change(Some(Renamed), m, Some("old")).can_stage_hunks());
+        assert!(!change(Some(Conflicted), Some(Conflicted), None).can_stage_hunks());
+
+        assert!(change(m, None, None).can_unstage_hunks());
+        assert!(change(m, m, None).can_unstage_hunks());
+        assert!(!change(Some(Added), None, None).can_unstage_hunks());
+        assert!(!change(Some(Deleted), None, None).can_unstage_hunks());
+        assert!(!change(Some(Renamed), None, Some("old")).can_unstage_hunks());
     }
 
     #[test]

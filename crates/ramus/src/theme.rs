@@ -4,6 +4,9 @@ use gpui::{Global, Rgba, rgb, rgba};
 /// JetBrains Mono once fonts are embedded.
 pub const MONO_FONT: &str = "Menlo";
 
+/// The platform UI font, for text inside an element that is otherwise monospace.
+pub const UI_FONT: &str = ".SystemUIFont";
+
 /// A badge's background and foreground.
 #[derive(Clone, Copy, Debug)]
 pub struct Badge {
@@ -23,6 +26,8 @@ pub struct Theme {
     pub text_muted: Rgba,
     pub accent: Rgba,
     pub accent_text: Rgba,
+    /// A lighter accent for text links and small actions on a dark surface.
+    pub accent_soft: Rgba,
     pub pill_active: Rgba,
     pub modified: Badge,
     pub added: Badge,
@@ -59,6 +64,7 @@ impl Theme {
             text_muted: rgb(0x98a2b3),
             accent: rgb(0x3b7be0),
             accent_text: rgb(0xffffff),
+            accent_soft: rgb(0x6aa5ff),
             pill_active: rgb(0x262f40),
             modified: badge(0x3a3020, 0xf0c878),
             added: badge(0x153327, 0x86e0b4),

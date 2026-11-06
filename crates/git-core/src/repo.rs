@@ -1,8 +1,8 @@
 use std::path::{Path, PathBuf};
 
 use crate::{
-    ChangeKind, Error, FileChange, FileDiff, RepoStatus,
-    diff::parse_diff,
+    ChangeKind, DiffHunk, Error, FileChange, FileDiff, FileDiffs, RepoStatus,
+    diff::{parse_diff, patch_for},
     runner::{run_git, run_git_allowing, run_git_with_input},
     status::parse_status,
 };
@@ -65,8 +65,39 @@ impl Repo {
         parse_status(&output)
     }
 
-    /// The diff of one changed file against HEAD, so staged and unstaged edits show together.
-    pub fn diff(&self, change: &FileChange, options: DiffOptions) -> Result<FileDiff, Error> {
+    /// A file's staged changes (HEAD → index) and unstaged changes (index → working tree).
+    pub fn file_diffs(
+        &self,
+        change: &FileChange,
+        options: DiffOptions,
+    ) -> Result<FileDiffs, Error> {
+        if change.worktree == Some(ChangeKind::Untracked) {
+            // Git can't diff an untracked file against the index; diff it against nothing.
+            // `--no-index` exits 1 when the files differ, which is always the case here.
+            let unstaged = self.diff(
+                options,
+                &["--no-index", "--", "/dev/null", &change.path],
+                &[0, 1],
+            )?;
+            return Ok(FileDiffs {
+                staged: FileDiff::default(),
+                unstaged,
+            });
+        }
+
+        let unstaged = self.diff(options, &["--", &change.path], &[0])?;
+        let mut staged_args = vec!["--cached", "-M", "--"];
+        staged_args.extend(change.pathspecs());
+        let staged = self.diff(options, &staged_args, &[0])?;
+        Ok(FileDiffs { staged, unstaged })
+    }
+
+    fn diff(
+        &self,
+        options: DiffOptions,
+        tail: &[&str],
+        success_codes: &[i32],
+    ) -> Result<FileDiff, Error> {
         let mut args = vec![
             "diff",
             "--no-color",
@@ -77,23 +108,9 @@ impl Repo {
         if options.ignore_whitespace {
             args.push("-w");
         }
+        args.extend(tail);
 
-        let base;
-        let output = if change.worktree == Some(ChangeKind::Untracked) {
-            // Git can't diff an untracked file against HEAD; diff it against nothing.
-            args.extend(["--no-index", "--", "/dev/null", &change.path]);
-            // `--no-index` exits 1 when the files differ, which is always the case here.
-            run_git_allowing(&self.root, &args, &[0, 1])?
-        } else {
-            base = self.diff_base()?;
-            args.extend(["-M", &base, "--"]);
-            if let Some(original) = &change.original_path {
-                args.push(original);
-            }
-            args.push(&change.path);
-            run_git(&self.root, &args)?
-        };
-
+        let output = run_git_allowing(&self.root, &args, success_codes)?;
         if output.len() > MAX_DIFF_BYTES {
             return Err(Error::DiffTooLarge {
                 limit_mib: MAX_DIFF_BYTES / (1024 * 1024),
@@ -102,14 +119,25 @@ impl Repo {
         parse_diff(&output)
     }
 
-    /// `HEAD`, or the empty tree on a branch with no commits yet.
-    fn diff_base(&self) -> Result<String, Error> {
-        if run_git(&self.root, &["rev-parse", "--verify", "--quiet", "HEAD"]).is_ok() {
-            return Ok("HEAD".to_owned());
+    /// Stages just `hunks` of the unstaged changes to `path`. The hunks must come from
+    /// a diff computed without `ignore_whitespace`, or their context won't match.
+    pub fn stage_hunks(&self, path: &str, hunks: &[&DiffHunk]) -> Result<(), Error> {
+        self.apply_hunks(path, hunks, false)
+    }
+
+    /// Removes just `hunks` of the staged changes to `path` from the index.
+    pub fn unstage_hunks(&self, path: &str, hunks: &[&DiffHunk]) -> Result<(), Error> {
+        self.apply_hunks(path, hunks, true)
+    }
+
+    fn apply_hunks(&self, path: &str, hunks: &[&DiffHunk], reverse: bool) -> Result<(), Error> {
+        let patch = patch_for(path, hunks);
+        let mut args = vec!["apply", "--cached", "--whitespace=nowarn"];
+        if reverse {
+            args.push("--reverse");
         }
-        // stdin is empty, so this hashes the empty tree in whichever hash format the repo uses.
-        let tree = run_git(&self.root, &["hash-object", "-t", "tree", "--stdin"])?;
-        Ok(String::from_utf8_lossy(&tree).trim().to_owned())
+        args.push("-");
+        run_git_with_input(&self.root, &args, patch.as_bytes()).map(drop)
     }
 
     /// Stages every change to `paths`, including deletions and untracked files.

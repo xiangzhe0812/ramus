@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-use git_core::{Repo, RepoStatus};
+use git_core::{DiffHunk, Repo, RepoStatus};
 use gpui::{Context, EventEmitter, SharedString, Task};
 
 /// Things views react to that aren't just "state changed".
@@ -114,6 +114,20 @@ impl RepoState {
 
     pub fn unstage(&mut self, paths: Vec<String>, cx: &mut Context<Self>) {
         self.write(cx, None, move |repo| repo.unstage(&as_strs(&paths)));
+    }
+
+    /// Stages just `hunks` of `path`'s unstaged changes.
+    pub fn stage_hunks(&mut self, path: String, hunks: Vec<DiffHunk>, cx: &mut Context<Self>) {
+        self.write(cx, None, move |repo| {
+            repo.stage_hunks(&path, &hunks.iter().collect::<Vec<_>>())
+        });
+    }
+
+    /// Unstages just `hunks` of `path`'s staged changes.
+    pub fn unstage_hunks(&mut self, path: String, hunks: Vec<DiffHunk>, cx: &mut Context<Self>) {
+        self.write(cx, None, move |repo| {
+            repo.unstage_hunks(&path, &hunks.iter().collect::<Vec<_>>())
+        });
     }
 
     pub fn stage_all(&mut self, cx: &mut Context<Self>) {

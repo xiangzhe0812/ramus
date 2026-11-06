@@ -69,6 +69,92 @@ impl FileDiff {
     }
 }
 
+/// A file's changes split by where they are: `staged` is HEAD → index (what the next
+/// commit will contain) and `unstaged` is index → working tree.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct FileDiffs {
+    pub staged: FileDiff,
+    pub unstaged: FileDiff,
+}
+
+impl FileDiffs {
+    pub fn binary(&self) -> bool {
+        self.staged.binary || self.unstaged.binary
+    }
+
+    pub fn additions(&self) -> usize {
+        self.staged.additions() + self.unstaged.additions()
+    }
+
+    pub fn deletions(&self) -> usize {
+        self.staged.deletions() + self.unstaged.deletions()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.staged.hunks.is_empty() && self.unstaged.hunks.is_empty()
+    }
+}
+
+/// `prefix/path`, C-quoted the way git does when the name has characters that would
+/// confuse a patch header (quotes, backslashes, control characters).
+fn patch_path(prefix: &str, path: &str) -> String {
+    let full = format!("{prefix}/{path}");
+    if !full
+        .bytes()
+        .any(|b| b < 0x20 || b == 0x7f || b == b'"' || b == b'\\')
+    {
+        return full;
+    }
+    let mut quoted = String::from("\"");
+    for ch in full.chars() {
+        match ch {
+            '"' => quoted.push_str("\\\""),
+            '\\' => quoted.push_str("\\\\"),
+            '\n' => quoted.push_str("\\n"),
+            '\t' => quoted.push_str("\\t"),
+            '\r' => quoted.push_str("\\r"),
+            c if (c as u32) < 0x20 || c as u32 == 0x7f => {
+                quoted.push_str(&format!("\\{:03o}", c as u32))
+            }
+            c => quoted.push(c),
+        }
+    }
+    quoted.push('"');
+    quoted
+}
+
+/// A patch for `path` containing only `hunks`, for `git apply`. Each hunk keeps its own
+/// header, so applying a subset of whole hunks needs no recounting.
+pub(crate) fn patch_for(path: &str, hunks: &[&DiffHunk]) -> String {
+    let old = patch_path("a", path);
+    let new = patch_path("b", path);
+    // Git adds a tab after a name containing a space so the name's end is unambiguous.
+    let tab = |name: &str| if name.contains(' ') { "\t" } else { "" };
+
+    let mut patch = format!(
+        "diff --git {old} {new}\n--- {old}{}\n+++ {new}{}\n",
+        tab(&old),
+        tab(&new)
+    );
+    for hunk in hunks {
+        patch.push_str(&hunk.header());
+        patch.push('\n');
+        for line in &hunk.lines {
+            patch.push(match line.kind {
+                DiffLineKind::Context => ' ',
+                DiffLineKind::Added => '+',
+                DiffLineKind::Removed => '-',
+            });
+            patch.push_str(&line.text);
+            patch.push('\n');
+            if line.no_newline_at_eof {
+                patch.push_str("\\ No newline at end of file\n");
+            }
+        }
+    }
+    patch
+}
+
 /// Parses `@@ -a[,b] +c[,d] @@ section`. A missing count means 1.
 fn parse_hunk_header(line: &str) -> Result<DiffHunk, Error> {
     let bad = || Error::Parse(format!("bad hunk header {line:?}"));
@@ -286,6 +372,44 @@ mod tests {
                 .unwrap();
         assert!(diff.binary);
         assert!(diff.hunks.is_empty());
+    }
+
+    fn hunk_of(body: &str) -> DiffHunk {
+        parse(body).hunks.remove(0)
+    }
+
+    #[test]
+    fn patch_for_renders_a_hunk_git_apply_can_read() {
+        let hunk = hunk_of("@@ -1,3 +1,3 @@ fn f\n a\n-b\n+B\n c\n");
+        assert_eq!(
+            patch_for("src/f.rs", &[&hunk]),
+            "diff --git a/src/f.rs b/src/f.rs\n--- a/src/f.rs\n+++ b/src/f.rs\n\
+             @@ -1,3 +1,3 @@ fn f\n a\n-b\n+B\n c\n"
+        );
+    }
+
+    #[test]
+    fn patch_for_keeps_the_missing_newline_marker_after_its_line() {
+        let hunk = hunk_of("@@ -1 +1 @@\n-a\n\\ No newline at end of file\n+b\n");
+        assert!(patch_for("f", &[&hunk]).ends_with("-a\n\\ No newline at end of file\n+b\n"));
+    }
+
+    #[test]
+    fn patch_for_puts_several_hunks_in_order() {
+        let both = parse("@@ -1 +1 @@\n-a\n+b\n@@ -9 +9 @@\n-c\n+d\n");
+        let hunks: Vec<_> = both.hunks.iter().collect();
+        let patch = patch_for("f", &hunks);
+        assert!(patch.find("@@ -1 ").unwrap_or(0) < patch.find("@@ -9").unwrap());
+    }
+
+    #[test]
+    fn patch_paths_with_spaces_get_a_tab_and_odd_characters_are_quoted() {
+        let hunk = hunk_of("@@ -1 +1 @@\n-a\n+b\n");
+        assert!(patch_for("my notes.txt", &[&hunk]).contains("--- a/my notes.txt\t\n"));
+        assert!(patch_for("q\"uote.txt", &[&hunk]).contains("--- \"a/q\\\"uote.txt\"\n"));
+        assert!(patch_for("new\nline", &[&hunk]).contains("\"a/new\\nline\""));
+        // Non-ASCII is fine unquoted.
+        assert!(patch_for("é.txt", &[&hunk]).contains("--- a/é.txt\n"));
     }
 
     #[test]

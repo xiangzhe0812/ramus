@@ -1,6 +1,6 @@
 use std::{ops::Range, rc::Rc};
 
-use git_core::{ChangeKind, DiffLineKind, DiffOptions, FileChange, FileDiff};
+use git_core::{ChangeKind, DiffLineKind, DiffOptions, FileChange, FileDiffs};
 use gpui::{
     AnyElement, AppContext, Context, Entity, InteractiveElement, IntoElement, MouseButton,
     ParentElement, Render, SharedString, StatefulInteractiveElement, Styled, Subscription, Task,
@@ -9,9 +9,9 @@ use gpui::{
 use gpui_component::input::{Input, InputEvent, InputState, Textarea, TextareaState};
 
 use crate::{
-    diff_rows::{DiffRow, flatten},
+    diff_rows::{DiffRow, HunkAction, HunkControls, flatten},
     repo_state::{RepoEvent, RepoState},
-    theme::{Badge, MONO_FONT, Theme},
+    theme::{Badge, MONO_FONT, Theme, UI_FONT},
 };
 
 /// How much of a file (or of all files) is staged for the next commit.
@@ -36,34 +36,51 @@ enum DiffContent {
 }
 
 struct LoadedDiff {
-    /// The raw diff, kept to skip a redraw when a refresh finds nothing new.
-    source: Option<FileDiff>,
+    /// The raw diffs, kept to skip a redraw when a refresh finds nothing new, and to
+    /// build the patch when a hunk is staged.
+    source: Option<FileDiffs>,
+    /// Whether this file can be staged hunk by hunk at all, whatever the current options.
+    stageable: bool,
+    /// What the rows were built with; a change here needs a rebuild even if the diff is the same.
+    controls: HunkControls,
     content: DiffContent,
 }
 
 impl LoadedDiff {
-    fn from_result(result: Result<FileDiff, git_core::Error>) -> Self {
-        match result {
-            Ok(diff) if diff.binary => Self {
-                content: DiffContent::Binary,
-                source: Some(diff),
-            },
-            Ok(diff) if diff.hunks.is_empty() => Self {
-                content: DiffContent::Empty,
-                source: Some(diff),
-            },
-            Ok(diff) => Self {
-                content: DiffContent::Rows {
-                    rows: Rc::new(flatten(&diff)),
-                    additions: diff.additions(),
-                    deletions: diff.deletions(),
-                },
-                source: Some(diff),
-            },
-            Err(error) => Self {
-                content: DiffContent::Failed(error.to_string().into()),
-                source: None,
-            },
+    fn failed(message: impl Into<SharedString>) -> Self {
+        Self {
+            source: None,
+            stageable: false,
+            controls: HunkControls::default(),
+            content: DiffContent::Failed(message.into()),
+        }
+    }
+
+    fn from_result(
+        result: Result<FileDiffs, git_core::Error>,
+        stageable: bool,
+        controls: HunkControls,
+    ) -> Self {
+        let diffs = match result {
+            Ok(diffs) => diffs,
+            Err(error) => return Self::failed(error.to_string()),
+        };
+        let content = if diffs.binary() {
+            DiffContent::Binary
+        } else if diffs.is_empty() {
+            DiffContent::Empty
+        } else {
+            DiffContent::Rows {
+                rows: Rc::new(flatten(&diffs, controls)),
+                additions: diffs.additions(),
+                deletions: diffs.deletions(),
+            }
+        };
+        Self {
+            source: Some(diffs),
+            stageable,
+            controls,
+            content,
         }
     }
 }
@@ -202,6 +219,31 @@ impl ChangesView {
         cx.notify();
     }
 
+    /// Stages or unstages one hunk of the selected file's current diff.
+    fn apply_hunk(&mut self, action: HunkAction, cx: &mut Context<Self>) {
+        let (Some(path), Some(source)) = (
+            self.selected.clone(),
+            self.diff.as_ref().and_then(|diff| diff.source.as_ref()),
+        ) else {
+            return;
+        };
+        let hunks = if action.staged {
+            &source.staged.hunks
+        } else {
+            &source.unstaged.hunks
+        };
+        let Some(hunk) = hunks.get(action.index).cloned() else {
+            return;
+        };
+        self.repo_state.update(cx, |state, cx| {
+            if action.staged {
+                state.unstage_hunks(path, vec![hunk], cx)
+            } else {
+                state.stage_hunks(path, vec![hunk], cx)
+            }
+        });
+    }
+
     fn load_diff(&mut self, cx: &mut Context<Self>) {
         let state = self.repo_state.read(cx);
         let (Some(repo), Some(status), Some(path)) =
@@ -213,21 +255,25 @@ impl ChangesView {
             return;
         };
         if change.kind() == ChangeKind::Conflicted {
-            self.diff = Some(LoadedDiff {
-                source: None,
-                content: DiffContent::Failed("Merge conflicts can't be viewed yet.".into()),
-            });
+            self.diff = Some(LoadedDiff::failed("Merge conflicts can't be viewed yet."));
             return;
         }
 
         let options = DiffOptions {
             ignore_whitespace: self.hide_whitespace,
         };
+        // A diff computed with whitespace ignored has hunks whose context won't match the
+        // index, so hunks can't be staged from it.
+        let stageable = change.can_stage_hunks() || change.can_unstage_hunks();
+        let controls = HunkControls {
+            stage: change.can_stage_hunks() && !self.hide_whitespace,
+            unstage: change.can_unstage_hunks() && !self.hide_whitespace,
+        };
         let generation = self.diff_generation;
         self.diff_task = Some(cx.spawn(async move |this, cx| {
             let result = cx
                 .background_executor()
-                .spawn(async move { repo.diff(&change, options) })
+                .spawn(async move { repo.file_diffs(&change, options) })
                 .await;
 
             this.update(cx, |this, cx| {
@@ -235,12 +281,16 @@ impl ChangesView {
                     return;
                 }
                 // A refresh that finds the same diff must not redraw or reset the scroll.
-                let unchanged = matches!(
-                    (&result, this.diff.as_ref().and_then(|d| d.source.as_ref())),
-                    (Ok(new), Some(old)) if new == old
-                );
+                let unchanged = match (&result, this.diff.as_ref()) {
+                    (Ok(new), Some(old)) => {
+                        old.source.as_ref() == Some(new)
+                            && old.controls == controls
+                            && old.stageable == stageable
+                    }
+                    _ => false,
+                };
                 if !unchanged {
-                    this.diff = Some(LoadedDiff::from_result(result));
+                    this.diff = Some(LoadedDiff::from_result(result, stageable, controls));
                     cx.notify();
                 }
             })
@@ -378,7 +428,7 @@ fn file_row(
 const DIFF_ROW_HEIGHT: f32 = 20.;
 const LINE_NUMBER_WIDTH: f32 = 52.;
 
-fn diff_row(ix: usize, row: &DiffRow, theme: &Theme) -> AnyElement {
+fn diff_row(ix: usize, row: &DiffRow, theme: &Theme, view: &Entity<ChangesView>) -> AnyElement {
     let number = |value: Option<u32>| {
         div()
             .w(px(LINE_NUMBER_WIDTH))
@@ -399,12 +449,46 @@ fn diff_row(ix: usize, row: &DiffRow, theme: &Theme) -> AnyElement {
         .text_size(px(12.5));
 
     match row {
-        DiffRow::Hunk(header) => base
-            .bg(theme.diff_hunk_background)
-            .text_color(theme.diff_hunk_text)
-            .pl(px(LINE_NUMBER_WIDTH * 2.))
-            .child(header.clone())
+        DiffRow::Section(title) => base
+            .bg(theme.pill_active)
+            .text_color(theme.text)
+            .font_family(UI_FONT)
+            .font_weight(gpui::FontWeight::SEMIBOLD)
+            .text_size(px(11.5))
+            .pl(px(14.))
+            .child(title.clone())
             .into_any_element(),
+        DiffRow::Hunk { header, action } => {
+            let button = action.map(|action| {
+                let view = view.clone();
+                div()
+                    .id(("hunk-action", ix))
+                    .h_full()
+                    .px(px(12.))
+                    .flex()
+                    .items_center()
+                    .cursor_pointer()
+                    .font_family(UI_FONT)
+                    .font_weight(gpui::FontWeight::MEDIUM)
+                    .text_size(px(11.5))
+                    .text_color(theme.accent_soft)
+                    .hover(|button| button.bg(theme.surface_selected))
+                    .child(if action.staged {
+                        "Unstage hunk"
+                    } else {
+                        "Stage hunk"
+                    })
+                    .on_click(move |_, _, cx| {
+                        view.update(cx, |this, cx| this.apply_hunk(action, cx))
+                    })
+            });
+            base.bg(theme.diff_hunk_background)
+                .text_color(theme.diff_hunk_text)
+                .pl(px(LINE_NUMBER_WIDTH * 2.))
+                .child(div().flex_1().min_w_0().truncate().child(header.clone()))
+                .children(button)
+                .into_any_element()
+        }
         DiffRow::Line {
             kind,
             old_number,
@@ -479,6 +563,8 @@ impl ChangesView {
             return Self::message(theme, "Select a file to see its changes");
         };
 
+        let whitespace_blocks_hunks =
+            self.hide_whitespace && self.diff.as_ref().is_some_and(|diff| diff.stageable);
         let (additions, deletions) = match self.diff.as_ref().map(|diff| &diff.content) {
             Some(DiffContent::Rows {
                 additions,
@@ -509,6 +595,14 @@ impl ChangesView {
             .children(additions.map(|n| Self::pill(format!("+{n}"), theme.added)))
             .children(deletions.map(|n| Self::pill(format!("−{n}"), theme.deleted)))
             .child(div().flex_1())
+            .when(whitespace_blocks_hunks, |header| {
+                header.child(
+                    div()
+                        .text_size(px(11.5))
+                        .text_color(theme.text_muted)
+                        .child("Hunks can't be staged while whitespace is hidden"),
+                )
+            })
             .child(
                 div()
                     .id("hide-whitespace")
@@ -557,9 +651,10 @@ impl ChangesView {
                 uniform_list(
                     ("diff-rows", self.diff_generation as usize),
                     rows.len(),
-                    cx.processor(move |_, range: Range<usize>, _window, _cx| {
+                    cx.processor(move |_, range: Range<usize>, _window, cx| {
+                        let view = cx.entity();
                         range
-                            .filter_map(|ix| Some(diff_row(ix, rows.get(ix)?, &theme)))
+                            .filter_map(|ix| Some(diff_row(ix, rows.get(ix)?, &theme, &view)))
                             .collect()
                     }),
                 )

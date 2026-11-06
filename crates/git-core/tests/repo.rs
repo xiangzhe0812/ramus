@@ -195,8 +195,9 @@ mod diff {
 
         let repo = Repo::open(dir.path()).unwrap();
         let diff = repo
-            .diff(&change(&repo, "a.txt"), DiffOptions::default())
-            .unwrap();
+            .file_diffs(&change(&repo, "a.txt"), DiffOptions::default())
+            .unwrap()
+            .unstaged;
 
         assert_eq!(
             kinds(&diff),
@@ -218,8 +219,9 @@ mod diff {
 
         let repo = Repo::open(dir.path()).unwrap();
         let diff = repo
-            .diff(&change(&repo, "new.txt"), DiffOptions::default())
-            .unwrap();
+            .file_diffs(&change(&repo, "new.txt"), DiffOptions::default())
+            .unwrap()
+            .unstaged;
 
         assert_eq!(
             kinds(&diff),
@@ -236,13 +238,14 @@ mod diff {
 
         let repo = Repo::open(dir.path()).unwrap();
         let diff = repo
-            .diff(&change(&repo, "gone.txt"), DiffOptions::default())
-            .unwrap();
+            .file_diffs(&change(&repo, "gone.txt"), DiffOptions::default())
+            .unwrap()
+            .unstaged;
         assert_eq!(kinds(&diff), [(DiffLineKind::Removed, "bye")]);
     }
 
     #[test]
-    fn staged_and_unstaged_edits_show_together() {
+    fn staged_and_unstaged_edits_are_reported_separately() {
         let dir = new_repo();
         commit_file(dir.path(), "a.txt", "1\n2\n3\n");
         fs::write(dir.path().join("a.txt"), "1\n2 staged\n3\n").unwrap();
@@ -250,10 +253,24 @@ mod diff {
         fs::write(dir.path().join("a.txt"), "1\n2 staged\n3 unstaged\n").unwrap();
 
         let repo = Repo::open(dir.path()).unwrap();
-        let diff = repo
-            .diff(&change(&repo, "a.txt"), DiffOptions::default())
+        let diffs = repo
+            .file_diffs(&change(&repo, "a.txt"), DiffOptions::default())
             .unwrap();
-        assert_eq!((diff.additions(), diff.deletions()), (2, 2));
+        assert_eq!(
+            kinds(&diffs.staged)[1..3],
+            [
+                (DiffLineKind::Removed, "2"),
+                (DiffLineKind::Added, "2 staged"),
+            ]
+        );
+        assert_eq!(
+            kinds(&diffs.unstaged)[2..4],
+            [
+                (DiffLineKind::Removed, "3"),
+                (DiffLineKind::Added, "3 unstaged"),
+            ]
+        );
+        assert_eq!((diffs.additions(), diffs.deletions()), (2, 2));
     }
 
     #[test]
@@ -263,10 +280,11 @@ mod diff {
         git(dir.path(), &["add", "first.txt"]);
 
         let repo = Repo::open(dir.path()).unwrap();
-        let diff = repo
-            .diff(&change(&repo, "first.txt"), DiffOptions::default())
+        let diffs = repo
+            .file_diffs(&change(&repo, "first.txt"), DiffOptions::default())
             .unwrap();
-        assert_eq!(kinds(&diff), [(DiffLineKind::Added, "hello")]);
+        assert_eq!(kinds(&diffs.staged), [(DiffLineKind::Added, "hello")]);
+        assert!(diffs.unstaged.hunks.is_empty());
     }
 
     #[test]
@@ -276,11 +294,11 @@ mod diff {
         fs::write(dir.path().join("img.bin"), [0u8, 159, 146, 150, 0, 1, 2]).unwrap();
 
         let repo = Repo::open(dir.path()).unwrap();
-        let diff = repo
-            .diff(&change(&repo, "img.bin"), DiffOptions::default())
+        let diffs = repo
+            .file_diffs(&change(&repo, "img.bin"), DiffOptions::default())
             .unwrap();
-        assert!(diff.binary);
-        assert!(diff.hunks.is_empty());
+        assert!(diffs.binary());
+        assert!(diffs.is_empty());
     }
 
     #[test]
@@ -291,10 +309,15 @@ mod diff {
         fs::write(dir.path().join("new.txt"), "a\nb\nC\nd\ne\n").unwrap();
 
         let repo = Repo::open(dir.path()).unwrap();
-        let diff = repo
-            .diff(&change(&repo, "new.txt"), DiffOptions::default())
+        let diffs = repo
+            .file_diffs(&change(&repo, "new.txt"), DiffOptions::default())
             .unwrap();
-        assert_eq!((diff.additions(), diff.deletions()), (1, 1));
+        // The staged side is the pure rename; the later edit is unstaged.
+        assert!(diffs.staged.hunks.is_empty());
+        assert_eq!(
+            (diffs.unstaged.additions(), diffs.unstaged.deletions()),
+            (1, 1)
+        );
     }
 
     #[test]
@@ -306,7 +329,7 @@ mod diff {
         let repo = Repo::open(dir.path()).unwrap();
         let file = change(&repo, "a.txt");
         assert_eq!(
-            repo.diff(&file, DiffOptions::default())
+            repo.file_diffs(&file, DiffOptions::default())
                 .unwrap()
                 .additions(),
             1
@@ -314,7 +337,7 @@ mod diff {
         let ignoring = DiffOptions {
             ignore_whitespace: true,
         };
-        assert!(repo.diff(&file, ignoring).unwrap().hunks.is_empty());
+        assert!(repo.file_diffs(&file, ignoring).unwrap().is_empty());
     }
 
     #[test]
@@ -324,10 +347,10 @@ mod diff {
         fs::write(dir.path().join("my notes é.txt"), "b\n").unwrap();
 
         let repo = Repo::open(dir.path()).unwrap();
-        let diff = repo
-            .diff(&change(&repo, "my notes é.txt"), DiffOptions::default())
+        let diffs = repo
+            .file_diffs(&change(&repo, "my notes é.txt"), DiffOptions::default())
             .unwrap();
-        assert_eq!((diff.additions(), diff.deletions()), (1, 1));
+        assert_eq!((diffs.additions(), diffs.deletions()), (1, 1));
     }
 }
 
@@ -394,7 +417,7 @@ mod untrusted_repositories {
             .into_iter()
             .find(|f| f.path == "a.txt")
             .unwrap();
-        repo.diff(&change, DiffOptions::default()).unwrap();
+        repo.file_diffs(&change, DiffOptions::default()).unwrap();
 
         assert!(
             !marker.exists(),
@@ -532,10 +555,10 @@ mod staging {
         assert!(!status_of(&repo, "a1.txt").is_staged());
 
         let change = status_of(&repo, "a[1].txt");
-        let diff = repo
-            .diff(&change, git_core::DiffOptions::default())
+        let diffs = repo
+            .file_diffs(&change, git_core::DiffOptions::default())
             .unwrap();
-        assert_eq!(diff.additions(), 1);
+        assert_eq!(diffs.additions(), 1);
     }
 
     #[test]
@@ -658,7 +681,7 @@ mod untrusted_filters {
         let repo = Repo::open(dir.path()).unwrap();
         let change = repo.status().unwrap().files.into_iter().next().unwrap();
 
-        repo.diff(&change, DiffOptions::default()).unwrap();
+        repo.file_diffs(&change, DiffOptions::default()).unwrap();
         assert!(!marker.exists(), "diff ran the repository's clean filter");
     }
 
@@ -725,7 +748,7 @@ mod untrusted_filter_allowlist {
 
         let repo = Repo::open(dir.path()).unwrap();
         let change = repo.status().unwrap().files.into_iter().next().unwrap();
-        repo.diff(&change, git_core::DiffOptions::default())
+        repo.file_diffs(&change, git_core::DiffOptions::default())
             .unwrap();
         repo.stage(&["a.txt"]).unwrap();
 
@@ -794,7 +817,7 @@ mod unusual_filter_names {
             .into_iter()
             .find(|f| f.path == "a.txt")
             .unwrap();
-        repo.diff(&change, git_core::DiffOptions::default())
+        repo.file_diffs(&change, git_core::DiffOptions::default())
             .unwrap();
         repo.stage(&["a.txt"]).unwrap();
         marker.exists()
@@ -837,5 +860,232 @@ mod unusual_filter_names {
             marker.exists(),
             "an unprotected `git add` should run the filter"
         );
+    }
+}
+
+mod hunk_staging {
+    use git_core::{DiffOptions, FileChange, FileDiffs};
+
+    use super::*;
+
+    fn twenty_lines() -> String {
+        (1..=20).map(|n| format!("l{n}\n")).collect()
+    }
+
+    fn diffs(repo: &Repo, path: &str) -> (FileChange, FileDiffs) {
+        let change = repo
+            .status()
+            .unwrap()
+            .files
+            .into_iter()
+            .find(|f| f.path == path)
+            .unwrap_or_else(|| panic!("{path} missing from status"));
+        let diffs = repo.file_diffs(&change, DiffOptions::default()).unwrap();
+        (change, diffs)
+    }
+
+    fn git_out(dir: &Path, args: &[&str]) -> String {
+        let out = Command::new("git")
+            .arg("-C")
+            .arg(dir)
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "git {args:?} failed");
+        String::from_utf8(out.stdout).unwrap()
+    }
+
+    /// A repo with `a.txt` committed, then changed near the top and near the bottom so
+    /// the changes form two separate hunks.
+    fn two_hunk_repo() -> (TempDir, Repo) {
+        let dir = new_repo();
+        commit_file(dir.path(), "a.txt", &twenty_lines());
+        let edited = twenty_lines()
+            .replace("l2\n", "l2 changed\n")
+            .replace("l18\n", "l18 changed\n");
+        fs::write(dir.path().join("a.txt"), edited).unwrap();
+        let repo = Repo::open(dir.path()).unwrap();
+        (dir, repo)
+    }
+
+    fn hunk_text(hunk: &git_core::DiffHunk) -> String {
+        hunk.lines
+            .iter()
+            .map(|l| l.text.as_str())
+            .collect::<Vec<_>>()
+            .join("|")
+    }
+
+    #[test]
+    fn staging_the_first_hunk_leaves_the_second_unstaged() {
+        let (dir, repo) = two_hunk_repo();
+        let (_, before) = diffs(&repo, "a.txt");
+        assert_eq!(before.unstaged.hunks.len(), 2);
+
+        repo.stage_hunks("a.txt", &[&before.unstaged.hunks[0]])
+            .unwrap();
+
+        let (change, after) = diffs(&repo, "a.txt");
+        assert!(
+            change.is_staged() && !change.is_fully_staged(),
+            "partly staged"
+        );
+        assert_eq!(after.staged.hunks.len(), 1);
+        assert!(hunk_text(&after.staged.hunks[0]).contains("l2 changed"));
+        assert_eq!(after.unstaged.hunks.len(), 1);
+        assert!(hunk_text(&after.unstaged.hunks[0]).contains("l18 changed"));
+        // The working tree itself is untouched.
+        assert!(
+            fs::read_to_string(dir.path().join("a.txt"))
+                .unwrap()
+                .contains("l18 changed")
+        );
+    }
+
+    #[test]
+    fn staging_the_second_hunk_alone_works_even_when_the_first_added_lines() {
+        let dir = new_repo();
+        commit_file(dir.path(), "a.txt", &twenty_lines());
+        // Two inserted lines near the top shift every later line number in the working tree.
+        let edited = twenty_lines()
+            .replace("l2\n", "l2\nnew a\nnew b\n")
+            .replace("l18\n", "l18 changed\n");
+        fs::write(dir.path().join("a.txt"), edited).unwrap();
+        let repo = Repo::open(dir.path()).unwrap();
+        let (_, before) = diffs(&repo, "a.txt");
+
+        repo.stage_hunks("a.txt", &[&before.unstaged.hunks[1]])
+            .unwrap();
+
+        let (_, after) = diffs(&repo, "a.txt");
+        assert_eq!(after.staged.hunks.len(), 1);
+        assert!(hunk_text(&after.staged.hunks[0]).contains("l18 changed"));
+        assert!(!hunk_text(&after.staged.hunks[0]).contains("new a"));
+        assert_eq!(after.unstaged.hunks.len(), 1);
+    }
+
+    #[test]
+    fn unstaging_one_of_two_staged_hunks_keeps_the_other_staged() {
+        let (_dir, repo) = two_hunk_repo();
+        repo.stage(&["a.txt"]).unwrap();
+        let (_, before) = diffs(&repo, "a.txt");
+        assert_eq!(before.staged.hunks.len(), 2);
+
+        repo.unstage_hunks("a.txt", &[&before.staged.hunks[0]])
+            .unwrap();
+
+        let (_, after) = diffs(&repo, "a.txt");
+        assert_eq!(after.staged.hunks.len(), 1);
+        assert!(hunk_text(&after.staged.hunks[0]).contains("l18 changed"));
+        assert_eq!(after.unstaged.hunks.len(), 1);
+        assert!(hunk_text(&after.unstaged.hunks[0]).contains("l2 changed"));
+    }
+
+    #[test]
+    fn a_commit_after_staging_one_hunk_contains_only_that_hunk() {
+        let (dir, repo) = two_hunk_repo();
+        let (_, before) = diffs(&repo, "a.txt");
+        repo.stage_hunks("a.txt", &[&before.unstaged.hunks[0]])
+            .unwrap();
+
+        repo.commit("Only the top change", "").unwrap();
+
+        let shown = git_out(dir.path(), &["show", "HEAD", "--format=", "-U0"]);
+        assert!(shown.contains("+l2 changed"), "{shown}");
+        assert!(!shown.contains("l18 changed"), "{shown}");
+        // The other hunk is still waiting in the working tree.
+        let (_, after) = diffs(&repo, "a.txt");
+        assert_eq!(after.unstaged.hunks.len(), 1);
+        assert!(after.staged.hunks.is_empty());
+    }
+
+    #[test]
+    fn staging_every_hunk_one_by_one_stages_the_whole_file() {
+        let (_dir, repo) = two_hunk_repo();
+        for _ in 0..2 {
+            let (_, current) = diffs(&repo, "a.txt");
+            repo.stage_hunks("a.txt", &[&current.unstaged.hunks[0]])
+                .unwrap();
+        }
+        let (change, after) = diffs(&repo, "a.txt");
+        assert!(change.is_fully_staged());
+        assert!(after.unstaged.hunks.is_empty());
+    }
+
+    #[test]
+    fn a_hunk_touching_a_file_without_a_trailing_newline_stages_exactly() {
+        let dir = new_repo();
+        commit_file(dir.path(), "a.txt", "one\ntwo");
+        fs::write(dir.path().join("a.txt"), "one\ntwo changed").unwrap();
+        let repo = Repo::open(dir.path()).unwrap();
+        let (_, before) = diffs(&repo, "a.txt");
+
+        repo.stage_hunks("a.txt", &[&before.unstaged.hunks[0]])
+            .unwrap();
+
+        let (change, after) = diffs(&repo, "a.txt");
+        assert!(
+            change.is_fully_staged(),
+            "index should now equal the working tree"
+        );
+        assert!(after.unstaged.hunks.is_empty());
+        assert_eq!(git_out(dir.path(), &["show", ":a.txt"]), "one\ntwo changed");
+    }
+
+    #[test]
+    fn file_names_with_spaces_quotes_and_backslashes_work() {
+        for name in [
+            "my notes é.txt",
+            "q\"uote.txt",
+            "back\\slash.txt",
+            "tab\there.txt",
+        ] {
+            let dir = new_repo();
+            commit_file(dir.path(), name, &twenty_lines());
+            fs::write(
+                dir.path().join(name),
+                twenty_lines()
+                    .replace("l2\n", "l2 changed\n")
+                    .replace("l18\n", "l18 changed\n"),
+            )
+            .unwrap();
+            let repo = Repo::open(dir.path()).unwrap();
+            let (_, before) = diffs(&repo, name);
+
+            repo.stage_hunks(name, &[&before.unstaged.hunks[0]])
+                .unwrap_or_else(|e| panic!("{name:?}: {e}"));
+
+            let (_, after) = diffs(&repo, name);
+            assert_eq!(after.staged.hunks.len(), 1, "{name:?}");
+            assert_eq!(after.unstaged.hunks.len(), 1, "{name:?}");
+        }
+    }
+
+    #[test]
+    fn a_stale_hunk_is_refused_and_the_index_is_left_alone() {
+        let dir = new_repo();
+        commit_file(dir.path(), "a.txt", &twenty_lines());
+        fs::write(
+            dir.path().join("a.txt"),
+            twenty_lines().replace("l2\n", "l2 changed\n"),
+        )
+        .unwrap();
+        let repo = Repo::open(dir.path()).unwrap();
+        let (_, before) = diffs(&repo, "a.txt");
+
+        // The file changes under us after the diff was read: line 2 is staged differently.
+        fs::write(
+            dir.path().join("a.txt"),
+            twenty_lines().replace("l2\n", "l2 DIFFERENT\n"),
+        )
+        .unwrap();
+        git(dir.path(), &["add", "a.txt"]);
+        let index_before = git_out(dir.path(), &["show", ":a.txt"]);
+
+        let error = repo
+            .stage_hunks("a.txt", &[&before.unstaged.hunks[0]])
+            .unwrap_err();
+        assert!(matches!(error, Error::Git { .. }), "{error:?}");
+        assert_eq!(git_out(dir.path(), &["show", ":a.txt"]), index_before);
     }
 }
