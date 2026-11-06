@@ -12,6 +12,12 @@ pub enum Error {
     DiffTooLarge { limit_mib: usize },
     #[error("\"{0}\" is not a valid branch name")]
     InvalidBranchName(String),
+    #[error("cancelled")]
+    Cancelled,
+    #[error("this repository has no remote to publish to")]
+    NoRemote,
+    #[error("this repository has several remotes and none is called origin ({}); set an upstream from a terminal", .0.join(", "))]
+    AmbiguousRemote(Vec<String>),
     #[error("unexpected git output: {0}")]
     Parse(String),
 }

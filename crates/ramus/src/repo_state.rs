@@ -1,9 +1,43 @@
-use std::path::PathBuf;
+use std::{
+    path::PathBuf,
+    sync::{Arc, Mutex, mpsc},
+    time::Duration,
+};
 
 use crate::settings::{self, Settings};
 
-use git_core::{Branch, BranchList, DiffHunk, Repo, RepoStatus};
+use git_core::{Branch, BranchList, CancelToken, DiffHunk, Progress, Repo, RepoStatus};
 use gpui::{Context, EventEmitter, SharedString, Task};
+
+/// A way of exchanging commits with the remote.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SyncKind {
+    Fetch,
+    Pull,
+    Push,
+    /// Push a branch for the first time and track it.
+    Publish,
+}
+
+impl SyncKind {
+    /// "Pushing", for a button that shows what is happening.
+    pub fn progressive(self) -> &'static str {
+        match self {
+            Self::Fetch => "Fetching",
+            Self::Pull => "Pulling",
+            Self::Push => "Pushing",
+            Self::Publish => "Publishing",
+        }
+    }
+}
+
+/// A fetch, pull or push that is running.
+pub struct Operation {
+    pub kind: SyncKind,
+    pub progress: Option<Progress>,
+    pub cancelling: bool,
+    cancel: CancelToken,
+}
 
 /// Things views react to that aren't just "state changed".
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -34,6 +68,7 @@ pub struct RepoState {
     /// Branches for the branch switcher, loaded when it opens.
     branches: Option<BranchList>,
     branches_task: Option<Task<()>>,
+    operation: Option<Operation>,
 }
 
 impl EventEmitter<RepoEvent> for RepoState {}
@@ -67,6 +102,7 @@ impl RepoState {
             trusted: false,
             branches: None,
             branches_task: None,
+            operation: None,
         }
     }
 
@@ -88,6 +124,96 @@ impl RepoState {
             self.error = Some(format!("Couldn't save the trust setting: {error}").into());
         }
         cx.notify();
+    }
+
+    pub fn operation(&self) -> Option<&Operation> {
+        self.operation.as_ref()
+    }
+
+    /// Runs a fetch, pull or push in the background, reporting progress as it goes.
+    /// Refused in an untrusted repository (hooks and credential helpers would run) and
+    /// while another write is running.
+    pub fn sync(&mut self, kind: SyncKind, cx: &mut Context<Self>) {
+        let Some(repo) = self.repo.clone() else {
+            return;
+        };
+        if self.action.is_some() || !self.require_trust("fetch, push or pull", cx) {
+            return;
+        }
+
+        let cancel = CancelToken::new();
+        let (progress_sender, progress_receiver) = mpsc::channel();
+        let finished: Arc<Mutex<Option<Result<(), git_core::Error>>>> = Arc::default();
+
+        let work = {
+            let (cancel, finished) = (cancel.clone(), finished.clone());
+            cx.background_executor().spawn(async move {
+                let mut report = |progress| {
+                    let _ = progress_sender.send(progress);
+                };
+                let result = match kind {
+                    SyncKind::Fetch => repo.fetch(&cancel, &mut report),
+                    SyncKind::Pull => repo.pull(&cancel, &mut report),
+                    SyncKind::Push => repo.push(&cancel, &mut report),
+                    SyncKind::Publish => repo.publish(&cancel, &mut report),
+                };
+                *finished.lock().expect("result slot") = Some(result);
+            })
+        };
+
+        self.operation = Some(Operation {
+            kind,
+            progress: None,
+            cancelling: false,
+            cancel,
+        });
+        self.action = Some(cx.spawn(async move |this, cx| {
+            // Progress arrives from another thread, so look for it a few times a second.
+            let result = loop {
+                cx.background_executor()
+                    .timer(Duration::from_millis(100))
+                    .await;
+                let latest = progress_receiver.try_iter().last();
+                let done = finished.lock().expect("result slot").take();
+                this.update(cx, |this, cx| {
+                    if let (Some(progress), Some(operation)) = (latest, this.operation.as_mut()) {
+                        operation.progress = Some(progress);
+                        cx.notify();
+                    }
+                })
+                .ok();
+                if let Some(result) = done {
+                    break result;
+                }
+            };
+            work.await;
+
+            this.update(cx, |this, cx| {
+                this.action = None;
+                this.operation = None;
+                match result {
+                    Ok(()) => this.error = None,
+                    // The user asked for this, so it isn't an error to report.
+                    Err(git_core::Error::Cancelled) => {}
+                    Err(error) => this.error = Some(error.to_string().into()),
+                }
+                // New remote branches and counts: the lists and status are stale.
+                this.branches = None;
+                this.refresh(cx);
+                cx.notify();
+            })
+            .ok();
+        }));
+        cx.notify();
+    }
+
+    /// Asks the running operation to stop. It ends as soon as git and what it started exit.
+    pub fn cancel_sync(&mut self, cx: &mut Context<Self>) {
+        if let Some(operation) = self.operation.as_mut() {
+            operation.cancel.cancel();
+            operation.cancelling = true;
+            cx.notify();
+        }
     }
 
     pub fn branches(&self) -> Option<&BranchList> {
@@ -688,5 +814,174 @@ mod tests {
         state.read_with(cx, |state, _| {
             assert!(state.error().unwrap().contains("not a valid branch name"));
         });
+    }
+
+    /// Lets a running sync finish: the test clock doesn't move by itself, so step it
+    /// past the progress timer until the operation is over.
+    fn settle(cx: &mut TestAppContext, state: &gpui::Entity<RepoState>) {
+        for _ in 0..100 {
+            cx.executor().advance_clock(Duration::from_millis(150));
+            cx.executor().run_until_parked();
+            if !state.read_with(cx, |state, _| state.is_busy()) {
+                return;
+            }
+        }
+        panic!("the operation never finished");
+    }
+
+    /// A bare remote with two clones of its `main`; returns (remote, a, b).
+    fn remote_and_two_clones() -> (TempDir, TempDir, TempDir) {
+        let remote = TempDir::new().unwrap();
+        git(remote.path(), &["init", "-q", "--bare", "-b", "main"]);
+        let seed = repo_without_hooks();
+        git(seed.path(), &["add", "-A"]);
+        git(seed.path(), &["commit", "-q", "-m", "seed"]);
+        git(
+            seed.path(),
+            &["remote", "add", "origin", remote.path().to_str().unwrap()],
+        );
+        git(seed.path(), &["push", "-q", "origin", "main"]);
+        let clone = |remote: &Path| {
+            let dir = TempDir::new().unwrap();
+            git(dir.path(), &["clone", "-q", remote.to_str().unwrap(), "."]);
+            dir
+        };
+        let (a, b) = (clone(remote.path()), clone(remote.path()));
+        (remote, a, b)
+    }
+
+    fn open_trusted(cx: &mut TestAppContext, dir: &Path) -> gpui::Entity<RepoState> {
+        let state = cx.new(|_| RepoState::default());
+        state.update(cx, |state, cx| state.open(dir.to_owned(), cx));
+        cx.executor().run_until_parked();
+        state.update(cx, |state, cx| state.trust(cx));
+        state
+    }
+
+    #[gpui::test]
+    async fn fetching_updates_how_far_behind_the_branch_is(cx: &mut TestAppContext) {
+        let (_remote, a, b) = remote_and_two_clones();
+        fs::write(b.path().join("news.txt"), "n\n").unwrap();
+        git(b.path(), &["add", "."]);
+        git(b.path(), &["commit", "-q", "-m", "news"]);
+        git(b.path(), &["push", "-q", "origin", "main"]);
+        let state = open_trusted(cx, a.path());
+        assert_eq!(
+            state.read_with(cx, |s, _| s.status().unwrap().branch.behind),
+            0
+        );
+
+        state.update(cx, |state, cx| state.sync(SyncKind::Fetch, cx));
+        assert!(state.read_with(cx, |state, _| state.operation().is_some()));
+        settle(cx, &state);
+
+        state.read_with(cx, |state, _| {
+            assert_eq!(state.status().unwrap().branch.behind, 1);
+            assert!(state.operation().is_none());
+            assert!(state.error().is_none());
+        });
+    }
+
+    #[gpui::test]
+    async fn pushing_sends_the_commit_and_clears_the_ahead_count(cx: &mut TestAppContext) {
+        let (remote, a, _b) = remote_and_two_clones();
+        fs::write(a.path().join("mine.txt"), "m\n").unwrap();
+        git(a.path(), &["add", "."]);
+        git(a.path(), &["commit", "-q", "-m", "mine"]);
+        let state = open_trusted(cx, a.path());
+        assert_eq!(
+            state.read_with(cx, |s, _| s.status().unwrap().branch.ahead),
+            1
+        );
+
+        state.update(cx, |state, cx| state.sync(SyncKind::Push, cx));
+        settle(cx, &state);
+
+        assert_eq!(
+            state.read_with(cx, |s, _| s.status().unwrap().branch.ahead),
+            0
+        );
+        // The remote now has everything the clone has.
+        assert_eq!(commit_count(remote.path()), commit_count(a.path()));
+    }
+
+    #[gpui::test]
+    async fn a_pull_that_cannot_fast_forward_reports_why_and_changes_nothing(
+        cx: &mut TestAppContext,
+    ) {
+        let (_remote, a, b) = remote_and_two_clones();
+        for (dir, name) in [(b.path(), "theirs.txt"), (a.path(), "ours.txt")] {
+            fs::write(dir.join(name), "x\n").unwrap();
+            git(dir, &["add", "."]);
+            git(dir, &["commit", "-q", "-m", name]);
+        }
+        git(b.path(), &["push", "-q", "origin", "main"]);
+        let state = open_trusted(cx, a.path());
+
+        state.update(cx, |state, cx| state.sync(SyncKind::Pull, cx));
+        settle(cx, &state);
+
+        state.read_with(cx, |state, _| {
+            assert!(
+                state
+                    .error()
+                    .unwrap()
+                    .to_lowercase()
+                    .contains("fast-forward")
+            );
+            assert_eq!(
+                state.status().unwrap().branch.ahead,
+                1,
+                "our commit is still there"
+            );
+        });
+        assert!(!a.path().join("theirs.txt").exists());
+    }
+
+    #[gpui::test]
+    async fn an_untrusted_repository_will_not_talk_to_the_remote(cx: &mut TestAppContext) {
+        let (_remote, a, _b) = remote_and_two_clones();
+        let state = cx.new(|_| RepoState::default());
+        state.update(cx, |state, cx| state.open(a.path().to_owned(), cx));
+        cx.executor().run_until_parked();
+
+        state.update(cx, |state, cx| state.sync(SyncKind::Fetch, cx));
+
+        state.read_with(cx, |state, _| {
+            assert!(state.operation().is_none(), "nothing should have started");
+            assert!(state.error().unwrap().contains("Trust this repository"));
+        });
+    }
+
+    #[gpui::test]
+    async fn a_second_sync_while_one_runs_is_ignored(cx: &mut TestAppContext) {
+        let (_remote, a, _b) = remote_and_two_clones();
+        let state = open_trusted(cx, a.path());
+
+        state.update(cx, |state, cx| {
+            state.sync(SyncKind::Fetch, cx);
+            state.sync(SyncKind::Pull, cx);
+            assert_eq!(state.operation().unwrap().kind, SyncKind::Fetch);
+        });
+        settle(cx, &state);
+    }
+
+    #[gpui::test]
+    async fn publishing_a_new_branch_makes_the_remote_one_its_upstream(cx: &mut TestAppContext) {
+        let (_remote, a, _b) = remote_and_two_clones();
+        git(a.path(), &["switch", "-q", "-c", "feat/new"]);
+        let state = open_trusted(cx, a.path());
+        assert_eq!(
+            state.read_with(cx, |s, _| s.status().unwrap().branch.upstream.clone()),
+            None
+        );
+
+        state.update(cx, |state, cx| state.sync(SyncKind::Publish, cx));
+        settle(cx, &state);
+
+        assert_eq!(
+            state.read_with(cx, |s, _| s.status().unwrap().branch.upstream.clone()),
+            Some("origin/feat/new".to_owned())
+        );
     }
 }

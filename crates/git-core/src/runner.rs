@@ -193,13 +193,8 @@ fn apply_overrides(command: &mut Command, overrides: &[ConfigOverride]) {
     }
 }
 
-fn exec(
-    dir: &Path,
-    overrides: &[ConfigOverride],
-    args: &[&str],
-    input: Option<&[u8]>,
-    success_codes: &[i32],
-) -> Result<Vec<u8>, Error> {
+/// A `git` command in `dir` with every defence applied (see [`run_git`]).
+fn command(dir: &Path, overrides: &[ConfigOverride], args: &[&str]) -> Command {
     let mut command = Command::new("git");
     command
         .arg("-C")
@@ -216,7 +211,17 @@ fn exec(
         // A file named `a[1].txt` must mean that file, not a glob.
         .env("GIT_LITERAL_PATHSPECS", "1");
     apply_overrides(&mut command, overrides);
-    let mut child = command
+    command
+}
+
+fn exec(
+    dir: &Path,
+    overrides: &[ConfigOverride],
+    args: &[&str],
+    input: Option<&[u8]>,
+    success_codes: &[i32],
+) -> Result<Vec<u8>, Error> {
+    let mut child = command(dir, overrides, args)
         .stdin(if input.is_some() {
             Stdio::piped()
         } else {
@@ -244,6 +249,13 @@ fn exec(
             stderr: String::from_utf8_lossy(&output.stderr).trim().to_owned(),
         })
     }
+}
+
+/// The defences, as a ready-to-spawn command, for callers that manage the process
+/// themselves (the cancellable network runner).
+pub(crate) fn defended_command(dir: &Path, args: &[&str]) -> Result<Command, Error> {
+    let overrides = untrusted_filter_overrides(dir)?;
+    Ok(command(dir, &overrides, args))
 }
 
 #[cfg(test)]

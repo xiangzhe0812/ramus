@@ -1,4 +1,4 @@
-use git_core::Head;
+use git_core::{Head, RepoStatus};
 use gpui::{
     Context, Entity, InteractiveElement, IntoElement, ParentElement, Render,
     StatefulInteractiveElement, Styled, Subscription, Window, div, px,
@@ -6,7 +6,7 @@ use gpui::{
 
 use crate::{
     actions::{OpenRepository, ToggleBranches},
-    repo_state::RepoState,
+    repo_state::{RepoState, SyncKind},
     theme::{MONO_FONT, Theme},
 };
 
@@ -23,6 +23,47 @@ impl TitleBar {
             _observe,
         }
     }
+}
+
+/// What the main button does for this branch, its label, and a count to badge it with.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SyncAction {
+    pub kind: SyncKind,
+    pub label: String,
+    pub count: Option<u32>,
+}
+
+/// The one thing most worth doing next: publish a branch that has no upstream, pull what
+/// is waiting, push what is ready, and otherwise look for news.
+pub fn primary_sync(status: &RepoStatus) -> Option<SyncAction> {
+    let branch = &status.branch;
+    // Nothing to exchange until there is a first commit.
+    branch.oid.as_ref()?;
+    let remote = branch
+        .upstream
+        .as_deref()
+        .and_then(|upstream| upstream.split('/').next())
+        .unwrap_or("origin");
+    let action = |kind, verb: &str, count| SyncAction {
+        kind,
+        label: format!("{verb} {remote}"),
+        count,
+    };
+    Some(
+        if branch.upstream.is_none() && matches!(branch.head, Head::Branch(_)) {
+            SyncAction {
+                kind: SyncKind::Publish,
+                label: "Publish branch".into(),
+                count: None,
+            }
+        } else if branch.behind > 0 {
+            action(SyncKind::Pull, "Pull", Some(branch.behind))
+        } else if branch.ahead > 0 {
+            action(SyncKind::Push, "Push", Some(branch.ahead))
+        } else {
+            action(SyncKind::Fetch, "Fetch", None)
+        },
+    )
 }
 
 fn pill(theme: &Theme) -> gpui::Div {
@@ -56,9 +97,20 @@ impl Render for TitleBar {
             Head::Detached(sha) => format!("detached at {sha}"),
         });
         let detached = branch.is_some_and(|branch| matches!(branch.head, Head::Detached(_)));
-        let push_label = branch.and_then(|branch| {
-            let remote = branch.upstream.as_deref()?.split('/').next()?;
-            (branch.ahead > 0).then(|| (format!("Push {remote}"), branch.ahead))
+        let running = state.operation().is_some();
+        let sync = state.status().and_then(primary_sync);
+        let operation = state.operation().map(|operation| {
+            let verb = if operation.cancelling {
+                "Cancelling".to_owned()
+            } else {
+                operation.kind.progressive().to_owned()
+            };
+            match &operation.progress {
+                Some(progress) if !operation.cancelling => {
+                    format!("{verb}… {}%", progress.percent)
+                }
+                _ => format!("{verb}…"),
+            }
         });
 
         div()
@@ -100,8 +152,40 @@ impl Render for TitleBar {
                 }
                 .child(div().flex_1().child(label))
             }))
-            .children(push_label.map(|(label, ahead)| {
+            .children(operation.map(|label| {
+                // While something runs, the button shows it, and clicking it cancels.
                 div()
+                    .id("sync-progress")
+                    .h(px(40.))
+                    .min_w(px(200.))
+                    .px(px(16.))
+                    .flex()
+                    .items_center()
+                    .gap(px(10.))
+                    .rounded(px(20.))
+                    .border_1()
+                    .border_color(theme.border)
+                    .bg(theme.pill_active)
+                    .text_color(theme.text)
+                    .font_weight(gpui::FontWeight::SEMIBOLD)
+                    .cursor_pointer()
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.repo_state
+                            .update(cx, |state, cx| state.cancel_sync(cx))
+                    }))
+                    .child(div().flex_1().child(label))
+                    .child(
+                        div()
+                            .text_size(px(11.))
+                            .font_weight(gpui::FontWeight::NORMAL)
+                            .text_color(theme.text_muted)
+                            .child("Cancel"),
+                    )
+            }))
+            .children(sync.filter(|_| !running).map(|action| {
+                let kind = action.kind;
+                div()
+                    .id("sync")
                     .h(px(40.))
                     .px(px(16.))
                     .flex()
@@ -111,15 +195,104 @@ impl Render for TitleBar {
                     .bg(theme.accent)
                     .text_color(theme.accent_text)
                     .font_weight(gpui::FontWeight::SEMIBOLD)
-                    .child(label)
-                    .child(
+                    .cursor_pointer()
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.repo_state.update(cx, |state, cx| state.sync(kind, cx))
+                    }))
+                    .child(action.label)
+                    .children(action.count.map(|count| {
                         div()
                             .px(px(7.))
                             .rounded(px(10.))
                             .text_size(px(11.))
                             .bg(gpui::rgba(0xffffff38))
-                            .child(ahead.to_string()),
-                    )
+                            .child(count.to_string())
+                    }))
             }))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use git_core::BranchStatus;
+
+    use super::*;
+
+    fn status(
+        upstream: Option<&str>,
+        ahead: u32,
+        behind: u32,
+        has_commits: bool,
+        head: Head,
+    ) -> RepoStatus {
+        RepoStatus {
+            branch: BranchStatus {
+                head,
+                oid: has_commits.then(|| "a".repeat(40)),
+                upstream: upstream.map(str::to_owned),
+                ahead,
+                behind,
+            },
+            files: Vec::new(),
+        }
+    }
+
+    fn main_branch() -> Head {
+        Head::Branch("main".into())
+    }
+
+    fn action(status: &RepoStatus) -> (SyncKind, String, Option<u32>) {
+        let action = primary_sync(status).expect("an action");
+        (action.kind, action.label, action.count)
+    }
+
+    #[test]
+    fn a_branch_with_no_upstream_is_published() {
+        let s = status(None, 0, 0, true, main_branch());
+        assert_eq!(
+            action(&s),
+            (SyncKind::Publish, "Publish branch".into(), None)
+        );
+    }
+
+    #[test]
+    fn commits_waiting_to_go_out_make_the_button_push() {
+        let s = status(Some("origin/main"), 2, 0, true, main_branch());
+        assert_eq!(action(&s), (SyncKind::Push, "Push origin".into(), Some(2)));
+    }
+
+    #[test]
+    fn commits_waiting_to_come_in_make_the_button_pull() {
+        let s = status(Some("upstream/main"), 0, 3, true, main_branch());
+        assert_eq!(
+            action(&s),
+            (SyncKind::Pull, "Pull upstream".into(), Some(3))
+        );
+    }
+
+    #[test]
+    fn a_diverged_branch_offers_to_pull_first() {
+        let s = status(Some("origin/main"), 1, 1, true, main_branch());
+        assert_eq!(action(&s).0, SyncKind::Pull);
+    }
+
+    #[test]
+    fn an_up_to_date_branch_offers_a_fetch() {
+        let s = status(Some("origin/main"), 0, 0, true, main_branch());
+        assert_eq!(action(&s), (SyncKind::Fetch, "Fetch origin".into(), None));
+    }
+
+    #[test]
+    fn a_branch_with_no_commits_has_nothing_to_exchange() {
+        assert_eq!(
+            primary_sync(&status(None, 0, 0, false, main_branch())),
+            None
+        );
+    }
+
+    #[test]
+    fn a_detached_head_can_fetch_but_not_publish() {
+        let s = status(None, 0, 0, true, Head::Detached("abc1234".into()));
+        assert_eq!(action(&s).0, SyncKind::Fetch);
     }
 }

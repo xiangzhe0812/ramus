@@ -1480,3 +1480,294 @@ mod submodule_control {
         );
     }
 }
+
+mod network {
+    use std::{
+        os::unix::fs::PermissionsExt,
+        time::{Duration, Instant},
+    };
+
+    use git_core::{CancelToken, Progress};
+
+    use super::*;
+
+    fn clone_of(remote: &Path) -> TempDir {
+        let dir = TempDir::new().unwrap();
+        let status = Command::new("git")
+            .args(["clone", "-q"])
+            .arg(remote)
+            .arg(dir.path())
+            .status()
+            .unwrap();
+        assert!(status.success());
+        git(dir.path(), &["checkout", "-q", "-B", "main", "origin/main"]);
+        dir
+    }
+
+    /// A bare remote with one commit on `main`, plus two clones of it, `a` and `b`.
+    fn remote_with_two_clones() -> (TempDir, TempDir, TempDir) {
+        let remote = TempDir::new().unwrap();
+        git(remote.path(), &["init", "-q", "--bare", "-b", "main"]);
+        let seed = new_repo();
+        commit_file(seed.path(), "seed.txt", "seed\n");
+        git(
+            seed.path(),
+            &["remote", "add", "origin", remote.path().to_str().unwrap()],
+        );
+        git(seed.path(), &["push", "-q", "origin", "main"]);
+        let a = clone_of(remote.path());
+        let b = clone_of(remote.path());
+        (remote, a, b)
+    }
+
+    fn no_progress(_: Progress) {}
+
+    fn behind_ahead(repo: &Repo) -> (u32, u32) {
+        let branch = repo.status().unwrap().branch;
+        (branch.behind, branch.ahead)
+    }
+
+    #[test]
+    fn fetch_brings_in_new_commits_without_touching_the_working_tree() {
+        let (_remote, a, b) = remote_with_two_clones();
+        commit_file(b.path(), "from-b.txt", "b\n");
+        git(b.path(), &["push", "-q", "origin", "main"]);
+        let repo = Repo::open(a.path()).unwrap();
+        assert_eq!(behind_ahead(&repo), (0, 0));
+
+        repo.fetch(&CancelToken::new(), &mut no_progress).unwrap();
+
+        assert_eq!(behind_ahead(&repo), (1, 0));
+        assert!(
+            !a.path().join("from-b.txt").exists(),
+            "fetch must not change files"
+        );
+    }
+
+    #[test]
+    fn pull_fast_forwards_to_the_upstream() {
+        let (_remote, a, b) = remote_with_two_clones();
+        commit_file(b.path(), "from-b.txt", "b\n");
+        git(b.path(), &["push", "-q", "origin", "main"]);
+        let repo = Repo::open(a.path()).unwrap();
+
+        repo.pull(&CancelToken::new(), &mut no_progress).unwrap();
+
+        assert!(a.path().join("from-b.txt").exists());
+        assert_eq!(behind_ahead(&repo), (0, 0));
+    }
+
+    #[test]
+    fn pull_refuses_diverged_branches_and_changes_nothing() {
+        let (_remote, a, b) = remote_with_two_clones();
+        commit_file(b.path(), "from-b.txt", "b\n");
+        git(b.path(), &["push", "-q", "origin", "main"]);
+        commit_file(a.path(), "from-a.txt", "a\n");
+        let repo = Repo::open(a.path()).unwrap();
+        let head_before = git_head(a.path());
+
+        let error = repo
+            .pull(&CancelToken::new(), &mut no_progress)
+            .unwrap_err();
+
+        assert!(
+            error.to_string().to_lowercase().contains("fast-forward"),
+            "{error}"
+        );
+        assert_eq!(git_head(a.path()), head_before);
+        assert!(!a.path().join("from-b.txt").exists());
+    }
+
+    fn git_head(dir: &Path) -> String {
+        let out = Command::new("git")
+            .arg("-C")
+            .arg(dir)
+            .args(["rev-parse", "HEAD"])
+            .output()
+            .unwrap();
+        String::from_utf8(out.stdout).unwrap().trim().to_owned()
+    }
+
+    #[test]
+    fn push_sends_local_commits() {
+        let (remote, a, _b) = remote_with_two_clones();
+        commit_file(a.path(), "new.txt", "n\n");
+        let repo = Repo::open(a.path()).unwrap();
+        assert_eq!(behind_ahead(&repo), (0, 1));
+
+        repo.push(&CancelToken::new(), &mut no_progress).unwrap();
+
+        assert_eq!(behind_ahead(&repo), (0, 0));
+        assert_eq!(git_head(remote.path()), git_head(a.path()));
+    }
+
+    #[test]
+    fn a_rejected_push_reports_gits_explanation() {
+        let (_remote, a, b) = remote_with_two_clones();
+        commit_file(b.path(), "from-b.txt", "b\n");
+        git(b.path(), &["push", "-q", "origin", "main"]);
+        commit_file(a.path(), "from-a.txt", "a\n");
+        let repo = Repo::open(a.path()).unwrap();
+
+        let error = repo
+            .push(&CancelToken::new(), &mut no_progress)
+            .unwrap_err()
+            .to_string();
+
+        assert!(
+            error.contains("rejected") || error.contains("failed to push"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn publishing_a_new_branch_sets_its_upstream() {
+        let (remote, a, _b) = remote_with_two_clones();
+        git(a.path(), &["switch", "-q", "-c", "feat/new"]);
+        commit_file(a.path(), "feat.txt", "f\n");
+        let repo = Repo::open(a.path()).unwrap();
+        assert_eq!(repo.status().unwrap().branch.upstream, None);
+
+        repo.publish(&CancelToken::new(), &mut no_progress).unwrap();
+
+        let branch = repo.status().unwrap().branch;
+        assert_eq!(branch.upstream.as_deref(), Some("origin/feat/new"));
+        assert_eq!((branch.ahead, branch.behind), (0, 0));
+        let on_remote = Command::new("git")
+            .arg("-C")
+            .arg(remote.path())
+            .args(["branch", "--list", "feat/new"])
+            .output()
+            .unwrap();
+        assert!(String::from_utf8_lossy(&on_remote.stdout).contains("feat/new"));
+    }
+
+    #[test]
+    fn publishing_without_any_remote_says_so() {
+        let dir = new_repo();
+        commit_file(dir.path(), "a.txt", "a\n");
+        let repo = Repo::open(dir.path()).unwrap();
+        assert!(matches!(
+            repo.publish(&CancelToken::new(), &mut no_progress),
+            Err(Error::NoRemote)
+        ));
+    }
+
+    #[test]
+    fn publishing_with_several_remotes_and_no_origin_asks_the_user_to_choose() {
+        let dir = new_repo();
+        commit_file(dir.path(), "a.txt", "a\n");
+        git(dir.path(), &["remote", "add", "one", "/nowhere/one"]);
+        git(dir.path(), &["remote", "add", "two", "/nowhere/two"]);
+        let repo = Repo::open(dir.path()).unwrap();
+        assert!(matches!(
+            repo.publish(&CancelToken::new(), &mut no_progress),
+            Err(Error::AmbiguousRemote(_))
+        ));
+    }
+
+    #[test]
+    fn publishing_uses_the_only_remote_whatever_it_is_called() {
+        let remote = TempDir::new().unwrap();
+        git(remote.path(), &["init", "-q", "--bare", "-b", "main"]);
+        let dir = new_repo();
+        commit_file(dir.path(), "a.txt", "a\n");
+        git(
+            dir.path(),
+            &["remote", "add", "upstream", remote.path().to_str().unwrap()],
+        );
+        let repo = Repo::open(dir.path()).unwrap();
+
+        repo.publish(&CancelToken::new(), &mut no_progress).unwrap();
+        assert_eq!(
+            repo.status().unwrap().branch.upstream.as_deref(),
+            Some("upstream/main")
+        );
+    }
+
+    #[test]
+    fn pushing_with_nothing_configured_fails_with_gits_message_instead_of_hanging() {
+        let dir = new_repo();
+        commit_file(dir.path(), "a.txt", "a\n");
+        let repo = Repo::open(dir.path()).unwrap();
+        let started = Instant::now();
+
+        let error = repo
+            .push(&CancelToken::new(), &mut no_progress)
+            .unwrap_err();
+
+        assert!(matches!(error, Error::Git { .. }), "{error:?}");
+        assert!(started.elapsed() < Duration::from_secs(10));
+    }
+
+    /// A pre-push hook that records its pid, then sleeps: a push that is stuck.
+    fn stuck_push() -> (TempDir, TempDir, std::path::PathBuf) {
+        let (_remote, a, _b) = remote_with_two_clones();
+        let pid_file = a.path().join("hook.pid");
+        let hook = a.path().join(".git/hooks/pre-push");
+        fs::write(
+            &hook,
+            format!("#!/bin/sh\necho $$ > '{}'\nsleep 60\n", pid_file.display()),
+        )
+        .unwrap();
+        fs::set_permissions(&hook, fs::Permissions::from_mode(0o755)).unwrap();
+        commit_file(a.path(), "new.txt", "n\n");
+        (_remote, a, pid_file)
+    }
+
+    fn process_is_alive(pid: i32) -> bool {
+        Command::new("kill")
+            .args(["-0", &pid.to_string()])
+            .status()
+            .unwrap()
+            .success()
+    }
+
+    #[test]
+    fn cancelling_stops_a_stuck_push_and_kills_the_processes_it_started() {
+        let (_remote, a, pid_file) = stuck_push();
+        let repo = Repo::open(a.path()).unwrap();
+        let cancel = CancelToken::new();
+        let canceller = cancel.clone();
+        let started = Instant::now();
+        std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(600));
+            canceller.cancel();
+        });
+
+        let result = repo.push(&cancel, &mut no_progress);
+
+        assert!(matches!(result, Err(Error::Cancelled)), "{result:?}");
+        assert!(
+            started.elapsed() < Duration::from_secs(8),
+            "cancel must not wait for the hook"
+        );
+        let pid: i32 = fs::read_to_string(&pid_file)
+            .expect("the hook should have started")
+            .trim()
+            .parse()
+            .unwrap();
+        // Give the signal a moment to land, then the hook's shell must be gone.
+        let deadline = Instant::now() + Duration::from_secs(3);
+        while process_is_alive(pid) && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        assert!(
+            !process_is_alive(pid),
+            "the hook outlived the cancelled push"
+        );
+    }
+
+    #[test]
+    fn a_token_that_is_already_cancelled_stops_the_operation_at_once() {
+        let (_remote, a, _pid_file) = stuck_push();
+        let repo = Repo::open(a.path()).unwrap();
+        let cancel = CancelToken::new();
+        cancel.cancel();
+
+        assert!(matches!(
+            repo.push(&cancel, &mut no_progress),
+            Err(Error::Cancelled)
+        ));
+    }
+}
