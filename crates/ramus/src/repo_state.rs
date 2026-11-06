@@ -1,5 +1,7 @@
 use std::path::PathBuf;
 
+use crate::settings::{self, Settings};
+
 use git_core::{DiffHunk, Repo, RepoStatus};
 use gpui::{Context, EventEmitter, SharedString, Task};
 
@@ -13,7 +15,6 @@ pub enum RepoEvent {
 /// The open repository and its latest status, shared by every view.
 ///
 /// Git runs on a background executor; views only ever read the last result.
-#[derive(Default)]
 pub struct RepoState {
     repo: Option<Repo>,
     status: Option<RepoStatus>,
@@ -24,11 +25,66 @@ pub struct RepoState {
     /// A write (stage, unstage, commit) is running. Writes are never cancelled
     /// by a refresh, and only one runs at a time.
     action: Option<Task<()>>,
+    settings: Settings,
+    /// Where `settings` is saved, or `None` to keep them in memory only (tests).
+    settings_path: Option<PathBuf>,
+    /// The open repository may run programs its own config names (hooks, credential
+    /// helpers). Until it is trusted, commit and network operations are refused.
+    trusted: bool,
 }
 
 impl EventEmitter<RepoEvent> for RepoState {}
 
+impl Default for RepoState {
+    /// Settings are kept in memory only. Use [`RepoState::persistent`] in the app.
+    fn default() -> Self {
+        Self::with_settings(Settings::default(), None)
+    }
+}
+
 impl RepoState {
+    /// State whose settings are loaded from, and saved to, the user's settings file.
+    pub fn persistent() -> Self {
+        match settings::default_path() {
+            Some(path) => Self::with_settings(Settings::load(&path), Some(path)),
+            None => Self::default(),
+        }
+    }
+
+    pub fn with_settings(settings: Settings, settings_path: Option<PathBuf>) -> Self {
+        Self {
+            repo: None,
+            status: None,
+            error: None,
+            generation: 0,
+            load: None,
+            action: None,
+            settings,
+            settings_path,
+            trusted: false,
+        }
+    }
+
+    pub fn is_trusted(&self) -> bool {
+        self.trusted
+    }
+
+    /// Lets the open repository run its own configured programs, and remembers that.
+    pub fn trust(&mut self, cx: &mut Context<Self>) {
+        let Some(repo) = &self.repo else {
+            return;
+        };
+        self.settings.trust(repo.root());
+        self.trusted = true;
+        if let Some(path) = &self.settings_path
+            && let Err(error) = self.settings.save(path)
+        {
+            // Trusted for this session; the choice just won't be remembered.
+            self.error = Some(format!("Couldn't save the trust setting: {error}").into());
+        }
+        cx.notify();
+    }
+
     pub fn repo(&self) -> Option<&Repo> {
         self.repo.as_ref()
     }
@@ -94,6 +150,7 @@ impl RepoState {
                 }
                 match result {
                     Ok((repo, status)) => {
+                        this.trusted = this.settings.is_trusted(repo.root());
                         this.repo = Some(repo);
                         this.status = Some(status);
                         if clear_error {
@@ -139,6 +196,12 @@ impl RepoState {
     }
 
     pub fn commit(&mut self, summary: String, description: String, cx: &mut Context<Self>) {
+        // Committing runs the repository's hooks, which are programs it chose.
+        if !self.trusted {
+            self.error = Some("Trust this repository to commit: its hooks would run.".into());
+            cx.notify();
+            return;
+        }
         self.write(cx, Some(RepoEvent::Committed), move |repo| {
             repo.commit(&summary, &description)
         });
@@ -233,6 +296,7 @@ mod tests {
         let state = cx.new(|_| RepoState::default());
         state.update(cx, |state, cx| state.open(dir.path().to_owned(), cx));
         cx.executor().run_until_parked();
+        state.update(cx, |state, cx| state.trust(cx));
 
         state.update(cx, |state, cx| state.stage(vec!["b.txt".into()], cx));
         cx.executor().run_until_parked();
@@ -265,6 +329,7 @@ mod tests {
         let state = cx.new(|_| RepoState::default());
         state.update(cx, |state, cx| state.open(dir.path().to_owned(), cx));
         cx.executor().run_until_parked();
+        state.update(cx, |state, cx| state.trust(cx));
         state.update(cx, |state, cx| state.stage(vec!["b.txt".into()], cx));
         cx.executor().run_until_parked();
         state.update(cx, |state, cx| {
@@ -325,5 +390,111 @@ mod tests {
                     .any(|f| f.is_fully_staged())
             );
         });
+    }
+
+    fn commit_count(dir: &Path) -> usize {
+        let out = Command::new("git")
+            .arg("-C")
+            .arg(dir)
+            .args(["rev-list", "--count", "HEAD"])
+            .output()
+            .unwrap();
+        String::from_utf8(out.stdout)
+            .unwrap()
+            .trim()
+            .parse()
+            .unwrap()
+    }
+
+    /// A repo with an untracked file ready to stage and no hook, so a refusal to commit
+    /// can only come from trust.
+    fn repo_without_hooks() -> TempDir {
+        let dir = repo_with_rejecting_hook();
+        fs::remove_file(dir.path().join(".git/hooks/pre-commit")).unwrap();
+        dir
+    }
+
+    #[gpui::test]
+    async fn a_repository_is_untrusted_until_the_user_trusts_it(cx: &mut TestAppContext) {
+        let dir = repo_without_hooks();
+        let state = cx.new(|_| RepoState::default());
+        state.update(cx, |state, cx| state.open(dir.path().to_owned(), cx));
+        cx.executor().run_until_parked();
+
+        assert!(!state.read_with(cx, |state, _| state.is_trusted()));
+    }
+
+    #[gpui::test]
+    async fn an_untrusted_repository_refuses_to_commit_and_says_why(cx: &mut TestAppContext) {
+        let dir = repo_without_hooks();
+        let state = cx.new(|_| RepoState::default());
+        state.update(cx, |state, cx| state.open(dir.path().to_owned(), cx));
+        cx.executor().run_until_parked();
+        state.update(cx, |state, cx| state.stage(vec!["b.txt".into()], cx));
+        cx.executor().run_until_parked();
+
+        state.update(cx, |state, cx| {
+            state.commit("nope".into(), String::new(), cx)
+        });
+        cx.executor().run_until_parked();
+
+        assert_eq!(
+            commit_count(dir.path()),
+            1,
+            "no commit should have been made"
+        );
+        state.read_with(cx, |state, _| {
+            assert!(state.error().unwrap().contains("Trust this repository"));
+        });
+    }
+
+    #[gpui::test]
+    async fn after_trusting_the_repository_commits_go_through(cx: &mut TestAppContext) {
+        let dir = repo_without_hooks();
+        let state = cx.new(|_| RepoState::default());
+        state.update(cx, |state, cx| state.open(dir.path().to_owned(), cx));
+        cx.executor().run_until_parked();
+        state.update(cx, |state, cx| state.trust(cx));
+        state.update(cx, |state, cx| state.stage(vec!["b.txt".into()], cx));
+        cx.executor().run_until_parked();
+
+        state.update(cx, |state, cx| {
+            state.commit("yes".into(), String::new(), cx)
+        });
+        cx.executor().run_until_parked();
+
+        assert_eq!(commit_count(dir.path()), 2);
+    }
+
+    #[gpui::test]
+    async fn trust_is_remembered_across_restarts_but_only_for_that_repository(
+        cx: &mut TestAppContext,
+    ) {
+        let settings_dir = TempDir::new().unwrap();
+        let settings_path = settings_dir.path().join("settings.json");
+        let trusted = repo_without_hooks();
+        let other = repo_without_hooks();
+
+        let first =
+            cx.new(|_| RepoState::with_settings(Settings::default(), Some(settings_path.clone())));
+        first.update(cx, |state, cx| state.open(trusted.path().to_owned(), cx));
+        cx.executor().run_until_parked();
+        first.update(cx, |state, cx| state.trust(cx));
+        assert!(
+            settings_path.exists(),
+            "the choice should be written to disk"
+        );
+
+        // A new session reads the same file.
+        let second = cx.new(|_| {
+            RepoState::with_settings(Settings::load(&settings_path), Some(settings_path.clone()))
+        });
+        second.update(cx, |state, cx| state.open(trusted.path().to_owned(), cx));
+        cx.executor().run_until_parked();
+        assert!(second.read_with(cx, |state, _| state.is_trusted()));
+
+        second.update(cx, |state, cx| state.open(other.path().to_owned(), cx));
+        cx.executor().run_until_parked();
+        assert!(!second.read_with(cx, |state, _| state.is_trusted()));
     }
 }

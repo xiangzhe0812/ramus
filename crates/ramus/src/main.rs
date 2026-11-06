@@ -3,6 +3,7 @@ mod changes_view;
 mod component_theme;
 mod diff_rows;
 mod repo_state;
+mod settings;
 mod theme;
 mod title_bar;
 mod welcome;
@@ -20,7 +21,7 @@ fn main() {
         cx.set_global(theme);
         cx.bind_keys([KeyBinding::new("cmd-o", OpenRepository, None)]);
 
-        let repo_state = cx.new(|_| RepoState::default());
+        let repo_state = cx.new(|_| RepoState::persistent());
         if let Some(path) = std::env::args_os().nth(1) {
             repo_state.update(cx, |state, cx| state.open(path.into(), cx));
         }

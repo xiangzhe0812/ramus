@@ -155,7 +155,7 @@ impl ChangesView {
             .read(cx)
             .status()
             .is_some_and(|status| status.files.iter().any(|file| file.is_staged()));
-        if summary.is_empty() || !staged {
+        if summary.is_empty() || !staged || !self.repo_state.read(cx).is_trusted() {
             return;
         }
         let description = self.description.read(cx).value().to_string();
@@ -702,9 +702,12 @@ impl Render for ChangesView {
                 git_core::Head::Detached(sha) => format!("detached at {sha}"),
             })
             .unwrap_or_default();
+        let trusted = self.repo_state.read(cx).is_trusted();
         let has_summary = !self.summary.read(cx).value().trim().is_empty();
-        let can_commit = staged_count > 0 && has_summary && !busy;
-        let commit_label = if staged_count == 0 {
+        let can_commit = staged_count > 0 && has_summary && !busy && trusted;
+        let commit_label = if !trusted {
+            "Trust this repository to commit".to_owned()
+        } else if staged_count == 0 {
             "Include files to commit".to_owned()
         } else {
             format!(

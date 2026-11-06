@@ -102,6 +102,63 @@ impl Workspace {
         )
     }
 
+    /// Shown while the open repository isn't trusted yet.
+    fn restricted_banner(&self, theme: &Theme, cx: &mut Context<Self>) -> Option<impl IntoElement> {
+        let state = self.repo_state.read(cx);
+        if state.repo().is_none() || state.is_trusted() {
+            return None;
+        }
+        Some(
+            div()
+                .mx(px(16.))
+                .mb(px(12.))
+                .min_h(px(48.))
+                .px(px(16.))
+                .py(px(8.))
+                .flex()
+                .items_center()
+                .gap(px(12.))
+                .rounded(px(12.))
+                .border_1()
+                .border_color(theme.modified.text)
+                .bg(theme.modified.background)
+                .text_color(theme.modified.text)
+                .child(
+                    div()
+                        .flex_1()
+                        .flex()
+                        .flex_col()
+                        .child(
+                            div()
+                                .font_weight(gpui::FontWeight::SEMIBOLD)
+                                .child("Restricted mode"),
+                        )
+                        .child(div().text_size(px(12.)).child(
+                            "You can view changes and stage files. Committing and syncing are off, \
+                             because this repository's own settings can run programs (hooks, credential \
+                             helpers). Trust it only if you trust where it came from.",
+                        )),
+                )
+                .child(
+                    div()
+                        .id("trust-repository")
+                        .h(px(32.))
+                        .px(px(14.))
+                        .flex()
+                        .items_center()
+                        .rounded(px(16.))
+                        .bg(theme.accent)
+                        .text_color(theme.accent_text)
+                        .font_weight(gpui::FontWeight::SEMIBOLD)
+                        .cursor_pointer()
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.repo_state.update(cx, |state, cx| state.trust(cx));
+                        }))
+                        .child("Trust repository"),
+                ),
+        )
+    }
+
     fn status_bar(&self, theme: &Theme, cx: &mut Context<Self>) -> impl IntoElement {
         let state = self.repo_state.read(cx);
         let summary = state.status().map(|status| {
@@ -190,6 +247,7 @@ impl Render for Workspace {
             .text_color(theme.text)
             .text_size(px(13.))
             .child(self.title_bar.clone())
+            .children(self.restricted_banner(&theme, cx))
             .children(self.error_banner(&theme, cx))
             .child(body)
             .child(self.status_bar(&theme, cx))
