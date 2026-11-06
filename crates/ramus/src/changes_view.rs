@@ -2,14 +2,16 @@ use std::{ops::Range, rc::Rc};
 
 use git_core::{ChangeKind, DiffLineKind, DiffOptions, FileChange, FileDiffs};
 use gpui::{
-    AnyElement, AppContext, Context, Entity, EventEmitter, InteractiveElement, IntoElement,
-    MouseButton, ParentElement, Render, SharedString, StatefulInteractiveElement, Styled,
-    Subscription, Task, Window, div, prelude::FluentBuilder, px, uniform_list,
+    AnyElement, AppContext, Context, Entity, EventEmitter, FocusHandle, InteractiveElement,
+    IntoElement, ListHorizontalSizingBehavior, MouseButton, ParentElement, Render, ScrollStrategy,
+    SharedString, StatefulInteractiveElement, Styled, Subscription, Task, UniformListScrollHandle,
+    Window, div, prelude::FluentBuilder, px, uniform_list,
 };
 use gpui_component::input::{Input, InputEvent, InputState, Textarea, TextareaState};
 
 use crate::{
-    diff_rows::{DiffRow, HunkAction, HunkControls, flatten},
+    actions::{SelectNextFile, SelectPreviousFile, ToggleSelectedFile},
+    diff_rows::{DiffRow, HunkAction, HunkControls, flatten, longest_row},
     repo_state::{RepoEvent, RepoState},
     theme::{Badge, MONO_FONT, Theme, UI_FONT},
 };
@@ -26,6 +28,8 @@ enum Inclusion {
 enum DiffContent {
     Rows {
         rows: Rc<Vec<DiffRow>>,
+        /// The row with the longest line, which sizes the list so it can scroll sideways.
+        longest: Option<usize>,
         additions: usize,
         deletions: usize,
     },
@@ -70,8 +74,10 @@ impl LoadedDiff {
         } else if diffs.is_empty() {
             DiffContent::Empty
         } else {
+            let rows = flatten(&diffs, controls);
             DiffContent::Rows {
-                rows: Rc::new(flatten(&diffs, controls)),
+                longest: longest_row(&rows),
+                rows: Rc::new(rows),
                 additions: diffs.additions(),
                 deletions: diffs.deletions(),
             }
@@ -105,6 +111,9 @@ pub struct ChangesView {
     description: Entity<TextareaState>,
     /// The next commit replaces the last one instead of adding to it.
     amend: bool,
+    /// Holds keyboard focus while the file list is in use, so arrow keys move through it.
+    list_focus: FocusHandle,
+    list_scroll: UniformListScrollHandle,
     /// What was typed before amending filled the message boxes, to put back afterwards.
     draft: Option<(String, String)>,
     _subscriptions: Vec<Subscription>,
@@ -149,8 +158,51 @@ impl ChangesView {
             summary,
             description,
             amend: false,
+            list_focus: cx.focus_handle(),
+            list_scroll: UniformListScrollHandle::new(),
             draft: None,
             _subscriptions,
+        }
+    }
+
+    /// Moves the selection `delta` files down (negative: up), scrolling it into view.
+    fn move_selection(&mut self, delta: isize, cx: &mut Context<Self>) {
+        let paths: Vec<String> = self
+            .repo_state
+            .read(cx)
+            .status()
+            .map(|status| status.files.iter().map(|file| file.path.clone()).collect())
+            .unwrap_or_default();
+        if paths.is_empty() {
+            return;
+        }
+        let current = self
+            .selected
+            .as_ref()
+            .and_then(|selected| paths.iter().position(|path| path == selected));
+        let next = match current {
+            Some(ix) => (ix as isize + delta).clamp(0, paths.len() as isize - 1) as usize,
+            None if delta < 0 => paths.len() - 1,
+            None => 0,
+        };
+        self.list_scroll
+            .scroll_to_item(next, ScrollStrategy::Nearest);
+        self.select(paths[next].clone(), cx);
+    }
+
+    /// Stages or unstages the selected file, like clicking its checkbox.
+    fn toggle_selected(&mut self, cx: &mut Context<Self>) {
+        let Some(path) = self.selected.as_deref() else {
+            return;
+        };
+        let file = self
+            .repo_state
+            .read(cx)
+            .status()
+            .and_then(|status| status.files.iter().find(|file| file.path == path))
+            .cloned();
+        if let Some(file) = file {
+            self.toggle_file(&file, cx);
         }
     }
 
@@ -625,10 +677,10 @@ fn diff_row(ix: usize, row: &DiffRow, theme: &Theme, view: &Entity<ChangesView>)
                         .child(sign),
                 )
                 .child(
+                    // Natural width, so the longest line decides how far the list scrolls.
                     div()
-                        .flex_1()
-                        .min_w_0()
-                        .overflow_hidden()
+                        .flex_none()
+                        .pr(px(24.))
                         .whitespace_nowrap()
                         .text_color(text_color)
                         .child(text.clone()),
@@ -764,7 +816,8 @@ impl ChangesView {
                 },
             ),
             Some(DiffContent::Failed(message)) => Self::message(theme, message.clone()),
-            Some(DiffContent::Rows { rows, .. }) => {
+            Some(DiffContent::Rows { rows, longest, .. }) => {
+                let longest = *longest;
                 let rows = rows.clone();
                 let theme = theme.clone();
                 uniform_list(
@@ -777,6 +830,8 @@ impl ChangesView {
                             .collect()
                     }),
                 )
+                .with_width_from_item(longest)
+                .with_horizontal_sizing_behavior(ListHorizontalSizingBehavior::Unconstrained)
                 .flex_1()
                 .py(px(8.))
                 .into_any_element()
@@ -901,6 +956,7 @@ impl Render for ChangesView {
                         .collect()
                 }),
             )
+            .track_scroll(&self.list_scroll)
             .flex_1()
             .into_any_element()
         };
@@ -983,7 +1039,26 @@ impl Render for ChangesView {
                                     }),
                             ),
                     )
-                    .child(list_body)
+                    .child(
+                        div()
+                            .id("file-list")
+                            .key_context("ChangesList")
+                            .track_focus(&self.list_focus)
+                            .on_action(cx.listener(|this, _: &SelectNextFile, _, cx| {
+                                this.move_selection(1, cx)
+                            }))
+                            .on_action(cx.listener(|this, _: &SelectPreviousFile, _, cx| {
+                                this.move_selection(-1, cx)
+                            }))
+                            .on_action(cx.listener(|this, _: &ToggleSelectedFile, _, cx| {
+                                this.toggle_selected(cx)
+                            }))
+                            .flex_1()
+                            .min_h_0()
+                            .flex()
+                            .flex_col()
+                            .child(list_body),
+                    )
                     .child(
                         div()
                             .flex_none()

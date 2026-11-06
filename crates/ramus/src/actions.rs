@@ -1,3 +1,13 @@
 use gpui::actions;
 
-actions!(ramus, [OpenRepository, ToggleBranches, DiscardSelected]);
+actions!(
+    ramus,
+    [
+        OpenRepository,
+        ToggleBranches,
+        DiscardSelected,
+        SelectNextFile,
+        SelectPreviousFile,
+        ToggleSelectedFile
+    ]
+);

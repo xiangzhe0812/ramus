@@ -57,6 +57,19 @@ fn push_section(rows: &mut Vec<DiffRow>, diff: &FileDiff, staged: bool, enabled:
     }
 }
 
+/// The index of the row with the most text, so a list can be sized to fit it and scroll
+/// sideways to reveal long lines. Hunk headers and section titles don't count.
+pub fn longest_row(rows: &[DiffRow]) -> Option<usize> {
+    rows.iter()
+        .enumerate()
+        .filter_map(|(ix, row)| match row {
+            DiffRow::Line { text, .. } => Some((ix, text.chars().count())),
+            _ => None,
+        })
+        .max_by_key(|(_, width)| *width)
+        .map(|(ix, _)| ix)
+}
+
 /// Unstaged changes first, then staged ones. The two sections are labelled only when
 /// both exist, since a file with just one kind of change needs no explanation.
 pub fn flatten(diffs: &FileDiffs, controls: HunkControls) -> Vec<DiffRow> {
@@ -210,6 +223,29 @@ mod tests {
             })
             .collect();
         assert_eq!(actions, [true, false]);
+    }
+
+    #[test]
+    fn the_longest_row_is_the_line_with_the_most_text() {
+        let mut diffs = FileDiffs {
+            staged: FileDiff::default(),
+            unstaged: diff(1),
+        };
+        diffs.unstaged.hunks[0].lines.push(line(
+            DiffLineKind::Context,
+            "a much longer line than the rest",
+        ));
+        let rows = flatten(&diffs, on());
+        let longest = longest_row(&rows).unwrap();
+        assert!(
+            matches!(&rows[longest], DiffRow::Line { text, .. } if text.starts_with("a much longer"))
+        );
+    }
+
+    #[test]
+    fn there_is_no_longest_row_in_a_diff_without_lines() {
+        assert_eq!(longest_row(&[DiffRow::Section("x".into())]), None);
+        assert_eq!(longest_row(&[]), None);
     }
 
     #[test]
