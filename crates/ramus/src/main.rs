@@ -1,5 +1,6 @@
 mod actions;
 mod changes_view;
+mod diff_rows;
 mod repo_state;
 mod theme;
 mod title_bar;

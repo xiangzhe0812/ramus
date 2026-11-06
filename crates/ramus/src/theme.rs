@@ -1,4 +1,4 @@
-use gpui::{Global, Rgba, rgb};
+use gpui::{Global, Rgba, rgb, rgba};
 
 /// Monospace font for branch names, hashes and code. Replace with a bundled
 /// JetBrains Mono once fonts are embedded.
@@ -29,6 +29,16 @@ pub struct Theme {
     pub deleted: Badge,
     pub renamed: Badge,
     pub conflicted: Badge,
+    pub diff_added_background: Rgba,
+    pub diff_added_sign: Rgba,
+    pub diff_added_text: Rgba,
+    pub diff_removed_background: Rgba,
+    pub diff_removed_sign: Rgba,
+    pub diff_removed_text: Rgba,
+    pub diff_hunk_background: Rgba,
+    pub diff_hunk_text: Rgba,
+    pub diff_line_number: Rgba,
+    pub diff_context_text: Rgba,
     pub error_background: Rgba,
     pub error_border: Rgba,
     pub error_text: Rgba,
@@ -55,6 +65,16 @@ impl Theme {
             deleted: badge(0x40242a, 0xf59aa2),
             renamed: badge(0x1b2a45, 0x9bc0ff),
             conflicted: badge(0x40242a, 0xf59aa2),
+            diff_added_background: rgba(0x4cc38a21),
+            diff_added_sign: rgb(0x4cc38a),
+            diff_added_text: rgb(0xe1f5ea),
+            diff_removed_background: rgba(0xf0707a21),
+            diff_removed_sign: rgb(0xf0707a),
+            diff_removed_text: rgb(0xfbe3e5),
+            diff_hunk_background: rgb(0x182236),
+            diff_hunk_text: rgb(0x9bc0ff),
+            diff_line_number: rgb(0x8b95a1),
+            diff_context_text: rgb(0xd5d9de),
             error_background: rgb(0x40242a),
             error_border: rgb(0x6b3640),
             error_text: rgb(0xfbe3e5),

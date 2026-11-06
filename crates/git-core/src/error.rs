@@ -8,6 +8,8 @@ pub enum Error {
     Spawn(#[from] std::io::Error),
     #[error("git {command} failed: {stderr}")]
     Git { command: String, stderr: String },
+    #[error("the diff is larger than {limit_mib} MiB and was not loaded")]
+    DiffTooLarge { limit_mib: usize },
     #[error("unexpected git output: {0}")]
     Parse(String),
 }
