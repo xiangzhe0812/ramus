@@ -1994,3 +1994,220 @@ mod discarding {
         assert!(repo.discard(&[&change(&repo, "a.txt")]).is_err());
     }
 }
+
+mod amending {
+    use super::*;
+
+    fn subjects(dir: &Path) -> Vec<String> {
+        let out = Command::new("git")
+            .arg("-C")
+            .arg(dir)
+            .args(["log", "--format=%s"])
+            .output()
+            .unwrap();
+        String::from_utf8(out.stdout)
+            .unwrap()
+            .lines()
+            .map(str::to_owned)
+            .collect()
+    }
+
+    #[test]
+    fn the_last_commit_message_is_split_into_summary_and_description() {
+        let dir = new_repo();
+        let repo = Repo::open(dir.path()).unwrap();
+        assert_eq!(repo.last_commit_message().unwrap(), None);
+
+        fs::write(dir.path().join("a.txt"), "a\n").unwrap();
+        git(dir.path(), &["add", "."]);
+        repo.commit("Add a", "Because we need it.\n\nSecond paragraph.")
+            .unwrap();
+
+        assert_eq!(
+            repo.last_commit_message().unwrap(),
+            Some((
+                "Add a".into(),
+                "Because we need it.\n\nSecond paragraph.".into()
+            ))
+        );
+    }
+
+    #[test]
+    fn amending_adds_staged_changes_to_the_last_commit_instead_of_making_a_new_one() {
+        let dir = new_repo();
+        commit_file(dir.path(), "a.txt", "a\n");
+        commit_file(dir.path(), "b.txt", "b\n");
+        fs::write(dir.path().join("c.txt"), "c\n").unwrap();
+        git(dir.path(), &["add", "c.txt"]);
+        let repo = Repo::open(dir.path()).unwrap();
+
+        repo.amend("Add b and c", "").unwrap();
+
+        assert_eq!(subjects(dir.path()), ["Add b and c", "add a.txt"]);
+        let shown = Command::new("git")
+            .arg("-C")
+            .arg(dir.path())
+            .args(["show", "--name-only", "--format=", "HEAD"])
+            .output()
+            .unwrap();
+        let shown = String::from_utf8_lossy(&shown.stdout);
+        assert!(
+            shown.contains("b.txt") && shown.contains("c.txt"),
+            "{shown}"
+        );
+        assert!(repo.status().unwrap().files.is_empty());
+    }
+
+    #[test]
+    fn amending_with_nothing_staged_just_rewrites_the_message() {
+        let dir = new_repo();
+        commit_file(dir.path(), "a.txt", "a\n");
+        let repo = Repo::open(dir.path()).unwrap();
+
+        repo.amend("A better message", "With a description.")
+            .unwrap();
+
+        assert_eq!(subjects(dir.path()), ["A better message"]);
+        assert_eq!(
+            repo.last_commit_message().unwrap().unwrap().1,
+            "With a description."
+        );
+    }
+
+    #[test]
+    fn amending_leaves_unstaged_work_alone() {
+        let dir = new_repo();
+        commit_file(dir.path(), "a.txt", "a\n");
+        fs::write(dir.path().join("a.txt"), "unstaged edit\n").unwrap();
+        let repo = Repo::open(dir.path()).unwrap();
+
+        repo.amend("Reworded", "").unwrap();
+        assert_eq!(
+            fs::read_to_string(dir.path().join("a.txt")).unwrap(),
+            "unstaged edit\n"
+        );
+        assert_eq!(repo.status().unwrap().files.len(), 1);
+    }
+
+    #[test]
+    fn amending_a_branch_with_no_commits_is_an_error() {
+        let dir = new_repo();
+        let repo = Repo::open(dir.path()).unwrap();
+        assert!(matches!(
+            repo.amend("x", "").unwrap_err(),
+            Error::Git { .. }
+        ));
+    }
+}
+
+mod discard_symlink_safety {
+    use git_core::FileChange;
+
+    use super::*;
+
+    fn change(repo: &Repo, path: &str) -> FileChange {
+        repo.status()
+            .unwrap()
+            .files
+            .into_iter()
+            .find(|f| f.path == path)
+            .unwrap()
+    }
+
+    #[test]
+    fn undo_will_not_write_through_a_folder_that_became_a_symlink() {
+        let outside = TempDir::new().unwrap();
+        let dir = new_repo();
+        commit_file(dir.path(), "a.txt", "a\n");
+        fs::create_dir_all(dir.path().join("docs")).unwrap();
+        fs::write(dir.path().join("docs/new.txt"), "mine\n").unwrap();
+        let repo = Repo::open(dir.path()).unwrap();
+        let backup = repo.discard(&[&change(&repo, "docs/new.txt")]).unwrap();
+
+        // After the discard, `docs` is swapped for a symlink to somewhere else entirely.
+        fs::remove_dir_all(dir.path().join("docs")).unwrap();
+        std::os::unix::fs::symlink(outside.path(), dir.path().join("docs")).unwrap();
+
+        let result = repo.undo_discard(&backup);
+
+        assert!(
+            result.is_err(),
+            "undo should refuse to go through the symlink"
+        );
+        assert!(
+            fs::read_dir(outside.path()).unwrap().next().is_none(),
+            "nothing may be written outside the repository"
+        );
+    }
+
+    #[test]
+    fn undo_will_not_delete_through_a_folder_that_became_a_symlink() {
+        let outside = TempDir::new().unwrap();
+        fs::write(outside.path().join("x.txt"), "must survive\n").unwrap();
+        let dir = new_repo();
+        fs::create_dir_all(dir.path().join("d")).unwrap();
+        commit_file(dir.path(), "d/x.txt", "tracked\n");
+        fs::remove_file(dir.path().join("d/x.txt")).unwrap();
+        let repo = Repo::open(dir.path()).unwrap();
+        // Discarding a deletion brings the file back; undoing that deletes it again.
+        let backup = repo.discard(&[&change(&repo, "d/x.txt")]).unwrap();
+
+        fs::remove_dir_all(dir.path().join("d")).unwrap();
+        std::os::unix::fs::symlink(outside.path(), dir.path().join("d")).unwrap();
+
+        let _ = repo.undo_discard(&backup);
+
+        assert_eq!(
+            fs::read_to_string(outside.path().join("x.txt")).unwrap(),
+            "must survive\n",
+            "undo deleted a file outside the repository"
+        );
+    }
+
+    #[test]
+    fn discarding_will_not_move_a_file_from_behind_a_symlink() {
+        let outside = TempDir::new().unwrap();
+        fs::write(outside.path().join("secret.txt"), "not part of the repo\n").unwrap();
+        let dir = new_repo();
+        commit_file(dir.path(), "a.txt", "a\n");
+        fs::create_dir_all(dir.path().join("docs")).unwrap();
+        fs::write(dir.path().join("docs/new.txt"), "mine\n").unwrap();
+        let repo = Repo::open(dir.path()).unwrap();
+        let file = change(&repo, "docs/new.txt");
+        // The status said docs/new.txt; by the time we act, docs points elsewhere.
+        fs::remove_dir_all(dir.path().join("docs")).unwrap();
+        std::os::unix::fs::symlink(outside.path(), dir.path().join("docs")).unwrap();
+        fs::write(
+            outside.path().join("new.txt"),
+            "outside file with the same name\n",
+        )
+        .unwrap();
+
+        let result = repo.discard(&[&file]);
+
+        assert!(result.is_err());
+        assert!(
+            outside.path().join("new.txt").exists(),
+            "a file outside was moved away"
+        );
+    }
+
+    #[test]
+    fn an_ordinary_undo_with_nested_folders_still_works() {
+        let dir = new_repo();
+        commit_file(dir.path(), "a.txt", "a\n");
+        fs::create_dir_all(dir.path().join("deep/er/still")).unwrap();
+        fs::write(dir.path().join("deep/er/still/new.txt"), "keep\n").unwrap();
+        let repo = Repo::open(dir.path()).unwrap();
+        let backup = repo
+            .discard(&[&change(&repo, "deep/er/still/new.txt")])
+            .unwrap();
+        fs::remove_dir_all(dir.path().join("deep")).unwrap();
+
+        repo.undo_discard(&backup).unwrap();
+        assert_eq!(
+            fs::read_to_string(dir.path().join("deep/er/still/new.txt")).unwrap(),
+            "keep\n"
+        );
+    }
+}

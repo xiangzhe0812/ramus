@@ -1,8 +1,8 @@
 //! Throwing changes away, safely: every discard first saves what it is about to destroy.
 
 use std::{
-    fs,
-    path::PathBuf,
+    fs, io,
+    path::{Component, Path, PathBuf},
     time::{SystemTime, UNIX_EPOCH},
 };
 
@@ -22,6 +22,57 @@ pub struct DiscardBackup {
     pub tracked: Vec<String>,
     /// Untracked paths moved aside, relative to the repository root.
     pub moved: Vec<String>,
+}
+
+/// `root/relative`, after checking that every folder on the way is a real directory.
+///
+/// A folder that has become a symlink since git listed the path could lead anywhere, and
+/// writing or deleting through it would reach outside the repository. With
+/// `create_parents`, missing folders are created one at a time, with the same check.
+fn checked_path(root: &Path, relative: &str, create_parents: bool) -> Result<PathBuf, Error> {
+    let unsafe_path = || Error::UnsafePath(relative.to_owned());
+    let relative_path = Path::new(relative);
+    // Only plain names joined by single slashes, exactly as git lists them: no `..`, no `.`,
+    // no empty parts, and not empty (which would mean the repository root itself).
+    let names: Option<Vec<&std::ffi::OsStr>> = relative_path
+        .components()
+        .map(|component| match component {
+            Component::Normal(name) => Some(name),
+            _ => None,
+        })
+        .collect();
+    let is_plain = names.as_ref().is_some_and(|names| {
+        !names.is_empty()
+            && names
+                .iter()
+                .map(|name| name.to_string_lossy())
+                .collect::<Vec<_>>()
+                .join("/")
+                == relative
+    });
+    if !is_plain {
+        return Err(unsafe_path());
+    }
+
+    let mut current = root.to_owned();
+    let mut components = relative_path.components().peekable();
+    while let Some(component) = components.next() {
+        current.push(component);
+        if components.peek().is_none() {
+            break; // The last part is the file itself, not a folder to walk through.
+        }
+        match fs::symlink_metadata(&current) {
+            Ok(metadata) if metadata.is_dir() => {}
+            Ok(_) => return Err(unsafe_path()),
+            Err(error) if error.kind() == io::ErrorKind::NotFound && create_parents => {
+                fs::create_dir(&current)?
+            }
+            // Nothing exists below here, so there is nothing to follow.
+            Err(error) if error.kind() == io::ErrorKind::NotFound => break,
+            Err(error) => return Err(error.into()),
+        }
+    }
+    Ok(root.join(relative_path))
 }
 
 impl DiscardBackup {
@@ -141,7 +192,7 @@ impl Repo {
     }
 
     fn move_aside(&self, id: &str, path: &str) -> Result<(), Error> {
-        let from = self.root().join(path);
+        let from = checked_path(self.root(), path, false)?;
         let to = self.ramus_dir()?.join("discarded").join(id).join(path);
         if let Some(parent) = to.parent() {
             fs::create_dir_all(parent)?;
@@ -198,7 +249,12 @@ impl Repo {
                 let saved = run_git(self.root(), &["ls-tree", "--name-only", commit, "--", path])?;
                 if saved.is_empty() {
                     // It was deleted when discarded; it came back, so delete it again.
-                    let _ = fs::remove_file(self.root().join(path));
+                    match fs::remove_file(checked_path(self.root(), path, false)?) {
+                        Err(error) if error.kind() != io::ErrorKind::NotFound => {
+                            return Err(error.into());
+                        }
+                        _ => {}
+                    }
                 } else {
                     run_git(
                         self.root(),
@@ -215,15 +271,54 @@ impl Repo {
         }
         let aside = self.ramus_dir()?.join("discarded").join(&backup.id);
         for path in &backup.moved {
-            let to = self.root().join(path);
-            if to.exists() {
+            let to = checked_path(self.root(), path, true)?;
+            // Something is there now (even a dangling symlink): keep it, don't overwrite.
+            if fs::symlink_metadata(&to).is_ok() {
                 continue;
-            }
-            if let Some(parent) = to.parent() {
-                fs::create_dir_all(parent)?;
             }
             fs::rename(aside.join(path), to)?;
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use tempfile::TempDir;
+
+    use super::*;
+
+    #[test]
+    fn paths_that_climb_out_or_are_absolute_are_refused() {
+        let root = TempDir::new().unwrap();
+        for bad in ["../outside", "a/../../outside", "/etc/passwd", "a/./b", ""] {
+            assert!(
+                checked_path(root.path(), bad, true).is_err(),
+                "{bad:?} should be refused"
+            );
+        }
+    }
+
+    #[test]
+    fn a_plain_nested_path_is_accepted_and_missing_folders_are_created_on_request() {
+        let root = TempDir::new().unwrap();
+        let path = checked_path(root.path(), "a/b/c.txt", true).unwrap();
+        assert_eq!(path, root.path().join("a/b/c.txt"));
+        assert!(root.path().join("a/b").is_dir());
+        // Without the request, nothing is created.
+        let other = checked_path(root.path(), "x/y/z.txt", false).unwrap();
+        assert_eq!(other, root.path().join("x/y/z.txt"));
+        assert!(!root.path().join("x").exists());
+    }
+
+    #[test]
+    fn a_symlink_in_the_middle_is_refused_even_if_it_points_inside() {
+        let root = TempDir::new().unwrap();
+        fs::create_dir(root.path().join("real")).unwrap();
+        std::os::unix::fs::symlink(root.path().join("real"), root.path().join("alias")).unwrap();
+        assert!(matches!(
+            checked_path(root.path(), "alias/file.txt", true),
+            Err(Error::UnsafePath(_))
+        ));
     }
 }

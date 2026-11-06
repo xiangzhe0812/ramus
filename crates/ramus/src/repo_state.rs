@@ -74,6 +74,8 @@ pub struct RepoState {
     operation: Option<Operation>,
     /// The most recent discard, kept so it can be undone, with a line saying what it was.
     last_discard: Option<(DiscardBackup, String)>,
+    /// The commit HEAD was at when `last_discard` was made. Undo only makes sense there.
+    discard_head: Option<String>,
 }
 
 impl EventEmitter<RepoEvent> for RepoState {}
@@ -109,6 +111,7 @@ impl RepoState {
             branches_task: None,
             operation: None,
             last_discard: None,
+            discard_head: None,
         }
     }
 
@@ -154,7 +157,10 @@ impl RepoState {
         self.write_returning(
             cx,
             move |repo| repo.discard(&files.iter().collect::<Vec<_>>()),
-            move |this, backup, _| this.last_discard = Some((backup, message)),
+            move |this, backup, _| {
+                this.discard_head = this.status.as_ref().and_then(|s| s.branch.oid.clone());
+                this.last_discard = Some((backup, message));
+            },
         );
     }
 
@@ -372,6 +378,12 @@ impl RepoState {
                     Ok((repo, status)) => {
                         this.trusted = this.settings.is_trusted(repo.root());
                         this.repo = Some(repo);
+                        // Restoring discarded files into a different commit's tree would be
+                        // wrong, so the undo lapses when HEAD moves.
+                        let head = status.branch.oid.clone();
+                        if this.last_discard.is_some() && head != this.discard_head {
+                            this.last_discard = None;
+                        }
                         this.status = Some(status);
                         if clear_error {
                             this.error = None;
@@ -383,6 +395,17 @@ impl RepoState {
             })
             .ok();
         }));
+    }
+
+    /// Replaces the last commit with one that also holds what is staged.
+    pub fn amend(&mut self, summary: String, description: String, cx: &mut Context<Self>) {
+        // Amending runs the repository's hooks, like any commit.
+        if !self.require_trust("amend", cx) {
+            return;
+        }
+        self.write(cx, Some(RepoEvent::Committed), move |repo| {
+            repo.amend(&summary, &description)
+        });
     }
 
     pub fn stage(&mut self, paths: Vec<String>, cx: &mut Context<Self>) {
@@ -1109,5 +1132,120 @@ mod tests {
         state.read_with(cx, |state, _| {
             assert_eq!(state.last_discard(), Some("Discarded changes to b.txt"));
         });
+    }
+
+    fn last_subject(dir: &Path) -> String {
+        let out = Command::new("git")
+            .arg("-C")
+            .arg(dir)
+            .args(["log", "-1", "--format=%s"])
+            .output()
+            .unwrap();
+        String::from_utf8(out.stdout).unwrap().trim().to_owned()
+    }
+
+    #[gpui::test]
+    async fn an_untrusted_repository_refuses_to_amend(cx: &mut TestAppContext) {
+        let dir = repo_without_hooks();
+        let state = cx.new(|_| RepoState::default());
+        state.update(cx, |state, cx| state.open(dir.path().to_owned(), cx));
+        cx.executor().run_until_parked();
+
+        state.update(cx, |state, cx| state.amend("new".into(), String::new(), cx));
+        cx.executor().run_until_parked();
+
+        assert_eq!(last_subject(dir.path()), "base");
+        state.read_with(cx, |state, _| {
+            assert!(
+                state
+                    .error()
+                    .unwrap()
+                    .contains("Trust this repository to amend")
+            );
+        });
+    }
+
+    #[gpui::test]
+    async fn amending_rewrites_the_last_commit_and_announces_it(cx: &mut TestAppContext) {
+        let dir = repo_without_hooks();
+        let state = cx.new(|_| RepoState::default());
+        state.update(cx, |state, cx| state.open(dir.path().to_owned(), cx));
+        cx.executor().run_until_parked();
+        state.update(cx, |state, cx| state.trust(cx));
+        let commits_before = commit_count(dir.path());
+        let announced = std::rc::Rc::new(std::cell::Cell::new(false));
+        let seen = announced.clone();
+        let _subscription = cx.update(|cx| {
+            cx.subscribe(&state, move |_, event: &RepoEvent, _| {
+                if *event == RepoEvent::Committed {
+                    seen.set(true);
+                }
+            })
+        });
+
+        state.update(cx, |state, cx| {
+            state.amend("Reworded".into(), String::new(), cx)
+        });
+        cx.executor().run_until_parked();
+
+        assert_eq!(last_subject(dir.path()), "Reworded");
+        assert_eq!(commit_count(dir.path()), commits_before, "no new commit");
+        assert!(announced.get(), "the message boxes should be told to clear");
+    }
+
+    #[gpui::test]
+    async fn the_undo_lapses_when_head_moves(cx: &mut TestAppContext) {
+        let dir = repo_without_hooks();
+        fs::write(dir.path().join("a.txt"), "my work\n").unwrap();
+        let state = cx.new(|_| RepoState::default());
+        state.update(cx, |state, cx| state.open(dir.path().to_owned(), cx));
+        cx.executor().run_until_parked();
+        let file = state.read_with(cx, |s, _| {
+            s.status()
+                .unwrap()
+                .files
+                .iter()
+                .find(|f| f.path == "a.txt")
+                .unwrap()
+                .clone()
+        });
+        state.update(cx, |state, cx| state.discard(vec![file], cx));
+        cx.executor().run_until_parked();
+        assert!(state.read_with(cx, |state, _| state.last_discard().is_some()));
+
+        // A commit made elsewhere (a terminal) moves HEAD; the next refresh notices.
+        git(
+            dir.path(),
+            &["commit", "-q", "--allow-empty", "-m", "elsewhere"],
+        );
+        state.update(cx, |state, cx| state.refresh(cx));
+        cx.executor().run_until_parked();
+
+        assert!(state.read_with(cx, |state, _| state.last_discard().is_none()));
+    }
+
+    #[gpui::test]
+    async fn the_undo_survives_an_ordinary_refresh(cx: &mut TestAppContext) {
+        let dir = repo_without_hooks();
+        fs::write(dir.path().join("a.txt"), "my work\n").unwrap();
+        let state = cx.new(|_| RepoState::default());
+        state.update(cx, |state, cx| state.open(dir.path().to_owned(), cx));
+        cx.executor().run_until_parked();
+        let file = state.read_with(cx, |s, _| {
+            s.status()
+                .unwrap()
+                .files
+                .iter()
+                .find(|f| f.path == "a.txt")
+                .unwrap()
+                .clone()
+        });
+        state.update(cx, |state, cx| state.discard(vec![file], cx));
+        cx.executor().run_until_parked();
+
+        state.update(cx, |state, cx| state.refresh(cx));
+        cx.executor().run_until_parked();
+
+        assert!(state.read_with(cx, |state, _| state.last_discard().is_some()));
     }
 }

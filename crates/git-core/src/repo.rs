@@ -221,4 +221,36 @@ impl Repo {
         }
         run_git(&self.root, &["switch", "-c", name]).map(drop)
     }
+
+    /// The summary and description of the last commit, or `None` on a branch with no
+    /// commits.
+    pub fn last_commit_message(&self) -> Result<Option<(String, String)>, Error> {
+        if run_git(&self.root, &["rev-parse", "--verify", "--quiet", "HEAD"]).is_err() {
+            return Ok(None);
+        }
+        let output = run_git(&self.root, &["log", "-1", "--format=%B"])?;
+        let message = String::from_utf8_lossy(&output).into_owned();
+        let (summary, description) = message.split_once('\n').unwrap_or((&message, ""));
+        Ok(Some((
+            summary.trim().to_owned(),
+            description.trim().to_owned(),
+        )))
+    }
+
+    /// Replaces the last commit with one that also contains what is staged, using this
+    /// message. The repository's hooks run, as for any commit.
+    pub fn amend(&self, summary: &str, description: &str) -> Result<(), Error> {
+        let mut message = summary.trim().to_owned();
+        if !description.trim().is_empty() {
+            message.push_str("\n\n");
+            message.push_str(description.trim());
+        }
+        message.push('\n');
+        run_git_with_input(
+            &self.root,
+            &["commit", "--amend", "-q", "-F", "-"],
+            message.as_bytes(),
+        )
+        .map(drop)
+    }
 }

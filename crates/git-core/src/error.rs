@@ -12,6 +12,8 @@ pub enum Error {
     DiffTooLarge { limit_mib: usize },
     #[error("\"{0}\" is not a valid branch name")]
     InvalidBranchName(String),
+    #[error("refusing to touch {0}: a folder on the way to it is a symbolic link")]
+    UnsafePath(String),
     #[error("cancelled")]
     Cancelled,
     #[error("this repository has no remote to publish to")]

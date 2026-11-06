@@ -103,6 +103,10 @@ pub struct ChangesView {
     diff_task: Option<Task<()>>,
     summary: Entity<InputState>,
     description: Entity<TextareaState>,
+    /// The next commit replaces the last one instead of adding to it.
+    amend: bool,
+    /// What was typed before amending filled the message boxes, to put back afterwards.
+    draft: Option<(String, String)>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -144,6 +148,8 @@ impl ChangesView {
             diff_task: None,
             summary,
             description,
+            amend: false,
+            draft: None,
             _subscriptions,
         }
     }
@@ -164,7 +170,64 @@ impl ChangesView {
         }
     }
 
+    /// Switches between committing and amending. Amending shows the last commit's message
+    /// to edit; switching back restores what was being typed.
+    fn toggle_amend(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.amend {
+            self.amend = false;
+            if let Some((summary, description)) = self.draft.take() {
+                self.set_message(&summary, &description, window, cx);
+            }
+            cx.notify();
+            return;
+        }
+        let Some(repo) = self.repo_state.read(cx).repo().cloned() else {
+            return;
+        };
+        self.amend = true;
+        self.draft = Some((
+            self.summary.read(cx).value().to_string(),
+            self.description.read(cx).value().to_string(),
+        ));
+        cx.notify();
+
+        cx.spawn_in(window, async move |this, cx| {
+            let message = cx
+                .background_executor()
+                .spawn(async move { repo.last_commit_message() })
+                .await;
+            this.update_in(cx, |this, window, cx| {
+                // Unchecked again, or nothing to amend, while the message was loading.
+                if !this.amend {
+                    return;
+                }
+                if let Ok(Some((summary, description))) = message {
+                    this.set_message(&summary, &description, window, cx);
+                }
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    fn set_message(
+        &mut self,
+        summary: &str,
+        description: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let (summary, description) = (summary.to_owned(), description.to_owned());
+        self.summary
+            .update(cx, |input, cx| input.set_value(summary, window, cx));
+        self.description
+            .update(cx, |input, cx| input.set_value(description, window, cx));
+        cx.notify();
+    }
+
     fn clear_message(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.amend = false;
+        self.draft = None;
         self.summary
             .update(cx, |input, cx| input.set_value("", window, cx));
         self.description
@@ -179,12 +242,19 @@ impl ChangesView {
             .read(cx)
             .status()
             .is_some_and(|status| status.files.iter().any(|file| file.is_staged()));
-        if summary.is_empty() || !staged || !self.repo_state.read(cx).is_trusted() {
+        if summary.is_empty() || (!staged && !self.amend) || !self.repo_state.read(cx).is_trusted()
+        {
             return;
         }
         let description = self.description.read(cx).value().to_string();
-        self.repo_state
-            .update(cx, |state, cx| state.commit(summary, description, cx));
+        let amend = self.amend;
+        self.repo_state.update(cx, |state, cx| {
+            if amend {
+                state.amend(summary, description, cx)
+            } else {
+                state.commit(summary, description, cx)
+            }
+        });
     }
 
     /// Stages the file if anything in it is unstaged, otherwise unstages it.
@@ -320,6 +390,16 @@ impl ChangesView {
             })
             .ok();
         }));
+    }
+}
+
+/// The line under "No local changes".
+fn clean_tree_summary(ahead: u32) -> String {
+    let base = "Your working tree matches the last commit.";
+    match ahead {
+        0 => base.to_owned(),
+        1 => format!("{base} 1 commit is waiting to be pushed."),
+        n => format!("{base} {n} commits are waiting to be pushed."),
     }
 }
 
@@ -743,9 +823,26 @@ impl Render for ChangesView {
             .unwrap_or_default();
         let trusted = self.repo_state.read(cx).is_trusted();
         let has_summary = !self.summary.read(cx).value().trim().is_empty();
-        let can_commit = staged_count > 0 && has_summary && !busy && trusted;
+        let amending = self.amend;
+        let can_commit = (staged_count > 0 || amending) && has_summary && !busy && trusted;
+        let (has_commits, already_pushed) =
+            self.repo_state
+                .read(cx)
+                .status()
+                .map_or((false, false), |status| {
+                    (
+                        status.branch.oid.is_some(),
+                        status.branch.upstream.is_some() && status.branch.ahead == 0,
+                    )
+                });
         let commit_label = if !trusted {
             "Trust this repository to commit".to_owned()
+        } else if amending {
+            match staged_count {
+                0 => "Amend last commit".to_owned(),
+                1 => "Amend with 1 file".to_owned(),
+                n => format!("Amend with {n} files"),
+            }
         } else if staged_count == 0 {
             "Include files to commit".to_owned()
         } else {
@@ -826,11 +923,11 @@ impl Render for ChangesView {
                                 .font_weight(gpui::FontWeight::SEMIBOLD)
                                 .child("No local changes"),
                         )
-                        .child(div().text_color(theme.text_muted).child(if ahead > 0 {
-                            format!("Your working tree matches the last commit. {ahead} commits are waiting to be pushed.")
-                        } else {
-                            "Your working tree matches the last commit.".to_owned()
-                        })),
+                        .child(
+                            div()
+                                .text_color(theme.text_muted)
+                                .child(clean_tree_summary(ahead)),
+                        ),
                 )
                 .into_any_element()
         } else {
@@ -904,6 +1001,40 @@ impl Render for ChangesView {
                                     .aria_label("Commit description")
                                     .h(px(80.)),
                             )
+                            .when(has_commits, |box_| {
+                                box_.child(
+                                    div()
+                                        .flex()
+                                        .flex_col()
+                                        .gap(px(2.))
+                                        .child(
+                                            div()
+                                                .flex()
+                                                .items_center()
+                                                .gap(px(8.))
+                                                .child({
+                                                    let view = cx.entity();
+                                                    checkbox(
+                                                        "amend",
+                                                        if amending { Inclusion::All } else { Inclusion::None },
+                                                        &theme,
+                                                        move |window, cx| {
+                                                            view.update(cx, |this, cx| this.toggle_amend(window, cx))
+                                                        },
+                                                    )
+                                                })
+                                                .child(div().text_color(theme.text_muted).child("Amend last commit")),
+                                        )
+                                        .when(amending && already_pushed, |column| {
+                                            column.child(
+                                                div()
+                                                    .text_size(px(11.5))
+                                                    .text_color(theme.modified.text)
+                                                    .child("This commit is already pushed. Amending it means a force push."),
+                                            )
+                                        }),
+                                )
+                            })
                             .child(
                                 div()
                                     .id("commit")
@@ -935,7 +1066,17 @@ impl Render for ChangesView {
 
 #[cfg(test)]
 mod tests {
-    use super::split_path;
+    use super::{clean_tree_summary, split_path};
+
+    #[test]
+    fn the_clean_tree_summary_agrees_with_the_number_of_commits() {
+        assert_eq!(
+            clean_tree_summary(0),
+            "Your working tree matches the last commit."
+        );
+        assert!(clean_tree_summary(1).ends_with("1 commit is waiting to be pushed."));
+        assert!(clean_tree_summary(2).ends_with("2 commits are waiting to be pushed."));
+    }
 
     #[test]
     fn splits_a_nested_path_into_name_and_directory() {
