@@ -1,0 +1,8 @@
+[package]
+name = "git-core"
+description = "UI-independent Git logic for Ramus"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]

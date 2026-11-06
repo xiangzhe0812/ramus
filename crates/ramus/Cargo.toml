@@ -1,0 +1,11 @@
+[package]
+name = "ramus"
+description = "Ramus, a Git desktop client built with GPUI"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+git-core.workspace = true
+gpui.workspace = true
+gpui_platform.workspace = true
