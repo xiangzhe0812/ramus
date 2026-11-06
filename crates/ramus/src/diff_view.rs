@@ -157,7 +157,9 @@ fn diff_row(ix: usize, row: &DiffRow, theme: &Theme, interaction: &DiffInteracti
                             let on_line = interaction.on_line.clone();
                             let line = *line;
                             cell.cursor_pointer()
-                                .hover(|cell| cell.bg(theme.pill_active))
+                                .when(!picked, |cell| {
+                                    cell.hover(|cell| cell.bg(theme.pill_active))
+                                })
                                 .on_click(move |_, _, cx| on_line(line, cx))
                                 .child(sign)
                         }
