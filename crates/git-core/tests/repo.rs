@@ -1,9 +1,10 @@
-use std::{fs, path::Path, process::Command};
+use std::{fs, path::Path, process::Command, sync::Once};
 
 use git_core::{ChangeKind, Error, Head, Repo};
 use tempfile::TempDir;
 
 fn git(dir: &Path, args: &[&str]) {
+    isolate_from_host_git_config();
     let status = Command::new("git")
         .arg("-C")
         .arg(dir)
@@ -14,7 +15,27 @@ fn git(dir: &Path, args: &[&str]) {
     assert!(status.success(), "git {args:?} failed");
 }
 
+/// Keeps the host's git config (aliases, filters, hooks paths) out of the tests.
+/// Every test calls this before spawning git, so nothing reads the environment while
+/// it is being changed.
+fn isolate_from_host_git_config() {
+    static ONCE: Once = Once::new();
+    ONCE.call_once(|| {
+        // SAFETY: runs once, before any test thread has spawned a process.
+        unsafe {
+            std::env::set_var("GIT_CONFIG_GLOBAL", "/dev/null");
+            std::env::set_var("GIT_CONFIG_NOSYSTEM", "1");
+            // With no host config there is no identity, and commits need one.
+            for role in ["AUTHOR", "COMMITTER"] {
+                std::env::set_var(format!("GIT_{role}_NAME"), "Test");
+                std::env::set_var(format!("GIT_{role}_EMAIL"), "test@example.com");
+            }
+        }
+    });
+}
+
 fn new_repo() -> TempDir {
+    isolate_from_host_git_config();
     let dir = TempDir::new().unwrap();
     git(dir.path(), &["init", "-q", "-b", "main"]);
     dir
@@ -40,6 +61,7 @@ fn open_finds_the_root_from_a_subdirectory() {
 
 #[test]
 fn open_rejects_a_directory_that_is_not_a_repo() {
+    isolate_from_host_git_config();
     let dir = TempDir::new().unwrap();
     assert!(matches!(
         Repo::open(dir.path()),
@@ -661,5 +683,65 @@ mod untrusted_filters {
         let status = repo.status().unwrap();
         assert_eq!(status.files.len(), 1);
         assert!(!marker.exists());
+    }
+}
+
+mod untrusted_filter_allowlist {
+    use std::os::unix::fs::PermissionsExt;
+
+    use super::*;
+
+    fn marker_and_script(outside: &Path) -> (std::path::PathBuf, std::path::PathBuf) {
+        let marker = outside.join("PWNED");
+        let script = outside.join("evil.sh");
+        fs::write(
+            &script,
+            format!("#!/bin/sh\ntouch '{}'\n", marker.display()),
+        )
+        .unwrap();
+        fs::set_permissions(&script, fs::Permissions::from_mode(0o755)).unwrap();
+        (script, marker)
+    }
+
+    #[test]
+    fn a_filter_dressed_up_as_lfs_with_an_appended_command_does_not_run() {
+        let outside = TempDir::new().unwrap();
+        let (script, marker) = marker_and_script(outside.path());
+
+        let dir = new_repo();
+        fs::write(dir.path().join(".gitattributes"), "*.txt filter=lfs\n").unwrap();
+        git(dir.path(), &["add", ".gitattributes"]);
+        commit_file(dir.path(), "a.txt", "one\n");
+        // Starts with the real LFS command, then chains the payload through the shell.
+        git(
+            dir.path(),
+            &[
+                "config",
+                "filter.lfs.clean",
+                &format!("git-lfs clean -- %f; {}", script.display()),
+            ],
+        );
+        fs::write(dir.path().join("a.txt"), "one and a bit more\n").unwrap();
+
+        let repo = Repo::open(dir.path()).unwrap();
+        let change = repo.status().unwrap().files.into_iter().next().unwrap();
+        repo.diff(&change, git_core::DiffOptions::default())
+            .unwrap();
+        repo.stage(&["a.txt"]).unwrap();
+
+        assert!(!marker.exists(), "an LFS lookalike ran an appended command");
+    }
+
+    #[test]
+    fn a_repo_whose_config_cannot_be_read_is_refused_rather_than_run_unprotected() {
+        let dir = new_repo();
+        commit_file(dir.path(), "a.txt", "a\n");
+        // Not valid git config: every `git config` call now fails.
+        let config = dir.path().join(".git/config");
+        let mut text = fs::read_to_string(&config).unwrap();
+        text.push_str("\n[filter \"broken\n");
+        fs::write(&config, text).unwrap();
+
+        assert!(Repo::open(dir.path()).is_err());
     }
 }

