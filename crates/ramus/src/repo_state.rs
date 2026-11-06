@@ -1,4 +1,5 @@
 use std::{
+    collections::BTreeSet,
     path::PathBuf,
     sync::{Arc, Mutex, mpsc},
     time::Duration,
@@ -448,6 +449,32 @@ impl RepoState {
     pub fn stage_hunks(&mut self, path: String, hunks: Vec<DiffHunk>, cx: &mut Context<Self>) {
         self.write(cx, None, move |repo| {
             repo.stage_hunks(&path, &hunks.iter().collect::<Vec<_>>())
+        });
+    }
+
+    /// Stages just the chosen lines (indexes into `hunk.lines`) of one unstaged hunk.
+    pub fn stage_lines(
+        &mut self,
+        path: String,
+        hunk: DiffHunk,
+        selected: BTreeSet<usize>,
+        cx: &mut Context<Self>,
+    ) {
+        self.write(cx, None, move |repo| {
+            repo.stage_lines(&path, &hunk, &selected)
+        });
+    }
+
+    /// Unstages just the chosen lines of one staged hunk.
+    pub fn unstage_lines(
+        &mut self,
+        path: String,
+        hunk: DiffHunk,
+        selected: BTreeSet<usize>,
+        cx: &mut Context<Self>,
+    ) {
+        self.write(cx, None, move |repo| {
+            repo.unstage_lines(&path, &hunk, &selected)
         });
     }
 

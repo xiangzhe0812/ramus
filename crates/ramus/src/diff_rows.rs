@@ -1,6 +1,17 @@
 use git_core::{DiffLineKind, FileDiff, FileDiffs};
 use gpui::SharedString;
 
+/// One changed line of a hunk, which the user can pick to stage on its own.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct LineRef {
+    /// The line is in the staged diff, so picking it is for unstaging.
+    pub staged: bool,
+    /// Index into that diff's hunks.
+    pub hunk: usize,
+    /// Index into that hunk's lines.
+    pub line: usize,
+}
+
 /// What a hunk's button does, and which hunk it acts on.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct HunkAction {
@@ -26,6 +37,8 @@ pub enum DiffRow {
         old_number: Option<u32>,
         new_number: Option<u32>,
         text: SharedString,
+        /// Set for changed lines of a file that can be staged piece by piece.
+        line_ref: Option<LineRef>,
     },
 }
 
@@ -48,12 +61,22 @@ fn push_section(rows: &mut Vec<DiffRow>, diff: &FileDiff, staged: bool, enabled:
             header: hunk.header().into(),
             action: enabled.then_some(HunkAction { staged, index }),
         });
-        rows.extend(hunk.lines.iter().map(|line| DiffRow::Line {
-            kind: line.kind,
-            old_number: line.old_number,
-            new_number: line.new_number,
-            text: display_text(&line.text),
-        }));
+        rows.extend(
+            hunk.lines
+                .iter()
+                .enumerate()
+                .map(|(line_ix, line)| DiffRow::Line {
+                    kind: line.kind,
+                    old_number: line.old_number,
+                    new_number: line.new_number,
+                    text: display_text(&line.text),
+                    line_ref: (enabled && line.kind != DiffLineKind::Context).then_some(LineRef {
+                        staged,
+                        hunk: index,
+                        line: line_ix,
+                    }),
+                }),
+        );
     }
 }
 
@@ -200,6 +223,46 @@ mod tests {
                 },
             ]
         );
+    }
+
+    #[test]
+    fn only_changed_lines_of_a_stageable_file_can_be_picked() {
+        let mut diffs = FileDiffs {
+            staged: FileDiff::default(),
+            unstaged: diff(1),
+        };
+        diffs.unstaged.hunks[0]
+            .lines
+            .insert(0, line(DiffLineKind::Context, "ctx"));
+        let picks = |controls| -> Vec<Option<LineRef>> {
+            flatten(&diffs, controls)
+                .into_iter()
+                .filter_map(|row| match row {
+                    DiffRow::Line { line_ref, .. } => Some(line_ref),
+                    _ => None,
+                })
+                .collect()
+        };
+
+        let on = picks(on());
+        assert_eq!(on[0], None, "context lines can't be picked");
+        assert_eq!(
+            on[1],
+            Some(LineRef {
+                staged: false,
+                hunk: 0,
+                line: 1
+            })
+        );
+        assert_eq!(
+            on[2],
+            Some(LineRef {
+                staged: false,
+                hunk: 0,
+                line: 2
+            })
+        );
+        assert!(picks(HunkControls::default()).iter().all(Option::is_none));
     }
 
     #[test]

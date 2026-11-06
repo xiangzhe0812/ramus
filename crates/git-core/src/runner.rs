@@ -21,6 +21,8 @@ use crate::Error;
 ///   file. Filters from the user's global or system config are left alone, as are
 ///   `git-lfs` ones, so legitimate setups keep working. A blanked filter also loses its
 ///   `required` flag, or git would fail on every file it applies to.
+/// - Signatures are not verified when reading the log (`log.showSignature=false`), because
+///   that runs the repo's `gpg.program`.
 /// - Submodule working trees are not scanned (`diff.ignoreSubmodules=dirty`), because git
 ///   would run `git status` inside them under their own, unexamined, config.
 ///
@@ -231,6 +233,9 @@ fn command(dir: &Path, overrides: &[ConfigOverride], args: &[&str]) -> Command {
         // submodule working trees keeps that from running; a moved submodule commit still
         // shows as a change.
         .args(["-c", "diff.ignoreSubmodules=dirty"])
+        // `log.showSignature` makes `git log` run the configured `gpg.program` to verify
+        // each signed commit, so a repo could name any program there.
+        .args(["-c", "log.showSignature=false"])
         .args(args)
         .env("GIT_TERMINAL_PROMPT", "0")
         .env("GIT_OPTIONAL_LOCKS", "0")

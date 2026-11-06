@@ -1,10 +1,13 @@
-use std::path::{Path, PathBuf};
+use std::{
+    collections::BTreeSet,
+    path::{Path, PathBuf},
+};
 
 use crate::{
     Branch, BranchKind, BranchList, ChangeKind, DiffHunk, Error, FileChange, FileDiff, FileDiffs,
     RepoStatus,
     branch::{LIST_ARGS, is_safe_branch_name, parse_branches},
-    diff::{parse_diff, patch_for},
+    diff::{LinePatchError, parse_diff, patch_for, patch_for_lines},
     runner::{run_git, run_git_allowing, run_git_with_input},
     status::parse_status,
 };
@@ -132,6 +135,52 @@ impl Repo {
     /// Removes just `hunks` of the staged changes to `path` from the index.
     pub fn unstage_hunks(&self, path: &str, hunks: &[&DiffHunk]) -> Result<(), Error> {
         self.apply_hunks(path, hunks, true)
+    }
+
+    /// Stages just the chosen lines of `hunk` (indexes into `hunk.lines`; context lines
+    /// are ignored). The hunk must come from a diff computed without `ignore_whitespace`.
+    pub fn stage_lines(
+        &self,
+        path: &str,
+        hunk: &DiffHunk,
+        selected: &BTreeSet<usize>,
+    ) -> Result<(), Error> {
+        self.apply_lines(path, hunk, selected, false)
+    }
+
+    /// Removes just the chosen lines of a staged `hunk` from the index.
+    pub fn unstage_lines(
+        &self,
+        path: &str,
+        hunk: &DiffHunk,
+        selected: &BTreeSet<usize>,
+    ) -> Result<(), Error> {
+        self.apply_lines(path, hunk, selected, true)
+    }
+
+    fn apply_lines(
+        &self,
+        path: &str,
+        hunk: &DiffHunk,
+        selected: &BTreeSet<usize>,
+        reverse: bool,
+    ) -> Result<(), Error> {
+        let patch = patch_for_lines(path, hunk, selected, reverse).map_err(|error| {
+            Error::Parse(match error {
+                LinePatchError::NothingSelected => "no changed lines were selected".to_owned(),
+                LinePatchError::MissingNewlineAtEnd => {
+                    "this part of the file has no newline at its end, so only the whole hunk can be staged"
+                        .to_owned()
+                }
+            })
+        })?;
+        // The rewritten hunk header carries exact counts, so git has nothing to recount.
+        let mut args = vec!["apply", "--cached", "--whitespace=nowarn"];
+        if reverse {
+            args.push("--reverse");
+        }
+        args.push("-");
+        run_git_with_input(&self.root, &args, patch.as_bytes()).map(drop)
     }
 
     fn apply_hunks(&self, path: &str, hunks: &[&DiffHunk], reverse: bool) -> Result<(), Error> {

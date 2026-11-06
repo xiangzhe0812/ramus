@@ -1,4 +1,4 @@
-use std::{collections::HashSet, ops::Range, rc::Rc};
+use std::{collections::HashSet, ops::Range};
 
 use git_core::{CommitFile, CommitInfo, DiffOptions, FileDiffs, relative_time};
 use gpui::{
@@ -10,7 +10,7 @@ use gpui_component::input::{Input, InputEvent, InputState};
 
 use crate::{
     diff_rows::HunkControls,
-    diff_view::{DiffContent, diff_body, message},
+    diff_view::{DiffContent, DiffInteraction, diff_body, message},
     repo_state::RepoState,
     theme::{MONO_FONT, Theme},
 };
@@ -538,7 +538,7 @@ impl HistoryView {
             ("history-diff", self.diff_generation as usize),
             hide_whitespace,
             theme,
-            Rc::new(|_, _| {}),
+            DiffInteraction::read_only(),
         );
 
         div()

@@ -1,4 +1,8 @@
-use std::{ops::Range, rc::Rc};
+use std::{
+    collections::{BTreeSet, HashSet},
+    ops::Range,
+    rc::Rc,
+};
 
 use git_core::{ChangeKind, DiffOptions, FileChange, FileDiffs};
 use gpui::{
@@ -11,8 +15,8 @@ use gpui_component::input::{Input, InputEvent, InputState, Textarea, TextareaSta
 
 use crate::{
     actions::{SelectNextFile, SelectPreviousFile, ToggleSelectedFile},
-    diff_rows::{HunkAction, HunkControls},
-    diff_view::{DiffContent, diff_body, message},
+    diff_rows::{HunkAction, HunkControls, LineRef},
+    diff_view::{DiffContent, DiffInteraction, diff_body, message},
     repo_state::{RepoEvent, RepoState},
     theme::{Badge, MONO_FONT, Theme},
 };
@@ -85,6 +89,8 @@ pub struct ChangesView {
     description: Entity<TextareaState>,
     /// The next commit replaces the last one instead of adding to it.
     amend: bool,
+    /// Changed lines picked to be staged or unstaged on their own.
+    line_selection: HashSet<LineRef>,
     /// Holds keyboard focus while the file list is in use, so arrow keys move through it.
     list_focus: FocusHandle,
     list_scroll: UniformListScrollHandle,
@@ -132,6 +138,7 @@ impl ChangesView {
             summary,
             description,
             amend: false,
+            line_selection: HashSet::new(),
             list_focus: cx.focus_handle(),
             list_scroll: UniformListScrollHandle::new(),
             draft: None,
@@ -310,6 +317,7 @@ impl ChangesView {
             return;
         }
         self.selected = Some(path);
+        self.line_selection.clear();
         self.diff = None;
         self.diff_generation += 1;
         self.load_diff(cx);
@@ -318,6 +326,7 @@ impl ChangesView {
 
     fn toggle_whitespace(&mut self, cx: &mut Context<Self>) {
         self.hide_whitespace = !self.hide_whitespace;
+        self.line_selection.clear();
         self.load_diff(cx);
         cx.notify();
     }
@@ -339,7 +348,19 @@ impl ChangesView {
         cx.notify();
     }
 
-    /// Stages or unstages one hunk of the selected file's current diff.
+    /// Picks or unpicks a changed line to stage (or unstage) on its own.
+    fn toggle_line(&mut self, line: LineRef, cx: &mut Context<Self>) {
+        // Lines of the staged and unstaged sides can't be mixed in one action.
+        self.line_selection
+            .retain(|picked| picked.staged == line.staged);
+        if !self.line_selection.remove(&line) {
+            self.line_selection.insert(line);
+        }
+        cx.notify();
+    }
+
+    /// Stages or unstages a hunk of the selected file's current diff: just the lines picked
+    /// in it if there are any, otherwise all of it.
     fn apply_hunk(&mut self, action: HunkAction, cx: &mut Context<Self>) {
         let (Some(path), Some(source)) = (
             self.selected.clone(),
@@ -355,13 +376,19 @@ impl ChangesView {
         let Some(hunk) = hunks.get(action.index).cloned() else {
             return;
         };
-        self.repo_state.update(cx, |state, cx| {
-            if action.staged {
-                state.unstage_hunks(path, vec![hunk], cx)
-            } else {
-                state.stage_hunks(path, vec![hunk], cx)
-            }
-        });
+        let picked: BTreeSet<usize> = self
+            .line_selection
+            .iter()
+            .filter(|line| line.staged == action.staged && line.hunk == action.index)
+            .map(|line| line.line)
+            .collect();
+        self.repo_state
+            .update(cx, |state, cx| match (action.staged, picked.is_empty()) {
+                (true, true) => state.unstage_hunks(path, vec![hunk], cx),
+                (false, true) => state.stage_hunks(path, vec![hunk], cx),
+                (true, false) => state.unstage_lines(path, hunk, picked, cx),
+                (false, false) => state.stage_lines(path, hunk, picked, cx),
+            });
     }
 
     fn load_diff(&mut self, cx: &mut Context<Self>) {
@@ -410,6 +437,8 @@ impl ChangesView {
                     _ => false,
                 };
                 if !unchanged {
+                    // Picked lines belong to the diff they were picked in.
+                    this.line_selection.clear();
                     this.diff = Some(LoadedDiff::from_result(result, stageable, controls));
                     cx.notify();
                 }
@@ -659,12 +688,21 @@ impl ChangesView {
 
         let body = {
             let view = cx.entity();
+            let line_view = view.clone();
             diff_body(
                 self.diff.as_ref().map(|diff| &diff.content),
                 ("diff-rows", self.diff_generation as usize),
                 hide_whitespace,
                 theme,
-                Rc::new(move |action, cx| view.update(cx, |this, cx| this.apply_hunk(action, cx))),
+                DiffInteraction {
+                    on_hunk: Rc::new(move |action, cx| {
+                        view.update(cx, |this, cx| this.apply_hunk(action, cx))
+                    }),
+                    on_line: Rc::new(move |line, cx| {
+                        line_view.update(cx, |this, cx| this.toggle_line(line, cx))
+                    }),
+                    selection: Rc::new(self.line_selection.clone()),
+                },
             )
         };
 

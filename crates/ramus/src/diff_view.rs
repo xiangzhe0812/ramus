@@ -1,7 +1,7 @@
 //! Drawing a diff: the rows and the scrolling list that holds them. Shared by the
 //! Changes tab and the History tab.
 
-use std::{ops::Range, rc::Rc};
+use std::{collections::HashSet, ops::Range, rc::Rc};
 
 use git_core::{DiffLineKind, FileDiffs};
 use gpui::{
@@ -11,7 +11,7 @@ use gpui::{
 };
 
 use crate::{
-    diff_rows::{DiffRow, HunkAction, HunkControls, flatten, longest_row},
+    diff_rows::{DiffRow, HunkAction, HunkControls, LineRef, flatten, longest_row},
     theme::{MONO_FONT, Theme, UI_FONT},
 };
 
@@ -21,7 +21,30 @@ const LINE_NUMBER_WIDTH: f32 = 52.;
 /// What a hunk's button does when clicked.
 pub type HunkHandler = Rc<dyn Fn(HunkAction, &mut App)>;
 
-fn diff_row(ix: usize, row: &DiffRow, theme: &Theme, on_hunk: &HunkHandler) -> AnyElement {
+/// What picking a changed line does.
+pub type LineHandler = Rc<dyn Fn(LineRef, &mut App)>;
+
+/// How a diff reacts to the user: its hunk buttons, picking lines, and which lines are
+/// picked now.
+#[derive(Clone)]
+pub struct DiffInteraction {
+    pub on_hunk: HunkHandler,
+    pub on_line: LineHandler,
+    pub selection: Rc<HashSet<LineRef>>,
+}
+
+impl DiffInteraction {
+    /// For a diff that can't be changed, such as a commit in the history.
+    pub fn read_only() -> Self {
+        Self {
+            on_hunk: Rc::new(|_, _| {}),
+            on_line: Rc::new(|_, _| {}),
+            selection: Rc::default(),
+        }
+    }
+}
+
+fn diff_row(ix: usize, row: &DiffRow, theme: &Theme, interaction: &DiffInteraction) -> AnyElement {
     let number = |value: Option<u32>| {
         div()
             .w(px(LINE_NUMBER_WIDTH))
@@ -53,7 +76,13 @@ fn diff_row(ix: usize, row: &DiffRow, theme: &Theme, on_hunk: &HunkHandler) -> A
             .into_any_element(),
         DiffRow::Hunk { header, action } => {
             let button = action.map(|action| {
-                let on_hunk = on_hunk.clone();
+                let on_hunk = interaction.on_hunk.clone();
+                let picked = interaction
+                    .selection
+                    .iter()
+                    .filter(|line| line.staged == action.staged && line.hunk == action.index)
+                    .count();
+                let verb = if action.staged { "Unstage" } else { "Stage" };
                 div()
                     .id(("hunk-action", ix))
                     .h_full()
@@ -66,10 +95,10 @@ fn diff_row(ix: usize, row: &DiffRow, theme: &Theme, on_hunk: &HunkHandler) -> A
                     .text_size(px(11.5))
                     .text_color(theme.accent_soft)
                     .hover(|button| button.bg(theme.surface_selected))
-                    .child(if action.staged {
-                        "Unstage hunk"
-                    } else {
-                        "Stage hunk"
+                    .child(match picked {
+                        0 => format!("{verb} hunk"),
+                        1 => format!("{verb} 1 line"),
+                        n => format!("{verb} {n} lines"),
                     })
                     .on_click(move |_, _, cx| on_hunk(action, cx))
             });
@@ -85,6 +114,7 @@ fn diff_row(ix: usize, row: &DiffRow, theme: &Theme, on_hunk: &HunkHandler) -> A
             old_number,
             new_number,
             text,
+            line_ref,
         } => {
             let (background, sign, sign_color, text_color) = match kind {
                 DiffLineKind::Added => (
@@ -104,13 +134,36 @@ fn diff_row(ix: usize, row: &DiffRow, theme: &Theme, on_hunk: &HunkHandler) -> A
             base.when_some(background, |row, color| row.bg(color))
                 .child(number(*old_number))
                 .child(number(*new_number))
-                .child(
-                    div()
+                .child({
+                    // The +/- marker doubles as the way to pick the line.
+                    let picked = line_ref.is_some_and(|line| interaction.selection.contains(&line));
+                    let cell = div()
+                        .id(("pick", ix))
                         .w(px(20.))
+                        .h(px(16.))
                         .flex_none()
-                        .text_color(sign_color)
-                        .child(sign),
-                )
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .rounded(px(3.))
+                        .text_color(if picked {
+                            theme.accent_text
+                        } else {
+                            sign_color
+                        })
+                        .when(picked, |cell| cell.bg(theme.accent));
+                    match line_ref {
+                        Some(line) => {
+                            let on_line = interaction.on_line.clone();
+                            let line = *line;
+                            cell.cursor_pointer()
+                                .hover(|cell| cell.bg(theme.pill_active))
+                                .on_click(move |_, _, cx| on_line(line, cx))
+                                .child(sign)
+                        }
+                        None => cell.child(sign),
+                    }
+                })
                 .child(
                     // Natural width, so the longest line decides how far the list scrolls.
                     div()
@@ -132,14 +185,14 @@ pub fn diff_list(
     rows: Rc<Vec<DiffRow>>,
     longest: Option<usize>,
     theme: &Theme,
-    on_hunk: HunkHandler,
+    interaction: DiffInteraction,
 ) -> AnyElement {
     let theme = theme.clone();
     uniform_list(id, rows.len(), {
         let rows = rows.clone();
         move |range: Range<usize>, _window, _cx| {
             range
-                .filter_map(|ix| Some(diff_row(ix, rows.get(ix)?, &theme, &on_hunk)))
+                .filter_map(|ix| Some(diff_row(ix, rows.get(ix)?, &theme, &interaction)))
                 .collect::<Vec<_>>()
         }
     })
@@ -203,7 +256,7 @@ pub fn diff_body(
     id: impl Into<ElementId>,
     hide_whitespace: bool,
     theme: &Theme,
-    on_hunk: HunkHandler,
+    interaction: DiffInteraction,
 ) -> AnyElement {
     match content {
         None => message(theme, "Loading diff…"),
@@ -218,7 +271,7 @@ pub fn diff_body(
         ),
         Some(DiffContent::Failed(text)) => message(theme, text.clone()),
         Some(DiffContent::Rows { rows, longest, .. }) => {
-            diff_list(id, rows.clone(), *longest, theme, on_hunk)
+            diff_list(id, rows.clone(), *longest, theme, interaction)
         }
     }
 }

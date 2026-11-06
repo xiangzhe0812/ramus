@@ -116,6 +116,8 @@ impl Repo {
             &[
                 "log",
                 "--no-color",
+                // Verifying signatures would run a program named by the repo's config.
+                "--no-show-signature",
                 LOG_FORMAT,
                 "--skip",
                 &skip,

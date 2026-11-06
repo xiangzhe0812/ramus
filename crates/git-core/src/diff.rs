@@ -1,3 +1,5 @@
+use std::collections::BTreeSet;
+
 use crate::Error;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -153,6 +155,88 @@ pub(crate) fn patch_for(path: &str, hunks: &[&DiffHunk]) -> String {
         }
     }
     patch
+}
+
+/// Why a partial patch couldn't be built.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum LinePatchError {
+    /// None of the selected lines is a change.
+    NothingSelected,
+    /// The selection would leave a line without its final newline in the middle of the
+    /// file, which a patch can't express.
+    MissingNewlineAtEnd,
+}
+
+/// A patch that applies only the changed lines of `hunk` whose indexes are in `selected`
+/// (indexes into `hunk.lines`).
+///
+/// A hunk can't just have lines deleted from it: the lines left out have to be accounted
+/// for so the patch still fits the file. Staging (applying forward to the index):
+/// an unselected added line is simply not added, and an unselected removed line is kept,
+/// so it becomes context. Unstaging (applying the staged diff in reverse): an unselected
+/// added line stays in the index, so it becomes context, and an unselected removed line
+/// stays removed, so it is left out. The counts in the header are recomputed here.
+pub(crate) fn patch_for_lines(
+    path: &str,
+    hunk: &DiffHunk,
+    selected: &BTreeSet<usize>,
+    reverse: bool,
+) -> Result<String, LinePatchError> {
+    let mut lines: Vec<(char, &DiffLine)> = Vec::new();
+    let mut changes = 0;
+    for (ix, line) in hunk.lines.iter().enumerate() {
+        let chosen = selected.contains(&ix);
+        let prefix = match (line.kind, chosen) {
+            (DiffLineKind::Context, _) => ' ',
+            (DiffLineKind::Added, true) => '+',
+            (DiffLineKind::Removed, true) => '-',
+            // Not chosen: it either becomes context or disappears from the patch.
+            (DiffLineKind::Added, false) if reverse => ' ',
+            (DiffLineKind::Removed, false) if !reverse => ' ',
+            (DiffLineKind::Added | DiffLineKind::Removed, false) => continue,
+        };
+        if prefix != ' ' {
+            changes += 1;
+        }
+        lines.push((prefix, line));
+    }
+    if changes == 0 {
+        return Err(LinePatchError::NothingSelected);
+    }
+    // A line with no final newline can only be the last line of its side of the file.
+    for (ix, (prefix, line)) in lines.iter().enumerate() {
+        if !line.no_newline_at_eof {
+            continue;
+        }
+        let later = &lines[ix + 1..];
+        let old_side_goes_on = *prefix != '+' && later.iter().any(|(p, _)| *p != '+');
+        let new_side_goes_on = *prefix != '-' && later.iter().any(|(p, _)| *p != '-');
+        if old_side_goes_on || new_side_goes_on {
+            return Err(LinePatchError::MissingNewlineAtEnd);
+        }
+    }
+
+    let old_lines = lines.iter().filter(|(p, _)| *p != '+').count() as u32;
+    let new_lines = lines.iter().filter(|(p, _)| *p != '-').count() as u32;
+    let rewritten = DiffHunk {
+        old_start: hunk.old_start,
+        old_lines,
+        new_start: hunk.new_start,
+        new_lines,
+        section: hunk.section.clone(),
+        lines: Vec::new(),
+    };
+
+    let mut patch = patch_for(path, &[&rewritten]);
+    for (prefix, line) in lines {
+        patch.push(prefix);
+        patch.push_str(&line.text);
+        patch.push('\n');
+        if line.no_newline_at_eof {
+            patch.push_str("\\ No newline at end of file\n");
+        }
+    }
+    Ok(patch)
 }
 
 /// Parses `@@ -a[,b] +c[,d] @@ section`. A missing count means 1.

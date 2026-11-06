@@ -2574,3 +2574,469 @@ mod history {
         assert!(matches!(repo.merge(""), Err(Error::InvalidBranchName(_))));
     }
 }
+
+mod line_staging {
+    use std::collections::BTreeSet;
+
+    use git_core::{DiffLineKind, DiffOptions};
+
+    use super::*;
+
+    fn ten_lines() -> String {
+        (1..=10).map(|n| format!("l{n}\n")).collect()
+    }
+
+    /// `l3` replaced, a line added after `l6`, `l8` deleted: three separate changes that
+    /// still share one hunk.
+    fn edited() -> String {
+        ten_lines()
+            .replace("l3\n", "l3 NEW\n")
+            .replace("l6\n", "l6\nadded after 6\n")
+            .replace("l8\n", "")
+    }
+
+    fn setup() -> (TempDir, Repo) {
+        let dir = new_repo();
+        commit_file(dir.path(), "f.txt", &ten_lines());
+        fs::write(dir.path().join("f.txt"), edited()).unwrap();
+        let repo = Repo::open(dir.path()).unwrap();
+        (dir, repo)
+    }
+
+    fn change(repo: &Repo) -> git_core::FileChange {
+        repo.status()
+            .unwrap()
+            .files
+            .into_iter()
+            .find(|f| f.path == "f.txt")
+            .unwrap()
+    }
+
+    fn unstaged_hunk(repo: &Repo) -> git_core::DiffHunk {
+        let diffs = repo
+            .file_diffs(&change(repo), DiffOptions::default())
+            .unwrap();
+        assert_eq!(
+            diffs.unstaged.hunks.len(),
+            1,
+            "the three changes should share a hunk"
+        );
+        diffs.unstaged.hunks[0].clone()
+    }
+
+    fn staged_hunk(repo: &Repo) -> git_core::DiffHunk {
+        let diffs = repo
+            .file_diffs(&change(repo), DiffOptions::default())
+            .unwrap();
+        diffs.staged.hunks[0].clone()
+    }
+
+    /// The index of the first line of `hunk` with this kind and text.
+    fn find(hunk: &git_core::DiffHunk, kind: DiffLineKind, text: &str) -> usize {
+        hunk.lines
+            .iter()
+            .position(|l| l.kind == kind && l.text == text)
+            .unwrap_or_else(|| panic!("no {kind:?} line {text:?}"))
+    }
+
+    fn only(index: usize) -> BTreeSet<usize> {
+        BTreeSet::from([index])
+    }
+
+    fn index_content(dir: &Path) -> String {
+        let out = Command::new("git")
+            .arg("-C")
+            .arg(dir)
+            .args(["show", ":f.txt"])
+            .output()
+            .unwrap();
+        String::from_utf8(out.stdout).unwrap()
+    }
+
+    fn lines(text: &str) -> Vec<&str> {
+        text.lines().collect()
+    }
+
+    #[test]
+    fn staging_only_an_added_line_leaves_the_removal_it_replaces_unstaged() {
+        let (dir, repo) = setup();
+        let hunk = unstaged_hunk(&repo);
+
+        repo.stage_lines(
+            "f.txt",
+            &hunk,
+            &only(find(&hunk, DiffLineKind::Added, "l3 NEW")),
+        )
+        .unwrap();
+
+        let staged = index_content(dir.path());
+        let staged = lines(&staged);
+        assert!(
+            staged.contains(&"l3"),
+            "the old line is still there: {staged:?}"
+        );
+        assert!(staged.contains(&"l3 NEW"));
+        assert!(
+            !staged.contains(&"added after 6"),
+            "nothing else was staged"
+        );
+        assert!(staged.contains(&"l8"));
+    }
+
+    #[test]
+    fn staging_only_a_removal_deletes_just_that_line_from_the_index() {
+        let (dir, repo) = setup();
+        let hunk = unstaged_hunk(&repo);
+
+        repo.stage_lines(
+            "f.txt",
+            &hunk,
+            &only(find(&hunk, DiffLineKind::Removed, "l8")),
+        )
+        .unwrap();
+
+        let staged = index_content(dir.path());
+        let staged = lines(&staged);
+        assert!(!staged.contains(&"l8"));
+        assert!(staged.contains(&"l3") && !staged.contains(&"l3 NEW"));
+        assert!(!staged.contains(&"added after 6"));
+    }
+
+    #[test]
+    fn staging_a_replacement_pair_stages_just_that_replacement() {
+        let (dir, repo) = setup();
+        let hunk = unstaged_hunk(&repo);
+        let pair = BTreeSet::from([
+            find(&hunk, DiffLineKind::Removed, "l3"),
+            find(&hunk, DiffLineKind::Added, "l3 NEW"),
+        ]);
+
+        repo.stage_lines("f.txt", &hunk, &pair).unwrap();
+
+        let staged = index_content(dir.path());
+        let staged = lines(&staged);
+        assert!(staged.contains(&"l3 NEW") && !staged.contains(&"l3"));
+        assert!(!staged.contains(&"added after 6") && staged.contains(&"l8"));
+        // The other two changes are still waiting in the working tree.
+        let rest = repo
+            .file_diffs(&change(&repo), DiffOptions::default())
+            .unwrap()
+            .unstaged;
+        assert_eq!((rest.additions(), rest.deletions()), (1, 1));
+    }
+
+    #[test]
+    fn the_changes_not_chosen_stay_exactly_as_they_were_in_the_working_tree() {
+        let (dir, repo) = setup();
+        let hunk = unstaged_hunk(&repo);
+
+        repo.stage_lines(
+            "f.txt",
+            &hunk,
+            &only(find(&hunk, DiffLineKind::Added, "added after 6")),
+        )
+        .unwrap();
+
+        assert_eq!(
+            fs::read_to_string(dir.path().join("f.txt")).unwrap(),
+            edited()
+        );
+    }
+
+    #[test]
+    fn selecting_every_changed_line_is_the_same_as_staging_the_whole_hunk() {
+        let (dir, repo) = setup();
+        let hunk = unstaged_hunk(&repo);
+        let all: BTreeSet<usize> = hunk
+            .lines
+            .iter()
+            .enumerate()
+            .filter(|(_, l)| l.kind != DiffLineKind::Context)
+            .map(|(ix, _)| ix)
+            .collect();
+
+        repo.stage_lines("f.txt", &hunk, &all).unwrap();
+
+        assert_eq!(index_content(dir.path()), edited());
+        assert!(change(&repo).is_fully_staged());
+    }
+
+    #[test]
+    fn staging_lines_one_at_a_time_builds_up_to_the_whole_change() {
+        let (dir, repo) = setup();
+        for text in ["l3 NEW", "added after 6"] {
+            let hunk = unstaged_hunk(&repo);
+            repo.stage_lines(
+                "f.txt",
+                &hunk,
+                &only(find(&hunk, DiffLineKind::Added, text)),
+            )
+            .unwrap();
+        }
+        for text in ["l3", "l8"] {
+            let hunk = unstaged_hunk(&repo);
+            repo.stage_lines(
+                "f.txt",
+                &hunk,
+                &only(find(&hunk, DiffLineKind::Removed, text)),
+            )
+            .unwrap();
+        }
+        assert_eq!(index_content(dir.path()), edited());
+    }
+
+    #[test]
+    fn unstaging_an_added_line_keeps_the_other_staged_changes() {
+        let (dir, repo) = setup();
+        repo.stage(&["f.txt"]).unwrap();
+        let hunk = staged_hunk(&repo);
+
+        repo.unstage_lines(
+            "f.txt",
+            &hunk,
+            &only(find(&hunk, DiffLineKind::Added, "added after 6")),
+        )
+        .unwrap();
+
+        let staged = index_content(dir.path());
+        let staged = lines(&staged);
+        assert!(
+            !staged.contains(&"added after 6"),
+            "that line is out of the index"
+        );
+        assert!(
+            staged.contains(&"l3 NEW") && !staged.contains(&"l3"),
+            "the replacement is still staged"
+        );
+        assert!(!staged.contains(&"l8"), "the deletion is still staged");
+        assert_eq!(
+            fs::read_to_string(dir.path().join("f.txt")).unwrap(),
+            edited()
+        );
+    }
+
+    #[test]
+    fn unstaging_a_removal_puts_that_line_back_in_the_index() {
+        let (dir, repo) = setup();
+        repo.stage(&["f.txt"]).unwrap();
+        let hunk = staged_hunk(&repo);
+
+        repo.unstage_lines(
+            "f.txt",
+            &hunk,
+            &only(find(&hunk, DiffLineKind::Removed, "l8")),
+        )
+        .unwrap();
+
+        let staged = index_content(dir.path());
+        let staged = lines(&staged);
+        assert!(staged.contains(&"l8"));
+        assert!(staged.contains(&"l3 NEW") && staged.contains(&"added after 6"));
+    }
+
+    #[test]
+    fn a_commit_after_staging_some_lines_contains_only_those_lines() {
+        let (dir, repo) = setup();
+        let hunk = unstaged_hunk(&repo);
+        repo.stage_lines(
+            "f.txt",
+            &hunk,
+            &only(find(&hunk, DiffLineKind::Added, "added after 6")),
+        )
+        .unwrap();
+
+        repo.commit("Just the added line", "").unwrap();
+
+        let shown = Command::new("git")
+            .arg("-C")
+            .arg(dir.path())
+            .args(["show", "HEAD", "--format=", "-U0"])
+            .output()
+            .unwrap();
+        let shown = String::from_utf8_lossy(&shown.stdout);
+        assert!(shown.contains("+added after 6"), "{shown}");
+        assert!(
+            !shown.contains("l3 NEW") && !shown.contains("-l8"),
+            "{shown}"
+        );
+    }
+
+    #[test]
+    fn selecting_only_context_or_nothing_is_an_error() {
+        let (_dir, repo) = setup();
+        let hunk = unstaged_hunk(&repo);
+        let context = hunk
+            .lines
+            .iter()
+            .position(|l| l.kind == DiffLineKind::Context)
+            .unwrap();
+
+        assert!(repo.stage_lines("f.txt", &hunk, &BTreeSet::new()).is_err());
+        assert!(repo.stage_lines("f.txt", &hunk, &only(context)).is_err());
+    }
+
+    #[test]
+    fn a_partial_change_at_the_end_of_a_file_without_a_newline_is_refused_not_corrupted() {
+        let dir = new_repo();
+        commit_file(dir.path(), "f.txt", "a\nb");
+        fs::write(dir.path().join("f.txt"), "a\nb2").unwrap();
+        let repo = Repo::open(dir.path()).unwrap();
+        let hunk = repo
+            .file_diffs(&change(&repo), DiffOptions::default())
+            .unwrap()
+            .unstaged
+            .hunks[0]
+            .clone();
+        let before = index_content(dir.path());
+
+        let error = repo
+            .stage_lines(
+                "f.txt",
+                &hunk,
+                &only(find(&hunk, DiffLineKind::Added, "b2")),
+            )
+            .unwrap_err()
+            .to_string();
+
+        assert!(error.contains("no newline"), "{error}");
+        assert_eq!(
+            index_content(dir.path()),
+            before,
+            "the index must be untouched"
+        );
+        // Choosing both lines is the whole change, which is fine.
+        let both = BTreeSet::from([
+            find(&hunk, DiffLineKind::Removed, "b"),
+            find(&hunk, DiffLineKind::Added, "b2"),
+        ]);
+        repo.stage_lines("f.txt", &hunk, &both).unwrap();
+        assert_eq!(index_content(dir.path()), "a\nb2");
+    }
+
+    #[test]
+    fn file_names_with_spaces_and_quotes_work_for_partial_staging() {
+        for name in ["my notes.txt", "q\"uote.txt"] {
+            let dir = new_repo();
+            commit_file(dir.path(), name, &ten_lines());
+            fs::write(dir.path().join(name), edited()).unwrap();
+            let repo = Repo::open(dir.path()).unwrap();
+            let change = repo
+                .status()
+                .unwrap()
+                .files
+                .into_iter()
+                .find(|f| f.path == name)
+                .unwrap();
+            let hunk = repo
+                .file_diffs(&change, DiffOptions::default())
+                .unwrap()
+                .unstaged
+                .hunks[0]
+                .clone();
+
+            repo.stage_lines(
+                name,
+                &hunk,
+                &only(find(&hunk, DiffLineKind::Added, "added after 6")),
+            )
+            .unwrap_or_else(|e| panic!("{name:?}: {e}"));
+
+            let staged = Command::new("git")
+                .arg("-C")
+                .arg(dir.path())
+                .args(["show", &format!(":{name}")])
+                .output()
+                .unwrap();
+            assert!(
+                String::from_utf8_lossy(&staged.stdout).contains("added after 6"),
+                "{name:?}"
+            );
+        }
+    }
+}
+
+mod untrusted_signature_verification {
+    use std::os::unix::fs::PermissionsExt;
+
+    use super::*;
+
+    /// A repo whose latest commit carries a (fake) signature header, with the repo's own
+    /// config telling git to verify signatures using a program of its choosing.
+    fn repo_that_verifies_signatures_with_a_hostile_program()
+    -> (TempDir, TempDir, std::path::PathBuf) {
+        let outside = TempDir::new().unwrap();
+        let marker = outside.path().join("PWNED");
+        let script = outside.path().join("evil-gpg.sh");
+        fs::write(
+            &script,
+            format!("#!/bin/sh\ntouch '{}'\nexit 1\n", marker.display()),
+        )
+        .unwrap();
+        fs::set_permissions(&script, fs::Permissions::from_mode(0o755)).unwrap();
+
+        let dir = new_repo();
+        commit_file(dir.path(), "a.txt", "a\n");
+        let out = |args: &[&str]| {
+            let o = Command::new("git")
+                .arg("-C")
+                .arg(dir.path())
+                .args(args)
+                .output()
+                .unwrap();
+            String::from_utf8(o.stdout).unwrap().trim().to_owned()
+        };
+        let tree = out(&["rev-parse", "HEAD^{tree}"]);
+        let parent = out(&["rev-parse", "HEAD"]);
+        let raw = format!(
+            "tree {tree}\nparent {parent}\nauthor A <a@x.io> 1700000000 +0000\n\
+             committer A <a@x.io> 1700000000 +0000\n\
+             gpgsig -----BEGIN PGP SIGNATURE-----\n \n fake\n -----END PGP SIGNATURE-----\n\nsigned-looking\n"
+        );
+        let mut child = Command::new("git")
+            .arg("-C")
+            .arg(dir.path())
+            .args(["hash-object", "-t", "commit", "-w", "--stdin"])
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        std::io::Write::write_all(child.stdin.as_mut().unwrap(), raw.as_bytes()).unwrap();
+        let id = String::from_utf8(child.wait_with_output().unwrap().stdout)
+            .unwrap()
+            .trim()
+            .to_owned();
+        git(dir.path(), &["update-ref", "HEAD", &id]);
+
+        git(dir.path(), &["config", "log.showSignature", "true"]);
+        git(
+            dir.path(),
+            &["config", "gpg.program", script.to_str().unwrap()],
+        );
+        (dir, outside, marker)
+    }
+
+    #[test]
+    fn the_harness_detects_gpg_being_run_by_plain_git_log() {
+        let (dir, _outside, marker) = repo_that_verifies_signatures_with_a_hostile_program();
+        let _ = Command::new("git")
+            .arg("-C")
+            .arg(dir.path())
+            .args(["log", "-1"])
+            .output()
+            .unwrap();
+        assert!(
+            marker.exists(),
+            "plain `git log` should run the configured gpg program"
+        );
+    }
+
+    #[test]
+    fn reading_the_log_never_runs_a_repo_configured_signature_program() {
+        let (dir, _outside, marker) = repo_that_verifies_signatures_with_a_hostile_program();
+
+        let commits = Repo::open(dir.path()).unwrap().log(0, 10).unwrap();
+
+        assert_eq!(commits.len(), 2, "the log should still be readable");
+        assert!(!marker.exists(), "the log ran the repository's gpg program");
+    }
+}
