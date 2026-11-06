@@ -61,7 +61,7 @@ pub(crate) fn run_git_with_env(
     } else {
         Err(Error::Git {
             command: args.first().copied().unwrap_or_default().to_owned(),
-            stderr: String::from_utf8_lossy(&output.stderr).trim().to_owned(),
+            stderr: failure_message(&output.stderr, &output.stdout),
         })
     }
 }
@@ -272,8 +272,20 @@ fn exec(
     } else {
         Err(Error::Git {
             command: args.first().copied().unwrap_or_default().to_owned(),
-            stderr: String::from_utf8_lossy(&output.stderr).trim().to_owned(),
+            stderr: failure_message(&output.stderr, &output.stdout),
         })
+    }
+}
+
+/// What to tell the user when git failed. Git usually explains on stderr, but some
+/// commands (a conflicting revert or merge, for one) explain on stdout and leave stderr
+/// empty, which would otherwise produce an error with no reason in it.
+fn failure_message(stderr: &[u8], stdout: &[u8]) -> String {
+    let stderr = String::from_utf8_lossy(stderr).trim().to_owned();
+    if stderr.is_empty() {
+        String::from_utf8_lossy(stdout).trim().to_owned()
+    } else {
+        stderr
     }
 }
 
@@ -311,6 +323,16 @@ mod tests {
             .filter(|(_, value)| value.is_empty())
             .map(|(key, _)| key.as_bytes().to_vec())
             .collect()
+    }
+
+    #[test]
+    fn a_failure_is_explained_by_stderr_or_else_by_stdout() {
+        assert_eq!(failure_message(b"  fatal: bad\n", b"ignored"), "fatal: bad");
+        assert_eq!(
+            failure_message(b"", b"CONFLICT (content): Merge conflict in a.txt\n"),
+            "CONFLICT (content): Merge conflict in a.txt"
+        );
+        assert_eq!(failure_message(b"", b""), "");
     }
 
     #[test]

@@ -112,6 +112,13 @@ impl BranchPopover {
         cx.emit(DismissEvent);
     }
 
+    /// Merges `branch` into the current branch. A conflict aborts the merge.
+    fn merge(&mut self, branch: String, cx: &mut Context<Self>) {
+        self.repo_state
+            .update(cx, |state, cx| state.merge_branch(branch, cx));
+        cx.emit(DismissEvent);
+    }
+
     fn start_creating(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.creating = true;
         self.new_name
@@ -165,6 +172,32 @@ impl BranchPopover {
                     .truncate()
                     .font_family(MONO_FONT)
                     .child(SharedString::from(branch.name.clone())),
+            )
+            .when(
+                !branch.is_current && branch.kind == git_core::BranchKind::Local,
+                |row| {
+                    let view = cx.entity();
+                    let name = branch.name.clone();
+                    row.child(
+                        div()
+                            .id(("merge", ix))
+                            .px(px(8.))
+                            .h(px(24.))
+                            .flex()
+                            .items_center()
+                            .rounded(px(12.))
+                            .text_size(px(11.5))
+                            .text_color(theme.accent_soft)
+                            .hover(|link| link.bg(theme.pill_active))
+                            // Merging must not also switch to the branch the row stands for.
+                            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                            .on_click(move |_, _, cx| {
+                                cx.stop_propagation();
+                                view.update(cx, |this, cx| this.merge(name.clone(), cx))
+                            })
+                            .child("Merge"),
+                    )
+                },
             )
             .children(branch.last_commit.map(|time| {
                 div()

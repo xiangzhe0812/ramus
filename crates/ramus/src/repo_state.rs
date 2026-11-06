@@ -7,8 +7,8 @@ use std::{
 use crate::settings::{self, Settings};
 
 use git_core::{
-    Branch, BranchList, CancelToken, DiffHunk, DiscardBackup, FileChange, Progress, Repo,
-    RepoStatus,
+    Branch, BranchList, CancelToken, CommitInfo, DiffHunk, DiscardBackup, FileChange, Progress,
+    Repo, RepoStatus,
 };
 use gpui::{Context, EventEmitter, SharedString, Task};
 
@@ -304,6 +304,28 @@ impl RepoState {
         }
     }
 
+    /// Adds a commit that undoes `commit`. A conflict aborts it, leaving nothing behind.
+    pub fn revert_commit(&mut self, commit: CommitInfo, cx: &mut Context<Self>) {
+        if self.require_trust("revert a commit", cx) {
+            self.write(cx, None, move |repo| repo.revert(&commit));
+        }
+    }
+
+    /// Applies `commit` on top of the current branch. A conflict aborts it.
+    pub fn cherry_pick_commit(&mut self, commit: CommitInfo, cx: &mut Context<Self>) {
+        if self.require_trust("cherry-pick a commit", cx) {
+            self.write(cx, None, move |repo| repo.cherry_pick(&commit));
+        }
+    }
+
+    /// Merges `branch` into the current branch. A conflict aborts it.
+    pub fn merge_branch(&mut self, branch: String, cx: &mut Context<Self>) {
+        if self.require_trust("merge a branch", cx) {
+            self.branches = None;
+            self.write(cx, None, move |repo| repo.merge(&branch));
+        }
+    }
+
     pub fn create_branch(&mut self, name: String, cx: &mut Context<Self>) {
         if self.require_trust("create a branch", cx) {
             self.branches = None;
@@ -325,6 +347,12 @@ impl RepoState {
 
     pub fn is_busy(&self) -> bool {
         self.action.is_some()
+    }
+
+    /// Shows `message` in the error banner, for a failure outside the state's own work.
+    pub fn report(&mut self, message: String, cx: &mut Context<Self>) {
+        self.error = Some(message.into());
+        cx.notify();
     }
 
     pub fn dismiss_error(&mut self, cx: &mut Context<Self>) {
@@ -1247,5 +1275,96 @@ mod tests {
         cx.executor().run_until_parked();
 
         assert!(state.read_with(cx, |state, _| state.last_discard().is_some()));
+    }
+
+    fn head_commit(
+        cx: &mut TestAppContext,
+        state: &gpui::Entity<RepoState>,
+        dir: &Path,
+    ) -> git_core::CommitInfo {
+        let repo = state.read_with(cx, |s, _| s.repo().unwrap().clone());
+        let _ = dir;
+        repo.log(0, 1).unwrap().remove(0)
+    }
+
+    #[gpui::test]
+    async fn an_untrusted_repository_will_not_revert_cherry_pick_or_merge(cx: &mut TestAppContext) {
+        let dir = repo_without_hooks();
+        git(dir.path(), &["branch", "other"]);
+        let state = cx.new(|_| RepoState::default());
+        state.update(cx, |state, cx| state.open(dir.path().to_owned(), cx));
+        cx.executor().run_until_parked();
+        let commit = head_commit(cx, &state, dir.path());
+        let before = commit_count(dir.path());
+
+        state.update(cx, |state, cx| state.revert_commit(commit.clone(), cx));
+        state.read_with(cx, |s, _| {
+            assert!(s.error().unwrap().contains("revert a commit"))
+        });
+        state.update(cx, |state, cx| state.cherry_pick_commit(commit, cx));
+        state.read_with(cx, |s, _| {
+            assert!(s.error().unwrap().contains("cherry-pick a commit"))
+        });
+        state.update(cx, |state, cx| state.merge_branch("other".into(), cx));
+        state.read_with(cx, |s, _| {
+            assert!(s.error().unwrap().contains("merge a branch"))
+        });
+        cx.executor().run_until_parked();
+
+        assert_eq!(commit_count(dir.path()), before);
+    }
+
+    #[gpui::test]
+    async fn a_trusted_repository_reverts_a_commit(cx: &mut TestAppContext) {
+        let dir = repo_without_hooks();
+        fs::write(dir.path().join("extra.txt"), "x\n").unwrap();
+        git(dir.path(), &["add", "."]);
+        git(dir.path(), &["commit", "-q", "-m", "add extra"]);
+        let state = open_trusted(cx, dir.path());
+        let target = head_commit(cx, &state, dir.path());
+
+        state.update(cx, |state, cx| state.revert_commit(target, cx));
+        cx.executor().run_until_parked();
+
+        assert!(!dir.path().join("extra.txt").exists());
+        assert!(last_subject(dir.path()).starts_with("Revert"));
+        // The status the UI shows follows (HEAD moved), which is what refreshes History.
+        state.read_with(cx, |s, _| assert!(s.error().is_none()));
+    }
+
+    #[gpui::test]
+    async fn a_conflicting_merge_reports_an_error_and_leaves_the_tree_alone(
+        cx: &mut TestAppContext,
+    ) {
+        let dir = repo_without_hooks();
+        git(dir.path(), &["switch", "-q", "-c", "feature"]);
+        fs::write(dir.path().join("a.txt"), "feature side\n").unwrap();
+        git(dir.path(), &["commit", "-q", "-a", "-m", "feature edit"]);
+        git(dir.path(), &["switch", "-q", "main"]);
+        fs::write(dir.path().join("a.txt"), "main side\n").unwrap();
+        git(dir.path(), &["commit", "-q", "-a", "-m", "main edit"]);
+        let state = open_trusted(cx, dir.path());
+
+        state.update(cx, |state, cx| state.merge_branch("feature".into(), cx));
+        cx.executor().run_until_parked();
+
+        assert_eq!(
+            fs::read_to_string(dir.path().join("a.txt")).unwrap(),
+            "main side\n"
+        );
+        state.read_with(cx, |s, _| {
+            assert!(s.error().is_some(), "the conflict should be reported");
+            let conflicted = s
+                .status()
+                .unwrap()
+                .files
+                .iter()
+                .any(|f| f.kind() == git_core::ChangeKind::Conflicted);
+            assert!(!conflicted, "no half-merged files");
+        });
+        assert!(
+            !dir.path().join(".git/MERGE_HEAD").exists(),
+            "the merge must be aborted"
+        );
     }
 }

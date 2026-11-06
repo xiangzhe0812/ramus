@@ -1,7 +1,7 @@
 use git_core::{Head, RepoStatus};
 use gpui::{
-    Context, Entity, InteractiveElement, IntoElement, ParentElement, Render,
-    StatefulInteractiveElement, Styled, Subscription, Window, div, px,
+    Context, Entity, EventEmitter, InteractiveElement, IntoElement, ParentElement, Render,
+    StatefulInteractiveElement, Styled, Subscription, Window, div, prelude::FluentBuilder, px,
 };
 
 use crate::{
@@ -10,8 +10,21 @@ use crate::{
     theme::{MONO_FONT, Theme},
 };
 
+/// The two views the window can show.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Tab {
+    Changes,
+    History,
+}
+
+/// The user clicked a tab.
+pub struct TabRequested(pub Tab);
+
+impl EventEmitter<TabRequested> for TitleBar {}
+
 pub struct TitleBar {
     repo_state: Entity<RepoState>,
+    tab: Tab,
     _observe: Subscription,
 }
 
@@ -20,8 +33,14 @@ impl TitleBar {
         let _observe = cx.observe(&repo_state, |_, _, cx| cx.notify());
         Self {
             repo_state,
+            tab: Tab::Changes,
             _observe,
         }
+    }
+
+    pub fn set_tab(&mut self, tab: Tab, cx: &mut Context<Self>) {
+        self.tab = tab;
+        cx.notify();
     }
 }
 
@@ -209,6 +228,43 @@ impl Render for TitleBar {
                             .child(count.to_string())
                     }))
             }))
+            .child(div().flex_1())
+            .child(
+                div()
+                    .flex()
+                    .p(px(3.))
+                    .gap(px(2.))
+                    .rounded(px(20.))
+                    .border_1()
+                    .border_color(theme.border)
+                    .bg(theme.surface)
+                    .children([(Tab::Changes, "Changes"), (Tab::History, "History")].map(
+                        |(tab, label)| {
+                            let active = self.tab == tab;
+                            div()
+                                .id(label)
+                                .h(px(32.))
+                                .px(px(16.))
+                                .flex()
+                                .items_center()
+                                .rounded(px(16.))
+                                .cursor_pointer()
+                                .when(active, |pill| {
+                                    pill.bg(theme.pill_active)
+                                        .font_weight(gpui::FontWeight::SEMIBOLD)
+                                })
+                                .when(!active, |pill| {
+                                    pill.text_color(theme.text_muted)
+                                        .font_weight(gpui::FontWeight::MEDIUM)
+                                        .hover(|pill| pill.bg(theme.surface_selected))
+                                })
+                                .on_click(
+                                    cx.listener(move |_, _, _, cx| cx.emit(TabRequested(tab))),
+                                )
+                                .child(label)
+                        },
+                    )),
+            )
     }
 }
 

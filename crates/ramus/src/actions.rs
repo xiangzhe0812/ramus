@@ -8,6 +8,8 @@ actions!(
         DiscardSelected,
         SelectNextFile,
         SelectPreviousFile,
-        ToggleSelectedFile
+        ToggleSelectedFile,
+        ShowChanges,
+        ShowHistory
     ]
 );

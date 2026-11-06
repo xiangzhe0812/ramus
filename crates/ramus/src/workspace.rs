@@ -5,12 +5,13 @@ use gpui::{
 };
 
 use crate::{
-    actions::{DiscardSelected, OpenRepository, ToggleBranches},
+    actions::{DiscardSelected, OpenRepository, ShowChanges, ShowHistory, ToggleBranches},
     branch_popover::BranchPopover,
     changes_view::{ChangesEvent, ChangesView},
+    history_view::HistoryView,
     repo_state::RepoState,
     theme::{MONO_FONT, Theme},
-    title_bar::TitleBar,
+    title_bar::{Tab, TabRequested, TitleBar},
     welcome::Welcome,
 };
 
@@ -18,6 +19,8 @@ pub struct Workspace {
     repo_state: Entity<RepoState>,
     title_bar: Entity<TitleBar>,
     changes: Entity<ChangesView>,
+    history: Entity<HistoryView>,
+    tab: Tab,
     welcome: Entity<Welcome>,
     branch_popover: Option<Entity<BranchPopover>>,
     /// Files the user asked to discard, waiting for them to confirm.
@@ -41,6 +44,12 @@ impl Workspace {
         window.focus(&focus_handle, cx);
 
         let changes = cx.new(|cx| ChangesView::new(repo_state.clone(), window, cx));
+        let history = cx.new(|cx| HistoryView::new(repo_state.clone(), window, cx));
+        let title_bar = cx.new(|cx| TitleBar::new(repo_state.clone(), cx));
+        cx.subscribe(&title_bar, |this, _, event: &TabRequested, cx| {
+            this.show(event.0, cx)
+        })
+        .detach();
         cx.subscribe_in(
             &changes,
             window,
@@ -55,14 +64,22 @@ impl Workspace {
         .detach();
 
         Self {
-            title_bar: cx.new(|cx| TitleBar::new(repo_state.clone(), cx)),
+            title_bar,
             changes,
+            history,
+            tab: Tab::Changes,
             welcome: cx.new(|_| Welcome),
             branch_popover: None,
             pending_discard: None,
             repo_state,
             focus_handle,
         }
+    }
+
+    fn show(&mut self, tab: Tab, cx: &mut Context<Self>) {
+        self.tab = tab;
+        self.title_bar.update(cx, |bar, cx| bar.set_tab(tab, cx));
+        cx.notify();
     }
 
     fn confirm_discard(&mut self, cx: &mut Context<Self>) {
@@ -411,7 +428,10 @@ impl Render for Workspace {
         let has_repo = self.repo_state.read(cx).repo().is_some();
 
         let body = if has_repo {
-            self.changes.clone().into_any_element()
+            match self.tab {
+                Tab::Changes => self.changes.clone().into_any_element(),
+                Tab::History => self.history.clone().into_any_element(),
+            }
         } else {
             div()
                 .flex_1()
@@ -449,6 +469,8 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::open_repository))
             .on_action(cx.listener(Self::toggle_branches))
             .on_action(cx.listener(Self::discard_selected))
+            .on_action(cx.listener(|this, _: &ShowChanges, _, cx| this.show(Tab::Changes, cx)))
+            .on_action(cx.listener(|this, _: &ShowHistory, _, cx| this.show(Tab::History, cx)))
             .on_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, _, cx| {
                 if this.pending_discard.is_some() {
                     match event.keystroke.key.as_str() {

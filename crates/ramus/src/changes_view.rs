@@ -1,19 +1,20 @@
 use std::{ops::Range, rc::Rc};
 
-use git_core::{ChangeKind, DiffLineKind, DiffOptions, FileChange, FileDiffs};
+use git_core::{ChangeKind, DiffOptions, FileChange, FileDiffs};
 use gpui::{
     AnyElement, AppContext, Context, Entity, EventEmitter, FocusHandle, InteractiveElement,
-    IntoElement, ListHorizontalSizingBehavior, MouseButton, ParentElement, Render, ScrollStrategy,
-    SharedString, StatefulInteractiveElement, Styled, Subscription, Task, UniformListScrollHandle,
-    Window, div, prelude::FluentBuilder, px, uniform_list,
+    IntoElement, MouseButton, ParentElement, Render, ScrollStrategy, SharedString,
+    StatefulInteractiveElement, Styled, Subscription, Task, UniformListScrollHandle, Window, div,
+    prelude::FluentBuilder, px, uniform_list,
 };
 use gpui_component::input::{Input, InputEvent, InputState, Textarea, TextareaState};
 
 use crate::{
     actions::{SelectNextFile, SelectPreviousFile, ToggleSelectedFile},
-    diff_rows::{DiffRow, HunkAction, HunkControls, flatten, longest_row},
+    diff_rows::{HunkAction, HunkControls},
+    diff_view::{DiffContent, diff_body, message},
     repo_state::{RepoEvent, RepoState},
-    theme::{Badge, MONO_FONT, Theme, UI_FONT},
+    theme::{Badge, MONO_FONT, Theme},
 };
 
 /// How much of a file (or of all files) is staged for the next commit.
@@ -22,21 +23,6 @@ enum Inclusion {
     None,
     Some,
     All,
-}
-
-/// What the diff pane has for the selected file.
-enum DiffContent {
-    Rows {
-        rows: Rc<Vec<DiffRow>>,
-        /// The row with the longest line, which sizes the list so it can scroll sideways.
-        longest: Option<usize>,
-        additions: usize,
-        deletions: usize,
-    },
-    Binary,
-    /// Nothing to show as text, e.g. a mode change or an emptied file.
-    Empty,
-    Failed(SharedString),
 }
 
 struct LoadedDiff {
@@ -69,19 +55,7 @@ impl LoadedDiff {
             Ok(diffs) => diffs,
             Err(error) => return Self::failed(error.to_string()),
         };
-        let content = if diffs.binary() {
-            DiffContent::Binary
-        } else if diffs.is_empty() {
-            DiffContent::Empty
-        } else {
-            let rows = flatten(&diffs, controls);
-            DiffContent::Rows {
-                longest: longest_row(&rows),
-                rows: Rc::new(rows),
-                additions: diffs.additions(),
-                deletions: diffs.deletions(),
-            }
-        };
+        let content = DiffContent::from_diffs(&diffs, controls);
         Self {
             source: Some(diffs),
             stageable,
@@ -581,115 +555,6 @@ fn file_row(
         .into_any_element()
 }
 
-const DIFF_ROW_HEIGHT: f32 = 20.;
-const LINE_NUMBER_WIDTH: f32 = 52.;
-
-fn diff_row(ix: usize, row: &DiffRow, theme: &Theme, view: &Entity<ChangesView>) -> AnyElement {
-    let number = |value: Option<u32>| {
-        div()
-            .w(px(LINE_NUMBER_WIDTH))
-            .flex_none()
-            .pr(px(10.))
-            .text_right()
-            .text_color(theme.diff_line_number)
-            .child(value.map(|n| n.to_string()).unwrap_or_default())
-    };
-
-    let base = div()
-        .id(("diff-row", ix))
-        .w_full()
-        .h(px(DIFF_ROW_HEIGHT))
-        .flex()
-        .items_center()
-        .font_family(MONO_FONT)
-        .text_size(px(12.5));
-
-    match row {
-        DiffRow::Section(title) => base
-            .bg(theme.pill_active)
-            .text_color(theme.text)
-            .font_family(UI_FONT)
-            .font_weight(gpui::FontWeight::SEMIBOLD)
-            .text_size(px(11.5))
-            .pl(px(14.))
-            .child(title.clone())
-            .into_any_element(),
-        DiffRow::Hunk { header, action } => {
-            let button = action.map(|action| {
-                let view = view.clone();
-                div()
-                    .id(("hunk-action", ix))
-                    .h_full()
-                    .px(px(12.))
-                    .flex()
-                    .items_center()
-                    .cursor_pointer()
-                    .font_family(UI_FONT)
-                    .font_weight(gpui::FontWeight::MEDIUM)
-                    .text_size(px(11.5))
-                    .text_color(theme.accent_soft)
-                    .hover(|button| button.bg(theme.surface_selected))
-                    .child(if action.staged {
-                        "Unstage hunk"
-                    } else {
-                        "Stage hunk"
-                    })
-                    .on_click(move |_, _, cx| {
-                        view.update(cx, |this, cx| this.apply_hunk(action, cx))
-                    })
-            });
-            base.bg(theme.diff_hunk_background)
-                .text_color(theme.diff_hunk_text)
-                .pl(px(LINE_NUMBER_WIDTH * 2.))
-                .child(div().flex_1().min_w_0().truncate().child(header.clone()))
-                .children(button)
-                .into_any_element()
-        }
-        DiffRow::Line {
-            kind,
-            old_number,
-            new_number,
-            text,
-        } => {
-            let (background, sign, sign_color, text_color) = match kind {
-                DiffLineKind::Added => (
-                    Some(theme.diff_added_background),
-                    "+",
-                    theme.diff_added_sign,
-                    theme.diff_added_text,
-                ),
-                DiffLineKind::Removed => (
-                    Some(theme.diff_removed_background),
-                    "−",
-                    theme.diff_removed_sign,
-                    theme.diff_removed_text,
-                ),
-                DiffLineKind::Context => (None, " ", theme.text, theme.diff_context_text),
-            };
-            base.when_some(background, |row, color| row.bg(color))
-                .child(number(*old_number))
-                .child(number(*new_number))
-                .child(
-                    div()
-                        .w(px(20.))
-                        .flex_none()
-                        .text_color(sign_color)
-                        .child(sign),
-                )
-                .child(
-                    // Natural width, so the longest line decides how far the list scrolls.
-                    div()
-                        .flex_none()
-                        .pr(px(24.))
-                        .whitespace_nowrap()
-                        .text_color(text_color)
-                        .child(text.clone()),
-                )
-                .into_any_element()
-        }
-    }
-}
-
 impl ChangesView {
     fn pill(text: String, colors: Badge) -> impl IntoElement {
         div()
@@ -702,21 +567,9 @@ impl ChangesView {
             .child(text)
     }
 
-    fn message(theme: &Theme, text: impl Into<SharedString>) -> AnyElement {
-        div()
-            .flex_1()
-            .flex()
-            .items_center()
-            .justify_center()
-            .px(px(24.))
-            .text_color(theme.text_muted)
-            .child(text.into())
-            .into_any_element()
-    }
-
     fn diff_pane(&mut self, theme: &Theme, cx: &mut Context<Self>) -> AnyElement {
         let Some(path) = self.selected.clone() else {
-            return Self::message(theme, "Select a file to see its changes");
+            return message(theme, "Select a file to see its changes");
         };
 
         let whitespace_blocks_hunks =
@@ -804,38 +657,15 @@ impl ChangesView {
                     .child("Hide whitespace"),
             );
 
-        let body = match self.diff.as_ref().map(|diff| &diff.content) {
-            None => Self::message(theme, "Loading diff…"),
-            Some(DiffContent::Binary) => Self::message(theme, "Binary file not shown"),
-            Some(DiffContent::Empty) => Self::message(
+        let body = {
+            let view = cx.entity();
+            diff_body(
+                self.diff.as_ref().map(|diff| &diff.content),
+                ("diff-rows", self.diff_generation as usize),
+                hide_whitespace,
                 theme,
-                if hide_whitespace {
-                    "No changes other than whitespace"
-                } else {
-                    "No textual changes"
-                },
-            ),
-            Some(DiffContent::Failed(message)) => Self::message(theme, message.clone()),
-            Some(DiffContent::Rows { rows, longest, .. }) => {
-                let longest = *longest;
-                let rows = rows.clone();
-                let theme = theme.clone();
-                uniform_list(
-                    ("diff-rows", self.diff_generation as usize),
-                    rows.len(),
-                    cx.processor(move |_, range: Range<usize>, _window, cx| {
-                        let view = cx.entity();
-                        range
-                            .filter_map(|ix| Some(diff_row(ix, rows.get(ix)?, &theme, &view)))
-                            .collect()
-                    }),
-                )
-                .with_width_from_item(longest)
-                .with_horizontal_sizing_behavior(ListHorizontalSizingBehavior::Unconstrained)
-                .flex_1()
-                .py(px(8.))
-                .into_any_element()
-            }
+                Rc::new(move |action, cx| view.update(cx, |this, cx| this.apply_hunk(action, cx))),
+            )
         };
 
         div()
@@ -924,7 +754,7 @@ impl Render for ChangesView {
         };
 
         let list_body = if count == 0 {
-            Self::message(&theme, "No changed files")
+            message(&theme, "No changed files")
         } else {
             let row_theme = theme.clone();
             uniform_list(
