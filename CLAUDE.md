@@ -5,7 +5,7 @@ A Git desktop client in Rust and GPUI. Read `docs/design-decisions.md` before ch
 ## Commands
 
 - Build: `cargo build`
-- Run the app: `cargo run -p ramus`
+- Run the app: `cargo run -p ramus` (optionally `-- /path/to/repo` to open a repo directly)
 - Test: `cargo test --workspace`
 - Lint: `cargo clippy --workspace --all-targets` and `cargo fmt --all`
 
