@@ -1771,3 +1771,226 @@ mod network {
         ));
     }
 }
+
+mod discarding {
+    use git_core::FileChange;
+
+    use super::*;
+
+    fn change(repo: &Repo, path: &str) -> FileChange {
+        repo.status()
+            .unwrap()
+            .files
+            .into_iter()
+            .find(|f| f.path == path)
+            .unwrap_or_else(|| panic!("{path} not in status"))
+    }
+
+    fn read(dir: &Path, name: &str) -> String {
+        fs::read_to_string(dir.join(name)).unwrap()
+    }
+
+    #[test]
+    fn discarding_a_modified_file_restores_it_and_clears_its_staged_state() {
+        let dir = new_repo();
+        commit_file(dir.path(), "a.txt", "original\n");
+        fs::write(dir.path().join("a.txt"), "staged edit\n").unwrap();
+        git(dir.path(), &["add", "a.txt"]);
+        fs::write(dir.path().join("a.txt"), "staged edit\nplus unstaged\n").unwrap();
+        let repo = Repo::open(dir.path()).unwrap();
+
+        repo.discard(&[&change(&repo, "a.txt")]).unwrap();
+
+        assert_eq!(read(dir.path(), "a.txt"), "original\n");
+        assert!(repo.status().unwrap().files.is_empty());
+    }
+
+    #[test]
+    fn discarding_a_deleted_file_brings_it_back() {
+        let dir = new_repo();
+        commit_file(dir.path(), "gone.txt", "keep me\n");
+        fs::remove_file(dir.path().join("gone.txt")).unwrap();
+        let repo = Repo::open(dir.path()).unwrap();
+
+        repo.discard(&[&change(&repo, "gone.txt")]).unwrap();
+        assert_eq!(read(dir.path(), "gone.txt"), "keep me\n");
+    }
+
+    #[test]
+    fn discarding_an_untracked_file_moves_it_aside_instead_of_deleting_it() {
+        let dir = new_repo();
+        commit_file(dir.path(), "a.txt", "a\n");
+        fs::create_dir_all(dir.path().join("nested")).unwrap();
+        fs::write(dir.path().join("nested/new.txt"), "precious\n").unwrap();
+        let repo = Repo::open(dir.path()).unwrap();
+
+        let backup = repo.discard(&[&change(&repo, "nested/new.txt")]).unwrap();
+
+        assert!(!dir.path().join("nested/new.txt").exists());
+        let saved = dir
+            .path()
+            .join(".git/ramus/discarded")
+            .join(&backup.id)
+            .join("nested/new.txt");
+        assert_eq!(fs::read_to_string(saved).unwrap(), "precious\n");
+    }
+
+    #[test]
+    fn discarding_a_file_added_to_the_index_removes_it() {
+        let dir = new_repo();
+        commit_file(dir.path(), "a.txt", "a\n");
+        fs::write(dir.path().join("added.txt"), "new\n").unwrap();
+        git(dir.path(), &["add", "added.txt"]);
+        let repo = Repo::open(dir.path()).unwrap();
+
+        repo.discard(&[&change(&repo, "added.txt")]).unwrap();
+
+        assert!(!dir.path().join("added.txt").exists());
+        assert!(repo.status().unwrap().files.is_empty());
+    }
+
+    #[test]
+    fn discarding_a_rename_puts_the_old_name_back() {
+        let dir = new_repo();
+        commit_file(dir.path(), "old.txt", "stable content here\n");
+        git(dir.path(), &["mv", "old.txt", "new.txt"]);
+        let repo = Repo::open(dir.path()).unwrap();
+
+        repo.discard(&[&change(&repo, "new.txt")]).unwrap();
+
+        assert_eq!(read(dir.path(), "old.txt"), "stable content here\n");
+        assert!(!dir.path().join("new.txt").exists());
+        assert!(repo.status().unwrap().files.is_empty());
+    }
+
+    #[test]
+    fn only_the_chosen_files_are_discarded() {
+        let dir = new_repo();
+        commit_file(dir.path(), "a.txt", "a\n");
+        commit_file(dir.path(), "b.txt", "b\n");
+        fs::write(dir.path().join("a.txt"), "a changed\n").unwrap();
+        fs::write(dir.path().join("b.txt"), "b changed\n").unwrap();
+        let repo = Repo::open(dir.path()).unwrap();
+
+        repo.discard(&[&change(&repo, "a.txt")]).unwrap();
+
+        assert_eq!(read(dir.path(), "a.txt"), "a\n");
+        assert_eq!(read(dir.path(), "b.txt"), "b changed\n");
+    }
+
+    #[test]
+    fn undo_puts_back_every_kind_of_discarded_change() {
+        let dir = new_repo();
+        commit_file(dir.path(), "mod.txt", "m\n");
+        commit_file(dir.path(), "del.txt", "d\n");
+        fs::write(dir.path().join("mod.txt"), "m changed\n").unwrap();
+        fs::remove_file(dir.path().join("del.txt")).unwrap();
+        fs::write(dir.path().join("new.txt"), "untracked\n").unwrap();
+        fs::write(dir.path().join("added.txt"), "added\n").unwrap();
+        git(dir.path(), &["add", "added.txt"]);
+        let repo = Repo::open(dir.path()).unwrap();
+        let before = repo.status().unwrap().files;
+        let changes: Vec<_> = before.iter().collect();
+
+        let backup = repo.discard(&changes).unwrap();
+        assert!(
+            repo.status().unwrap().files.is_empty(),
+            "everything should be gone"
+        );
+        assert_eq!(backup.file_count(), 4);
+
+        repo.undo_discard(&backup).unwrap();
+
+        assert_eq!(read(dir.path(), "mod.txt"), "m changed\n");
+        assert!(
+            !dir.path().join("del.txt").exists(),
+            "a deleted file stays deleted"
+        );
+        assert_eq!(read(dir.path(), "new.txt"), "untracked\n");
+        assert_eq!(read(dir.path(), "added.txt"), "added\n");
+        // The same set of files is changed again (as unstaged edits).
+        let after: Vec<_> = repo
+            .status()
+            .unwrap()
+            .files
+            .into_iter()
+            .map(|f| f.path)
+            .collect();
+        let mut expected: Vec<_> = before.iter().map(|f| f.path.clone()).collect();
+        expected.sort();
+        assert_eq!(after, expected);
+    }
+
+    #[test]
+    fn the_backup_survives_as_a_hidden_ref_with_the_old_content() {
+        let dir = new_repo();
+        commit_file(dir.path(), "a.txt", "original\n");
+        fs::write(dir.path().join("a.txt"), "work I might want back\n").unwrap();
+        let repo = Repo::open(dir.path()).unwrap();
+
+        let backup = repo.discard(&[&change(&repo, "a.txt")]).unwrap();
+
+        let saved = Command::new("git")
+            .arg("-C")
+            .arg(dir.path())
+            .args(["show", &format!("refs/ramus/discarded/{}:a.txt", backup.id)])
+            .output()
+            .unwrap();
+        assert_eq!(
+            String::from_utf8_lossy(&saved.stdout),
+            "work I might want back\n"
+        );
+        // It must not disturb the real index or history.
+        assert!(repo.status().unwrap().files.is_empty());
+        let log = Command::new("git")
+            .arg("-C")
+            .arg(dir.path())
+            .args(["log", "--oneline"])
+            .output()
+            .unwrap();
+        assert_eq!(String::from_utf8_lossy(&log.stdout).lines().count(), 1);
+    }
+
+    #[test]
+    fn a_failed_backup_leaves_the_working_tree_untouched() {
+        let dir = new_repo();
+        commit_file(dir.path(), "a.txt", "a\n");
+        fs::write(dir.path().join("a.txt"), "my work\n").unwrap();
+        let repo = Repo::open(dir.path()).unwrap();
+        let file = change(&repo, "a.txt");
+        // Block the backup folder by making `.git/ramus` a file.
+        fs::write(dir.path().join(".git/ramus"), "in the way").unwrap();
+
+        assert!(repo.discard(&[&file]).is_err());
+        assert_eq!(read(dir.path(), "a.txt"), "my work\n");
+    }
+
+    #[test]
+    fn discarding_on_a_branch_with_no_commits_removes_staged_files() {
+        let dir = new_repo();
+        fs::write(dir.path().join("first.txt"), "hi\n").unwrap();
+        git(dir.path(), &["add", "first.txt"]);
+        let repo = Repo::open(dir.path()).unwrap();
+
+        repo.discard(&[&change(&repo, "first.txt")]).unwrap();
+        assert!(!dir.path().join("first.txt").exists());
+    }
+
+    #[test]
+    fn conflicted_files_are_refused() {
+        let dir = new_repo();
+        commit_file(dir.path(), "a.txt", "base\n");
+        git(dir.path(), &["switch", "-q", "-c", "other"]);
+        commit_file(dir.path(), "a.txt", "other\n");
+        git(dir.path(), &["switch", "-q", "main"]);
+        commit_file(dir.path(), "a.txt", "main\n");
+        let _ = Command::new("git")
+            .arg("-C")
+            .arg(dir.path())
+            .args(["merge", "other"])
+            .output();
+        let repo = Repo::open(dir.path()).unwrap();
+
+        assert!(repo.discard(&[&change(&repo, "a.txt")]).is_err());
+    }
+}

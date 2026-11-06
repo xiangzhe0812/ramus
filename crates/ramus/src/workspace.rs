@@ -5,9 +5,9 @@ use gpui::{
 };
 
 use crate::{
-    actions::{OpenRepository, ToggleBranches},
+    actions::{DiscardSelected, OpenRepository, ToggleBranches},
     branch_popover::BranchPopover,
-    changes_view::ChangesView,
+    changes_view::{ChangesEvent, ChangesView},
     repo_state::RepoState,
     theme::{MONO_FONT, Theme},
     title_bar::TitleBar,
@@ -20,6 +20,8 @@ pub struct Workspace {
     changes: Entity<ChangesView>,
     welcome: Entity<Welcome>,
     branch_popover: Option<Entity<BranchPopover>>,
+    /// Files the user asked to discard, waiting for them to confirm.
+    pending_discard: Option<Vec<git_core::FileChange>>,
     focus_handle: FocusHandle,
 }
 
@@ -38,14 +40,176 @@ impl Workspace {
         let focus_handle = cx.focus_handle();
         window.focus(&focus_handle, cx);
 
+        let changes = cx.new(|cx| ChangesView::new(repo_state.clone(), window, cx));
+        cx.subscribe_in(
+            &changes,
+            window,
+            |this, _, event: &ChangesEvent, window, cx| {
+                let ChangesEvent::DiscardRequested(files) = event;
+                this.pending_discard = Some(files.clone());
+                // Keys (Enter, Escape) are handled by the workspace, so it must hold focus.
+                window.focus(&this.focus_handle, cx);
+                cx.notify();
+            },
+        )
+        .detach();
+
         Self {
             title_bar: cx.new(|cx| TitleBar::new(repo_state.clone(), cx)),
-            changes: cx.new(|cx| ChangesView::new(repo_state.clone(), window, cx)),
+            changes,
             welcome: cx.new(|_| Welcome),
             branch_popover: None,
+            pending_discard: None,
             repo_state,
             focus_handle,
         }
+    }
+
+    fn confirm_discard(&mut self, cx: &mut Context<Self>) {
+        if let Some(files) = self.pending_discard.take() {
+            self.repo_state
+                .update(cx, |state, cx| state.discard(files, cx));
+            cx.notify();
+        }
+    }
+
+    fn cancel_discard(&mut self, cx: &mut Context<Self>) {
+        if self.pending_discard.take().is_some() {
+            cx.notify();
+        }
+    }
+
+    fn discard_selected(&mut self, _: &DiscardSelected, _: &mut Window, cx: &mut Context<Self>) {
+        self.changes
+            .update(cx, |changes, cx| changes.request_discard(cx));
+    }
+
+    /// The confirmation shown before anything is discarded.
+    fn discard_dialog(&self, theme: &Theme, cx: &mut Context<Self>) -> Option<impl IntoElement> {
+        let files = self.pending_discard.as_ref()?;
+        let what = match files.as_slice() {
+            [one] => one.path.clone(),
+            many => format!("{} files", many.len()),
+        };
+        let button = |id: &'static str| {
+            div()
+                .id(id)
+                .h(px(36.))
+                .px(px(16.))
+                .flex()
+                .items_center()
+                .rounded(px(8.))
+                .cursor_pointer()
+                .font_weight(gpui::FontWeight::SEMIBOLD)
+        };
+        Some(
+            div()
+                .id("discard-backdrop")
+                .absolute()
+                .inset_0()
+                .flex()
+                .items_center()
+                .justify_center()
+                .bg(gpui::rgba(0x00000099))
+                .on_mouse_down(
+                    gpui::MouseButton::Left,
+                    cx.listener(|this, _, _, cx| this.cancel_discard(cx)),
+                )
+                .child(
+                    div()
+                        .w(px(440.))
+                        .p(px(20.))
+                        .flex()
+                        .flex_col()
+                        .gap(px(14.))
+                        .rounded(px(12.))
+                        .border_1()
+                        .border_color(theme.border)
+                        .bg(theme.surface)
+                        .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                        .child(
+                            div()
+                                .text_size(px(16.))
+                                .font_weight(gpui::FontWeight::SEMIBOLD)
+                                .child("Discard changes?"),
+                        )
+                        .child(div().text_color(theme.text_muted).child(format!(
+                            "Your changes to {what} will be removed. Ramus keeps a backup, so you can undo this right afterwards."
+                        )))
+                        .child(
+                            div()
+                                .flex()
+                                .justify_end()
+                                .gap(px(8.))
+                                .child(
+                                    button("cancel-discard")
+                                        .border_1()
+                                        .border_color(theme.border)
+                                        .on_click(cx.listener(|this, _, _, cx| this.cancel_discard(cx)))
+                                        .child("Cancel"),
+                                )
+                                .child(
+                                    button("confirm-discard")
+                                        .bg(theme.deleted.background)
+                                        .text_color(theme.deleted.text)
+                                        .on_click(cx.listener(|this, _, _, cx| this.confirm_discard(cx)))
+                                        .child("Discard"),
+                                ),
+                        ),
+                ),
+        )
+    }
+
+    /// "Discarded changes to x. Undo", shown until dismissed or replaced.
+    fn undo_banner(&self, theme: &Theme, cx: &mut Context<Self>) -> Option<impl IntoElement> {
+        let message = self.repo_state.read(cx).last_discard()?.to_owned();
+        let action = |id: &'static str| {
+            div()
+                .id(id)
+                .h(px(32.))
+                .px(px(14.))
+                .flex()
+                .items_center()
+                .rounded(px(16.))
+                .border_1()
+                .border_color(theme.border)
+                .cursor_pointer()
+        };
+        Some(
+            div()
+                .mx(px(16.))
+                .mb(px(12.))
+                .min_h(px(48.))
+                .px(px(16.))
+                .flex()
+                .items_center()
+                .gap(px(12.))
+                .rounded(px(12.))
+                .border_1()
+                .border_color(theme.border)
+                .bg(theme.surface)
+                .child(div().flex_1().child(message))
+                .child(
+                    action("undo-discard")
+                        .bg(theme.accent)
+                        .text_color(theme.accent_text)
+                        .font_weight(gpui::FontWeight::SEMIBOLD)
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.repo_state
+                                .update(cx, |state, cx| state.undo_discard(cx));
+                        }))
+                        .child("Undo"),
+                )
+                .child(
+                    action("dismiss-discard")
+                        .text_color(theme.text_muted)
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.repo_state
+                                .update(cx, |state, cx| state.dismiss_discard(cx));
+                        }))
+                        .child("Dismiss"),
+                ),
+        )
     }
 
     fn close_branches(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -284,6 +448,16 @@ impl Render for Workspace {
             .track_focus(&self.focus_handle)
             .on_action(cx.listener(Self::open_repository))
             .on_action(cx.listener(Self::toggle_branches))
+            .on_action(cx.listener(Self::discard_selected))
+            .on_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, _, cx| {
+                if this.pending_discard.is_some() {
+                    match event.keystroke.key.as_str() {
+                        "escape" => this.cancel_discard(cx),
+                        "enter" => this.confirm_discard(cx),
+                        _ => {}
+                    }
+                }
+            }))
             .relative()
             .size_full()
             .flex()
@@ -294,8 +468,10 @@ impl Render for Workspace {
             .child(self.title_bar.clone())
             .children(self.restricted_banner(&theme, cx))
             .children(self.error_banner(&theme, cx))
+            .children(self.undo_banner(&theme, cx))
             .child(body)
             .child(self.status_bar(&theme, cx))
             .children(popover)
+            .children(self.discard_dialog(&theme, cx))
     }
 }

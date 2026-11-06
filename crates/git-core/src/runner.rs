@@ -40,6 +40,32 @@ pub(crate) fn run_git_allowing(
     run(dir, args, None, success_codes)
 }
 
+/// Like `run_git`, with extra environment variables for this one call.
+pub(crate) fn run_git_with_env(
+    dir: &Path,
+    args: &[&str],
+    env: &[(&str, &std::ffi::OsStr)],
+) -> Result<Vec<u8>, Error> {
+    let overrides = untrusted_filter_overrides(dir)?;
+    let mut command = command(dir, &overrides, args);
+    for (key, value) in env {
+        command.env(key, value);
+    }
+    let output = command
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()?;
+    if output.status.success() {
+        Ok(output.stdout)
+    } else {
+        Err(Error::Git {
+            command: args.first().copied().unwrap_or_default().to_owned(),
+            stderr: String::from_utf8_lossy(&output.stderr).trim().to_owned(),
+        })
+    }
+}
+
 /// Runs `git` with `input` on stdin, e.g. `git commit -F -` so a message never
 /// touches the command line or a temp file.
 pub(crate) fn run_git_with_input(

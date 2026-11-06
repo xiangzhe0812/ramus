@@ -6,7 +6,10 @@ use std::{
 
 use crate::settings::{self, Settings};
 
-use git_core::{Branch, BranchList, CancelToken, DiffHunk, Progress, Repo, RepoStatus};
+use git_core::{
+    Branch, BranchList, CancelToken, DiffHunk, DiscardBackup, FileChange, Progress, Repo,
+    RepoStatus,
+};
 use gpui::{Context, EventEmitter, SharedString, Task};
 
 /// A way of exchanging commits with the remote.
@@ -69,6 +72,8 @@ pub struct RepoState {
     branches: Option<BranchList>,
     branches_task: Option<Task<()>>,
     operation: Option<Operation>,
+    /// The most recent discard, kept so it can be undone, with a line saying what it was.
+    last_discard: Option<(DiscardBackup, String)>,
 }
 
 impl EventEmitter<RepoEvent> for RepoState {}
@@ -103,6 +108,7 @@ impl RepoState {
             branches: None,
             branches_task: None,
             operation: None,
+            last_discard: None,
         }
     }
 
@@ -124,6 +130,39 @@ impl RepoState {
             self.error = Some(format!("Couldn't save the trust setting: {error}").into());
         }
         cx.notify();
+    }
+
+    pub fn last_discard(&self) -> Option<&str> {
+        self.last_discard
+            .as_ref()
+            .map(|(_, message)| message.as_str())
+    }
+
+    pub fn dismiss_discard(&mut self, cx: &mut Context<Self>) {
+        self.last_discard = None;
+        cx.notify();
+    }
+
+    /// Throws away the changes to `files`, after saving them so [`undo_discard`] can
+    /// bring them back.
+    pub fn discard(&mut self, files: Vec<FileChange>, cx: &mut Context<Self>) {
+        let message = match files.as_slice() {
+            [one] => format!("Discarded changes to {}", one.path),
+            many => format!("Discarded changes to {} files", many.len()),
+        };
+        self.last_discard = None;
+        self.write_returning(
+            cx,
+            move |repo| repo.discard(&files.iter().collect::<Vec<_>>()),
+            move |this, backup, _| this.last_discard = Some((backup, message)),
+        );
+    }
+
+    pub fn undo_discard(&mut self, cx: &mut Context<Self>) {
+        let Some((backup, _)) = self.last_discard.take() else {
+            return;
+        };
+        self.write(cx, None, move |repo| repo.undo_discard(&backup));
     }
 
     pub fn operation(&self) -> Option<&Operation> {
@@ -394,6 +433,20 @@ impl RepoState {
         on_success: Option<RepoEvent>,
         work: impl FnOnce(&Repo) -> Result<(), git_core::Error> + Send + 'static,
     ) {
+        self.write_returning(cx, work, move |_, (), cx| {
+            if let Some(event) = on_success {
+                cx.emit(event);
+            }
+        });
+    }
+
+    /// Like [`write`], for work that produces a value the state wants to keep.
+    fn write_returning<T: Send + 'static>(
+        &mut self,
+        cx: &mut Context<Self>,
+        work: impl FnOnce(&Repo) -> Result<T, git_core::Error> + Send + 'static,
+        on_success: impl FnOnce(&mut Self, T, &mut Context<Self>) + 'static,
+    ) {
         let Some(repo) = self.repo.clone() else {
             return;
         };
@@ -410,11 +463,9 @@ impl RepoState {
             this.update(cx, |this, cx| {
                 this.action = None;
                 match result {
-                    Ok(()) => {
+                    Ok(value) => {
                         this.error = None;
-                        if let Some(event) = on_success {
-                            cx.emit(event);
-                        }
+                        on_success(this, value, cx);
                     }
                     Err(error) => this.error = Some(error.to_string().into()),
                 }
@@ -983,5 +1034,80 @@ mod tests {
             state.read_with(cx, |s, _| s.status().unwrap().branch.upstream.clone()),
             Some("origin/feat/new".to_owned())
         );
+    }
+
+    #[gpui::test]
+    async fn discarding_removes_the_changes_and_can_be_undone(cx: &mut TestAppContext) {
+        let dir = repo_without_hooks();
+        fs::write(dir.path().join("a.txt"), "my work\n").unwrap();
+        let state = cx.new(|_| RepoState::default());
+        state.update(cx, |state, cx| state.open(dir.path().to_owned(), cx));
+        cx.executor().run_until_parked();
+        let file = state.read_with(cx, |s, _| {
+            s.status()
+                .unwrap()
+                .files
+                .iter()
+                .find(|f| f.path == "a.txt")
+                .unwrap()
+                .clone()
+        });
+
+        state.update(cx, |state, cx| state.discard(vec![file], cx));
+        cx.executor().run_until_parked();
+
+        assert_eq!(fs::read_to_string(dir.path().join("a.txt")).unwrap(), "a\n");
+        state.read_with(cx, |state, _| {
+            assert!(
+                !state
+                    .status()
+                    .unwrap()
+                    .files
+                    .iter()
+                    .any(|f| f.path == "a.txt")
+            );
+            assert_eq!(state.last_discard(), Some("Discarded changes to a.txt"));
+        });
+
+        state.update(cx, |state, cx| state.undo_discard(cx));
+        cx.executor().run_until_parked();
+
+        assert_eq!(
+            fs::read_to_string(dir.path().join("a.txt")).unwrap(),
+            "my work\n"
+        );
+        state.read_with(cx, |state, _| assert_eq!(state.last_discard(), None));
+    }
+
+    #[gpui::test]
+    async fn a_new_discard_replaces_the_previous_undo(cx: &mut TestAppContext) {
+        let dir = repo_without_hooks();
+        fs::write(dir.path().join("a.txt"), "one\n").unwrap();
+        fs::write(dir.path().join("b.txt"), "two\n").unwrap();
+        let state = cx.new(|_| RepoState::default());
+        state.update(cx, |state, cx| state.open(dir.path().to_owned(), cx));
+        cx.executor().run_until_parked();
+        let pick = |cx: &mut TestAppContext, name: &str| {
+            state.read_with(cx, |s, _| {
+                s.status()
+                    .unwrap()
+                    .files
+                    .iter()
+                    .find(|f| f.path == name)
+                    .unwrap()
+                    .clone()
+            })
+        };
+
+        let a = pick(cx, "a.txt");
+        state.update(cx, |state, cx| state.discard(vec![a], cx));
+        cx.executor().run_until_parked();
+        let b = pick(cx, "b.txt");
+        state.update(cx, |state, cx| state.discard(vec![b], cx));
+        cx.executor().run_until_parked();
+
+        state.read_with(cx, |state, _| {
+            assert_eq!(state.last_discard(), Some("Discarded changes to b.txt"));
+        });
     }
 }

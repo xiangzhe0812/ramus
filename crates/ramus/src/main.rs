@@ -13,7 +13,7 @@ mod workspace;
 use gpui::{AppContext, Bounds, KeyBinding, WindowBounds, WindowOptions, px, size};
 
 use crate::{
-    actions::{OpenRepository, ToggleBranches},
+    actions::{DiscardSelected, OpenRepository, ToggleBranches},
     repo_state::RepoState,
     theme::Theme,
     workspace::Workspace,
@@ -28,6 +28,7 @@ fn main() {
         cx.bind_keys([
             KeyBinding::new("cmd-o", OpenRepository, None),
             KeyBinding::new("cmd-b", ToggleBranches, None),
+            KeyBinding::new("cmd-backspace", DiscardSelected, Some("Workspace")),
         ]);
 
         let repo_state = cx.new(|_| RepoState::persistent());

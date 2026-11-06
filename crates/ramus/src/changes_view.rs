@@ -2,9 +2,9 @@ use std::{ops::Range, rc::Rc};
 
 use git_core::{ChangeKind, DiffLineKind, DiffOptions, FileChange, FileDiffs};
 use gpui::{
-    AnyElement, AppContext, Context, Entity, InteractiveElement, IntoElement, MouseButton,
-    ParentElement, Render, SharedString, StatefulInteractiveElement, Styled, Subscription, Task,
-    Window, div, prelude::FluentBuilder, px, uniform_list,
+    AnyElement, AppContext, Context, Entity, EventEmitter, InteractiveElement, IntoElement,
+    MouseButton, ParentElement, Render, SharedString, StatefulInteractiveElement, Styled,
+    Subscription, Task, Window, div, prelude::FluentBuilder, px, uniform_list,
 };
 use gpui_component::input::{Input, InputEvent, InputState, Textarea, TextareaState};
 
@@ -85,6 +85,12 @@ impl LoadedDiff {
     }
 }
 
+/// What the Changes tab asks the workspace to do on its behalf.
+pub enum ChangesEvent {
+    /// The user asked to discard these files; the workspace confirms first.
+    DiscardRequested(Vec<FileChange>),
+}
+
 /// The Changes tab: the changed-files list and the diff of the selected file.
 pub struct ChangesView {
     repo_state: Entity<RepoState>,
@@ -99,6 +105,8 @@ pub struct ChangesView {
     description: Entity<TextareaState>,
     _subscriptions: Vec<Subscription>,
 }
+
+impl EventEmitter<ChangesEvent> for ChangesView {}
 
 impl ChangesView {
     pub fn new(repo_state: Entity<RepoState>, window: &mut Window, cx: &mut Context<Self>) -> Self {
@@ -137,6 +145,22 @@ impl ChangesView {
             summary,
             description,
             _subscriptions,
+        }
+    }
+
+    /// Asks to discard the selected file.
+    pub fn request_discard(&mut self, cx: &mut Context<Self>) {
+        let Some(path) = self.selected.as_deref() else {
+            return;
+        };
+        let file = self
+            .repo_state
+            .read(cx)
+            .status()
+            .and_then(|status| status.files.iter().find(|file| file.path == path))
+            .cloned();
+        if let Some(file) = file {
+            cx.emit(ChangesEvent::DiscardRequested(vec![file]));
         }
     }
 
@@ -595,6 +619,21 @@ impl ChangesView {
             .children(additions.map(|n| Self::pill(format!("+{n}"), theme.added)))
             .children(deletions.map(|n| Self::pill(format!("−{n}"), theme.deleted)))
             .child(div().flex_1())
+            .child(
+                div()
+                    .id("discard-file")
+                    .px(px(10.))
+                    .h(px(28.))
+                    .flex()
+                    .items_center()
+                    .rounded(px(14.))
+                    .cursor_pointer()
+                    .text_size(px(12.))
+                    .text_color(theme.deleted.text)
+                    .hover(|button| button.bg(theme.deleted.background))
+                    .on_click(cx.listener(|this, _, _, cx| this.request_discard(cx)))
+                    .child("Discard file…"),
+            )
             .when(whitespace_blocks_hunks, |header| {
                 header.child(
                     div()
