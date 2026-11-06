@@ -38,7 +38,7 @@ impl Workspace {
 
         Self {
             title_bar: cx.new(|cx| TitleBar::new(repo_state.clone(), cx)),
-            changes: cx.new(|cx| ChangesView::new(repo_state.clone(), cx)),
+            changes: cx.new(|cx| ChangesView::new(repo_state.clone(), window, cx)),
             welcome: cx.new(|_| Welcome),
             repo_state,
             focus_handle,

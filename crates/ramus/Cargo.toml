@@ -9,3 +9,8 @@ license.workspace = true
 git-core.workspace = true
 gpui.workspace = true
 gpui_platform.workspace = true
+gpui-component.workspace = true
+
+[dev-dependencies]
+gpui = { workspace = true, features = ["test-support"] }
+tempfile = "3"

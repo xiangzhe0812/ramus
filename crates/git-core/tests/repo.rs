@@ -380,3 +380,286 @@ mod untrusted_repositories {
         );
     }
 }
+
+mod staging {
+    use super::*;
+
+    fn status_of(repo: &Repo, path: &str) -> git_core::FileChange {
+        repo.status()
+            .unwrap()
+            .files
+            .into_iter()
+            .find(|f| f.path == path)
+            .unwrap_or_else(|| panic!("{path} missing from status"))
+    }
+
+    fn log_subjects(dir: &Path) -> Vec<String> {
+        let out = Command::new("git")
+            .arg("-C")
+            .arg(dir)
+            .args(["log", "--format=%B%x00"])
+            .output()
+            .unwrap();
+        String::from_utf8(out.stdout)
+            .unwrap()
+            .split('\0')
+            .map(|m| m.trim().to_owned())
+            .filter(|m| !m.is_empty())
+            .collect()
+    }
+
+    #[test]
+    fn stage_then_unstage_a_modified_file() {
+        let dir = new_repo();
+        commit_file(dir.path(), "a.txt", "a\n");
+        fs::write(dir.path().join("a.txt"), "b\n").unwrap();
+        let repo = Repo::open(dir.path()).unwrap();
+
+        repo.stage(&["a.txt"]).unwrap();
+        assert!(status_of(&repo, "a.txt").is_fully_staged());
+
+        repo.unstage(&["a.txt"]).unwrap();
+        let after = status_of(&repo, "a.txt");
+        assert!(!after.is_staged());
+        assert_eq!(fs::read_to_string(dir.path().join("a.txt")).unwrap(), "b\n");
+    }
+
+    #[test]
+    fn staging_an_untracked_file_and_a_deletion() {
+        let dir = new_repo();
+        commit_file(dir.path(), "gone.txt", "x\n");
+        fs::remove_file(dir.path().join("gone.txt")).unwrap();
+        fs::write(dir.path().join("new.txt"), "n\n").unwrap();
+        let repo = Repo::open(dir.path()).unwrap();
+
+        repo.stage(&["gone.txt", "new.txt"]).unwrap();
+        assert!(status_of(&repo, "gone.txt").is_fully_staged());
+        assert!(status_of(&repo, "new.txt").is_fully_staged());
+    }
+
+    #[test]
+    fn a_partly_staged_file_is_staged_but_not_fully() {
+        let dir = new_repo();
+        commit_file(dir.path(), "a.txt", "1\n2\n");
+        fs::write(dir.path().join("a.txt"), "1 staged\n2\n").unwrap();
+        let repo = Repo::open(dir.path()).unwrap();
+        repo.stage(&["a.txt"]).unwrap();
+        fs::write(dir.path().join("a.txt"), "1 staged\n2 more\n").unwrap();
+
+        let file = status_of(&repo, "a.txt");
+        assert!(file.is_staged());
+        assert!(!file.is_fully_staged());
+    }
+
+    #[test]
+    fn unstaging_works_on_a_branch_with_no_commits() {
+        let dir = new_repo();
+        fs::write(dir.path().join("first.txt"), "hi\n").unwrap();
+        let repo = Repo::open(dir.path()).unwrap();
+        repo.stage(&["first.txt"]).unwrap();
+        assert!(status_of(&repo, "first.txt").is_staged());
+
+        repo.unstage(&["first.txt"]).unwrap();
+        assert!(!status_of(&repo, "first.txt").is_staged());
+    }
+
+    #[test]
+    fn unstaging_a_rename_restores_both_paths() {
+        let dir = new_repo();
+        commit_file(dir.path(), "old.txt", "stable content here\n");
+        git(dir.path(), &["mv", "old.txt", "new.txt"]);
+        let repo = Repo::open(dir.path()).unwrap();
+        let renamed = status_of(&repo, "new.txt");
+        assert!(renamed.is_staged());
+
+        repo.unstage(&renamed.pathspecs()).unwrap();
+        assert!(!status_of(&repo, "new.txt").is_staged());
+        assert!(dir.path().join("new.txt").exists());
+    }
+
+    #[test]
+    fn stage_all_and_unstage_all() {
+        let dir = new_repo();
+        commit_file(dir.path(), "a.txt", "a\n");
+        fs::write(dir.path().join("a.txt"), "b\n").unwrap();
+        fs::write(dir.path().join("new.txt"), "n\n").unwrap();
+        let repo = Repo::open(dir.path()).unwrap();
+
+        repo.stage_all().unwrap();
+        assert!(
+            repo.status()
+                .unwrap()
+                .files
+                .iter()
+                .all(|f| f.is_fully_staged())
+        );
+        repo.unstage_all().unwrap();
+        assert!(repo.status().unwrap().files.iter().all(|f| !f.is_staged()));
+    }
+
+    #[test]
+    fn paths_with_glob_characters_mean_exactly_that_file() {
+        let dir = new_repo();
+        commit_file(dir.path(), "plain.txt", "p\n");
+        fs::write(dir.path().join("a[1].txt"), "x\n").unwrap();
+        fs::write(dir.path().join("a1.txt"), "y\n").unwrap();
+        let repo = Repo::open(dir.path()).unwrap();
+
+        repo.stage(&["a[1].txt"]).unwrap();
+        assert!(status_of(&repo, "a[1].txt").is_fully_staged());
+        assert!(!status_of(&repo, "a1.txt").is_staged());
+
+        let change = status_of(&repo, "a[1].txt");
+        let diff = repo
+            .diff(&change, git_core::DiffOptions::default())
+            .unwrap();
+        assert_eq!(diff.additions(), 1);
+    }
+
+    #[test]
+    fn commit_records_only_what_is_staged_with_summary_and_description() {
+        let dir = new_repo();
+        commit_file(dir.path(), "base.txt", "b\n");
+        fs::write(dir.path().join("in.txt"), "in\n").unwrap();
+        fs::write(dir.path().join("out.txt"), "out\n").unwrap();
+        let repo = Repo::open(dir.path()).unwrap();
+        repo.stage(&["in.txt"]).unwrap();
+
+        repo.commit("  Add in.txt  ", "Because it matters.\n\nSecond paragraph.")
+            .unwrap();
+
+        assert_eq!(
+            log_subjects(dir.path())[0],
+            "Add in.txt\n\nBecause it matters.\n\nSecond paragraph."
+        );
+        let files = repo.status().unwrap().files;
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0].path, "out.txt");
+    }
+
+    #[test]
+    fn a_message_with_quotes_and_a_leading_dash_is_passed_through_intact() {
+        let dir = new_repo();
+        fs::write(dir.path().join("a.txt"), "a\n").unwrap();
+        let repo = Repo::open(dir.path()).unwrap();
+        repo.stage_all().unwrap();
+
+        repo.commit("-m \"quoted\" $(not run) `nor this`", "")
+            .unwrap();
+        assert_eq!(
+            log_subjects(dir.path())[0],
+            "-m \"quoted\" $(not run) `nor this`"
+        );
+    }
+
+    #[test]
+    fn commit_with_nothing_staged_is_an_error_with_gits_message() {
+        let dir = new_repo();
+        commit_file(dir.path(), "a.txt", "a\n");
+        let repo = Repo::open(dir.path()).unwrap();
+
+        let error = repo.commit("empty", "").unwrap_err();
+        assert!(matches!(error, Error::Git { .. }), "{error:?}");
+    }
+
+    #[test]
+    fn a_failing_pre_commit_hook_blocks_the_commit_and_reports_its_output() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = new_repo();
+        commit_file(dir.path(), "a.txt", "a\n");
+        let hook = dir.path().join(".git/hooks/pre-commit");
+        fs::write(
+            &hook,
+            "#!/bin/sh\necho 'lint failed: no trailing spaces' >&2\nexit 1\n",
+        )
+        .unwrap();
+        fs::set_permissions(&hook, fs::Permissions::from_mode(0o755)).unwrap();
+        fs::write(dir.path().join("b.txt"), "b\n").unwrap();
+        let repo = Repo::open(dir.path()).unwrap();
+        repo.stage(&["b.txt"]).unwrap();
+
+        let error = repo.commit("blocked", "").unwrap_err().to_string();
+        assert!(error.contains("lint failed"), "{error}");
+        assert_eq!(log_subjects(dir.path()).len(), 1);
+    }
+}
+
+mod untrusted_filters {
+    use std::os::unix::fs::PermissionsExt;
+
+    use git_core::DiffOptions;
+
+    use super::*;
+
+    /// A repo whose `.gitattributes` routes every `.txt` file through a clean filter
+    /// that the repo's own config points at a script.
+    fn repo_with_hostile_filter(outside: &Path, required: bool) -> (TempDir, std::path::PathBuf) {
+        let marker = outside.join("PWNED");
+        let script = outside.join("evil.sh");
+        fs::write(
+            &script,
+            format!("#!/bin/sh\ntouch '{}'\ncat\n", marker.display()),
+        )
+        .unwrap();
+        fs::set_permissions(&script, fs::Permissions::from_mode(0o755)).unwrap();
+
+        let dir = new_repo();
+        fs::write(dir.path().join(".gitattributes"), "*.txt filter=evil\n").unwrap();
+        git(dir.path(), &["add", ".gitattributes"]);
+        commit_file(dir.path(), "a.txt", "one\n");
+        git(
+            dir.path(),
+            &["config", "filter.evil.clean", script.to_str().unwrap()],
+        );
+        if required {
+            git(dir.path(), &["config", "filter.evil.required", "true"]);
+        }
+        // Different size, so git has to look at the content rather than trust the stat.
+        fs::write(dir.path().join("a.txt"), "one and a bit more\n").unwrap();
+        (dir, marker)
+    }
+
+    #[test]
+    fn status_never_runs_a_repo_configured_clean_filter() {
+        let outside = TempDir::new().unwrap();
+        let (dir, marker) = repo_with_hostile_filter(outside.path(), false);
+
+        Repo::open(dir.path()).unwrap().status().unwrap();
+        assert!(!marker.exists(), "status ran the repository's clean filter");
+    }
+
+    #[test]
+    fn diff_never_runs_a_repo_configured_clean_filter() {
+        let outside = TempDir::new().unwrap();
+        let (dir, marker) = repo_with_hostile_filter(outside.path(), false);
+        let repo = Repo::open(dir.path()).unwrap();
+        let change = repo.status().unwrap().files.into_iter().next().unwrap();
+
+        repo.diff(&change, DiffOptions::default()).unwrap();
+        assert!(!marker.exists(), "diff ran the repository's clean filter");
+    }
+
+    #[test]
+    fn staging_never_runs_a_repo_configured_clean_filter() {
+        let outside = TempDir::new().unwrap();
+        let (dir, marker) = repo_with_hostile_filter(outside.path(), false);
+
+        Repo::open(dir.path()).unwrap().stage(&["a.txt"]).unwrap();
+        assert!(
+            !marker.exists(),
+            "staging ran the repository's clean filter"
+        );
+    }
+
+    #[test]
+    fn a_required_filter_that_is_neutralised_does_not_make_git_fail() {
+        let outside = TempDir::new().unwrap();
+        let (dir, marker) = repo_with_hostile_filter(outside.path(), true);
+        let repo = Repo::open(dir.path()).unwrap();
+
+        let status = repo.status().unwrap();
+        assert_eq!(status.files.len(), 1);
+        assert!(!marker.exists());
+    }
+}

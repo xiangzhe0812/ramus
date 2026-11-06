@@ -14,6 +14,8 @@ A Git desktop client in Rust and GPUI. Read `docs/design-decisions.md` before ch
 - `git-core` holds all Git logic and must not depend on `gpui`. The UI crate only renders state.
 - Reads use `gix`; writes and network operations shell out to the `git` binary.
 - Never hard-code colors in views; read them from the `Theme` global.
-- GPUI is pinned to a Zed commit in the root `Cargo.toml`. Do not bump it casually.
+- GPUI is pinned to the `gpui-pre` snapshot that `gpui-component` requires (root `Cargo.toml`). Upgrade `gpui`, `gpui_platform` and `gpui-component` together, never separately.
+- Text inputs come from `gpui-component`; `component_theme.rs` maps our `Theme` onto its theme. Don't write a text editor.
+- Every git call goes through `git-core`'s runner, which neutralises repo-configured commands (fsmonitor, filters). Never spawn `git` directly from the UI crate.
 - Build one milestone at a time and stop for review between milestones.
 - UI design lives in the canvas linked from `docs/design-decisions.md`; match it.

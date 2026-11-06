@@ -58,6 +58,19 @@ impl FileChange {
     pub fn is_staged(&self) -> bool {
         self.index.is_some()
     }
+
+    /// Whether everything changed in this file is staged (no unstaged edits left).
+    pub fn is_fully_staged(&self) -> bool {
+        self.index.is_some() && self.worktree.is_none()
+    }
+
+    /// The paths git needs to act on this file as one change: for a rename that is
+    /// both the new and the old path.
+    pub fn pathspecs(&self) -> Vec<&str> {
+        let mut paths = vec![self.path.as_str()];
+        paths.extend(self.original_path.as_deref());
+        paths
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

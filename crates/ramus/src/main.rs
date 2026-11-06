@@ -1,5 +1,6 @@
 mod actions;
 mod changes_view;
+mod component_theme;
 mod diff_rows;
 mod repo_state;
 mod theme;
@@ -13,7 +14,10 @@ use crate::{actions::OpenRepository, repo_state::RepoState, theme::Theme, worksp
 
 fn main() {
     gpui_platform::application().run(|cx| {
-        cx.set_global(Theme::dark());
+        gpui_component::init(cx);
+        let theme = Theme::dark();
+        component_theme::apply(&theme, cx);
+        cx.set_global(theme);
         cx.bind_keys([KeyBinding::new("cmd-o", OpenRepository, None)]);
 
         let repo_state = cx.new(|_| RepoState::default());
@@ -27,7 +31,10 @@ fn main() {
                 window_bounds: Some(WindowBounds::Windowed(bounds)),
                 ..Default::default()
             },
-            |window, cx| cx.new(|cx| Workspace::new(repo_state, window, cx)),
+            |window, cx| {
+                let workspace = cx.new(|cx| Workspace::new(repo_state, window, cx));
+                cx.new(|cx| gpui_component::Root::new(workspace, window, cx))
+            },
         )
         .expect("failed to open window");
         cx.activate(true);

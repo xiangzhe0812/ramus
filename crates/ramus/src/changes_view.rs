@@ -2,16 +2,25 @@ use std::{ops::Range, rc::Rc};
 
 use git_core::{ChangeKind, DiffLineKind, DiffOptions, FileChange, FileDiff};
 use gpui::{
-    AnyElement, Context, Entity, InteractiveElement, IntoElement, ParentElement, Render,
-    SharedString, StatefulInteractiveElement, Styled, Subscription, Task, Window, div,
-    prelude::FluentBuilder, px, uniform_list,
+    AnyElement, AppContext, Context, Entity, InteractiveElement, IntoElement, MouseButton,
+    ParentElement, Render, SharedString, StatefulInteractiveElement, Styled, Subscription, Task,
+    Window, div, prelude::FluentBuilder, px, uniform_list,
 };
+use gpui_component::input::{Input, InputEvent, InputState, Textarea, TextareaState};
 
 use crate::{
     diff_rows::{DiffRow, flatten},
-    repo_state::RepoState,
+    repo_state::{RepoEvent, RepoState},
     theme::{Badge, MONO_FONT, Theme},
 };
+
+/// How much of a file (or of all files) is staged for the next commit.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Inclusion {
+    None,
+    Some,
+    All,
+}
 
 /// What the diff pane has for the selected file.
 enum DiffContent {
@@ -69,12 +78,38 @@ pub struct ChangesView {
     /// and so a slow diff for a previous selection is ignored.
     diff_generation: u64,
     diff_task: Option<Task<()>>,
-    _observe: Subscription,
+    summary: Entity<InputState>,
+    description: Entity<TextareaState>,
+    _subscriptions: Vec<Subscription>,
 }
 
 impl ChangesView {
-    pub fn new(repo_state: Entity<RepoState>, cx: &mut Context<Self>) -> Self {
-        let _observe = cx.observe(&repo_state, |this, _, cx| this.repo_changed(cx));
+    pub fn new(repo_state: Entity<RepoState>, window: &mut Window, cx: &mut Context<Self>) -> Self {
+        let summary = cx.new(|cx| InputState::new(window, cx).placeholder("Summary (required)"));
+        let description = cx.new(|cx| TextareaState::new(window, cx).placeholder("Description"));
+
+        let _subscriptions = vec![
+            cx.observe(&repo_state, |this, _, cx| this.repo_changed(cx)),
+            // The commit button depends on whether the summary is empty.
+            cx.subscribe_in(
+                &summary,
+                window,
+                |this, _, event: &InputEvent, _, cx| match event {
+                    InputEvent::PressEnter {
+                        secondary: true, ..
+                    } => this.commit(cx),
+                    _ => cx.notify(),
+                },
+            ),
+            cx.subscribe_in(
+                &repo_state,
+                window,
+                |this, _, event: &RepoEvent, window, cx| match event {
+                    RepoEvent::Committed => this.clear_message(window, cx),
+                },
+            ),
+        ];
+
         Self {
             repo_state,
             selected: None,
@@ -82,8 +117,55 @@ impl ChangesView {
             hide_whitespace: false,
             diff_generation: 0,
             diff_task: None,
-            _observe,
+            summary,
+            description,
+            _subscriptions,
         }
+    }
+
+    fn clear_message(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.summary
+            .update(cx, |input, cx| input.set_value("", window, cx));
+        self.description
+            .update(cx, |input, cx| input.set_value("", window, cx));
+        cx.notify();
+    }
+
+    fn commit(&mut self, cx: &mut Context<Self>) {
+        let summary = self.summary.read(cx).value().trim().to_owned();
+        let staged = self
+            .repo_state
+            .read(cx)
+            .status()
+            .is_some_and(|status| status.files.iter().any(|file| file.is_staged()));
+        if summary.is_empty() || !staged {
+            return;
+        }
+        let description = self.description.read(cx).value().to_string();
+        self.repo_state
+            .update(cx, |state, cx| state.commit(summary, description, cx));
+    }
+
+    /// Stages the file if anything in it is unstaged, otherwise unstages it.
+    fn toggle_file(&mut self, file: &FileChange, cx: &mut Context<Self>) {
+        let paths = file.pathspecs().into_iter().map(str::to_owned).collect();
+        self.repo_state.update(cx, |state, cx| {
+            if file.is_fully_staged() {
+                state.unstage(paths, cx)
+            } else {
+                state.stage(paths, cx)
+            }
+        });
+    }
+
+    fn toggle_all(&mut self, inclusion: Inclusion, cx: &mut Context<Self>) {
+        self.repo_state.update(cx, |state, cx| {
+            if inclusion == Inclusion::All {
+                state.unstage_all(cx)
+            } else {
+                state.stage_all(cx)
+            }
+        });
     }
 
     fn select(&mut self, path: String, cx: &mut Context<Self>) {
@@ -185,16 +267,61 @@ fn badge_for(kind: ChangeKind, theme: &Theme) -> (&'static str, Badge) {
     }
 }
 
+fn checkbox(
+    id: impl Into<gpui::ElementId>,
+    state: Inclusion,
+    theme: &Theme,
+    on_toggle: impl Fn(&mut Window, &mut gpui::App) + 'static,
+) -> impl IntoElement {
+    let filled = state != Inclusion::None;
+    div()
+        .id(id)
+        .size(px(16.))
+        .flex_none()
+        .rounded(px(4.))
+        .border_1()
+        .border_color(if filled {
+            theme.accent
+        } else {
+            theme.text_muted
+        })
+        .when(filled, |checkbox| checkbox.bg(theme.accent))
+        .flex()
+        .items_center()
+        .justify_center()
+        .text_size(px(11.))
+        .text_color(theme.accent_text)
+        .cursor_pointer()
+        .child(match state {
+            Inclusion::All => "✓",
+            Inclusion::Some => "–",
+            Inclusion::None => "",
+        })
+        // Toggling must not also select the row underneath.
+        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+        .on_click(move |_, window, cx| {
+            cx.stop_propagation();
+            on_toggle(window, cx)
+        })
+}
+
 fn file_row(
     ix: usize,
     file: &FileChange,
     selected: bool,
     theme: &Theme,
     on_select: impl Fn(&mut Window, &mut gpui::App) + 'static,
+    on_toggle: impl Fn(&mut Window, &mut gpui::App) + 'static,
 ) -> AnyElement {
     let (name, dir) = split_path(&file.path);
     let (letter, badge) = badge_for(file.kind(), theme);
-    let staged = file.is_staged();
+    let inclusion = if file.is_fully_staged() {
+        Inclusion::All
+    } else if file.is_staged() {
+        Inclusion::Some
+    } else {
+        Inclusion::None
+    };
 
     div()
         .id(("file", ix))
@@ -208,25 +335,7 @@ fn file_row(
         .when(selected, |row| row.bg(theme.surface_selected))
         .hover(|row| row.bg(theme.surface_selected))
         .on_click(move |_, window, cx| on_select(window, cx))
-        .child(
-            div()
-                .size(px(16.))
-                .flex_none()
-                .rounded(px(4.))
-                .border_1()
-                .border_color(if staged {
-                    theme.accent
-                } else {
-                    theme.text_muted
-                })
-                .when(staged, |checkbox| checkbox.bg(theme.accent))
-                .flex()
-                .items_center()
-                .justify_center()
-                .text_size(px(11.))
-                .text_color(theme.accent_text)
-                .when(staged, |checkbox| checkbox.child("✓")),
-        )
+        .child(checkbox(("include", ix), inclusion, theme, on_toggle))
         .child(
             div()
                 .flex_1()
@@ -480,6 +589,34 @@ impl Render for ChangesView {
             .map(|status| status.files.clone())
             .unwrap_or_default();
         let count = files.len();
+        let staged_count = files.iter().filter(|file| file.is_staged()).count();
+        let inclusion = if staged_count == 0 {
+            Inclusion::None
+        } else if files.iter().all(|file| file.is_fully_staged()) {
+            Inclusion::All
+        } else {
+            Inclusion::Some
+        };
+        let busy = self.repo_state.read(cx).is_busy();
+        let branch_name = self
+            .repo_state
+            .read(cx)
+            .status()
+            .map(|status| match &status.branch.head {
+                git_core::Head::Branch(name) => name.clone(),
+                git_core::Head::Detached(sha) => format!("detached at {sha}"),
+            })
+            .unwrap_or_default();
+        let has_summary = !self.summary.read(cx).value().trim().is_empty();
+        let can_commit = staged_count > 0 && has_summary && !busy;
+        let commit_label = if staged_count == 0 {
+            "Include files to commit".to_owned()
+        } else {
+            format!(
+                "Commit {staged_count} {} to {branch_name}",
+                if staged_count == 1 { "file" } else { "files" }
+            )
+        };
         let ahead = self
             .repo_state
             .read(cx)
@@ -511,9 +648,21 @@ impl Render for ChangesView {
                             let selected = this.selected.as_deref() == Some(file.path.as_str());
                             let path = file.path.clone();
                             let view = cx.entity();
-                            Some(file_row(ix, file, selected, &row_theme, move |_, cx| {
-                                view.update(cx, |this, cx| this.select(path.clone(), cx))
-                            }))
+                            let toggled = file.clone();
+                            let toggle_view = view.clone();
+                            Some(file_row(
+                                ix,
+                                file,
+                                selected,
+                                &row_theme,
+                                move |_, cx| {
+                                    view.update(cx, |this, cx| this.select(path.clone(), cx))
+                                },
+                                move |_, cx| {
+                                    toggle_view
+                                        .update(cx, |this, cx| this.toggle_file(&toggled, cx))
+                                },
+                            ))
                         })
                         .collect()
                 }),
@@ -572,6 +721,14 @@ impl Render for ChangesView {
                             .gap(px(10.))
                             .border_b_1()
                             .border_color(theme.border)
+                            .when(count > 0, |header| {
+                                header.child(checkbox("include-all", inclusion, &theme, {
+                                    let view = cx.entity();
+                                    move |_, cx| {
+                                        view.update(cx, |this, cx| this.toggle_all(inclusion, cx))
+                                    }
+                                }))
+                            })
                             .child(
                                 div()
                                     .flex_1()
@@ -585,14 +742,55 @@ impl Render for ChangesView {
                                     .bg(theme.pill_active)
                                     .text_size(px(11.5))
                                     .text_color(theme.text_muted)
-                                    .child(if count == 1 {
-                                        "1 file".to_owned()
+                                    .child(if count == 0 {
+                                        "0 files".to_owned()
                                     } else {
-                                        format!("{count} files")
+                                        format!("{staged_count} of {count} included")
                                     }),
                             ),
                     )
-                    .child(list_body),
+                    .child(list_body)
+                    .child(
+                        div()
+                            .flex_none()
+                            .px(px(14.))
+                            .pt(px(12.))
+                            .pb(px(14.))
+                            .flex()
+                            .flex_col()
+                            .gap(px(8.))
+                            .border_t_1()
+                            .border_color(theme.border)
+                            .child(Input::new(&self.summary).aria_label("Commit summary"))
+                            .child(
+                                Textarea::new(&self.description)
+                                    .aria_label("Commit description")
+                                    .h(px(80.)),
+                            )
+                            .child(
+                                div()
+                                    .id("commit")
+                                    .h(px(42.))
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .rounded(px(10.))
+                                    .font_weight(gpui::FontWeight::SEMIBOLD)
+                                    .truncate()
+                                    .px(px(12.))
+                                    .when(can_commit, |button| {
+                                        button
+                                            .bg(theme.accent)
+                                            .text_color(theme.accent_text)
+                                            .cursor_pointer()
+                                            .on_click(cx.listener(|this, _, _, cx| this.commit(cx)))
+                                    })
+                                    .when(!can_commit, |button| {
+                                        button.bg(theme.pill_active).text_color(theme.text_muted)
+                                    })
+                                    .child(commit_label),
+                            ),
+                    ),
             )
             .child(panel(&theme).flex_1().min_w_0().child(detail))
     }

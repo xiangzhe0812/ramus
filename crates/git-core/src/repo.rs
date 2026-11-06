@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 use crate::{
     ChangeKind, Error, FileChange, FileDiff, RepoStatus,
     diff::parse_diff,
-    runner::{run_git, run_git_allowing},
+    runner::{run_git, run_git_allowing, run_git_with_input},
     status::parse_status,
 };
 
@@ -110,5 +110,42 @@ impl Repo {
         // stdin is empty, so this hashes the empty tree in whichever hash format the repo uses.
         let tree = run_git(&self.root, &["hash-object", "-t", "tree", "--stdin"])?;
         Ok(String::from_utf8_lossy(&tree).trim().to_owned())
+    }
+
+    /// Stages every change to `paths`, including deletions and untracked files.
+    pub fn stage(&self, paths: &[&str]) -> Result<(), Error> {
+        let mut args = vec!["add", "-A", "--"];
+        args.extend(paths);
+        run_git(&self.root, &args).map(drop)
+    }
+
+    /// Stages every change in the working tree.
+    pub fn stage_all(&self) -> Result<(), Error> {
+        run_git(&self.root, &["add", "-A"]).map(drop)
+    }
+
+    /// Removes `paths` from the index, leaving the working tree alone. Works on a
+    /// branch with no commits, where `git restore --staged` does not.
+    pub fn unstage(&self, paths: &[&str]) -> Result<(), Error> {
+        let mut args = vec!["reset", "-q", "--"];
+        args.extend(paths);
+        run_git(&self.root, &args).map(drop)
+    }
+
+    pub fn unstage_all(&self) -> Result<(), Error> {
+        run_git(&self.root, &["reset", "-q"]).map(drop)
+    }
+
+    /// Commits what is staged. `summary` is the first line; `description` follows
+    /// after a blank line and may be empty. The repository's own hooks run, as they
+    /// would for `git commit` in a terminal.
+    pub fn commit(&self, summary: &str, description: &str) -> Result<(), Error> {
+        let mut message = summary.trim().to_owned();
+        if !description.trim().is_empty() {
+            message.push_str("\n\n");
+            message.push_str(description.trim());
+        }
+        message.push('\n');
+        run_git_with_input(&self.root, &["commit", "-q", "-F", "-"], message.as_bytes()).map(drop)
     }
 }
