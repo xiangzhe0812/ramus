@@ -101,12 +101,11 @@ fn blank_untrusted_filters(config: &[u8]) -> Vec<ConfigOverride> {
         }
     }
 
-    // git-lfs runs commands from some of its own settings, so its filters are only
-    // trusted while the repo hasn't set any of them.
-    let lfs_runs_repo_commands = entries.iter().any(|(key, _)| {
-        key.starts_with(b"lfs.extension.")
-            || key.starts_with(b"lfs.customtransfer.")
-            || *key == b"lfs.standalonetransferagent"
+    // git-lfs runs commands named by some of its own settings, so its filters are only
+    // trusted while every `lfs.*` key the repo sets is known to be inert. Anything
+    // unrecognised withdraws trust: new git-lfs settings can't quietly become a hole.
+    let lfs_has_unknown_settings = entries.iter().any(|(key, _)| {
+        key.len() >= 4 && key[..4].eq_ignore_ascii_case(b"lfs.") && !is_inert_lfs_setting(key)
     });
 
     let mut overrides = Vec::new();
@@ -119,13 +118,34 @@ fn blank_untrusted_filters(config: &[u8]) -> Vec<ConfigOverride> {
             continue;
         };
         if !matches!(command, b"clean" | b"smudge" | b"process")
-            || (!lfs_runs_repo_commands && is_canonical_lfs(driver, command, value))
+            || (!lfs_has_unknown_settings && is_canonical_lfs(driver, command, value))
         {
             continue;
         }
         overrides.push((OsString::from_vec(key.to_vec()), OsString::new()));
     }
     overrides
+}
+
+/// `lfs.*` settings that only name data, never a command. Git folds the case of the
+/// section and variable name but not of the middle part, so compare case-insensitively.
+fn is_inert_lfs_setting(key: &[u8]) -> bool {
+    let key = key.to_ascii_lowercase();
+    matches!(
+        key.as_slice(),
+        b"lfs.url"
+            | b"lfs.pushurl"
+            | b"lfs.repositoryformatversion"
+            | b"lfs.locksverify"
+            | b"lfs.concurrenttransfers"
+            | b"lfs.fetchinclude"
+            | b"lfs.fetchexclude"
+    )
+    // Per-remote settings are `lfs.<url>.locksverify` / `.access`.
+        || (key.starts_with(b"lfs.")
+            && !key.starts_with(b"lfs.extension.")
+            && !key.starts_with(b"lfs.customtransfer.")
+            && (key.ends_with(b".locksverify") || key.ends_with(b".access")))
 }
 
 /// Git LFS is the one common filter installed per repository, and blanking it would
@@ -311,6 +331,59 @@ mod tests {
                 String::from_utf8_lossy(risky)
             );
         }
+    }
+
+    #[test]
+    fn the_case_of_an_lfs_key_cannot_hide_a_risky_setting() {
+        // Git keeps the case of a key's middle part, so these are distinct spellings.
+        for risky in [
+            &b"lfs.Extension.mine.clean"[..],
+            b"LFS.extension.mine.clean",
+            b"lfs.CUSTOMTRANSFER.mine.path",
+            b"lfs.StandaloneTransferAgent",
+        ] {
+            let output = config(&[
+                ("local", b"filter.lfs.clean", b"git-lfs clean -- %f"),
+                ("local", risky, b"/tmp/evil.sh"),
+            ]);
+            assert_eq!(
+                keys(&blank_untrusted_filters(&output)),
+                [b"filter.lfs.clean".to_vec()],
+                "{:?} did not withdraw trust",
+                String::from_utf8_lossy(risky)
+            );
+        }
+    }
+
+    #[test]
+    fn an_unrecognised_lfs_setting_withdraws_trust() {
+        let output = config(&[
+            ("local", b"filter.lfs.clean", b"git-lfs clean -- %f"),
+            ("local", b"lfs.somethingnew", b"x"),
+        ]);
+        assert_eq!(
+            keys(&blank_untrusted_filters(&output)),
+            [b"filter.lfs.clean".to_vec()]
+        );
+    }
+
+    #[test]
+    fn ordinary_lfs_settings_keep_trust() {
+        let output = config(&[
+            ("local", b"filter.lfs.clean", b"git-lfs clean -- %f"),
+            ("local", b"lfs.repositoryformatversion", b"0"),
+            (
+                "local",
+                b"lfs.url",
+                b"https://example.com/repo.git/info/lfs",
+            ),
+            (
+                "local",
+                b"lfs.https://example.com/repo.git/info/lfs.locksverify",
+                b"true",
+            ),
+        ]);
+        assert!(blank_untrusted_filters(&output).is_empty());
     }
 
     #[test]
