@@ -74,6 +74,11 @@ pub(crate) fn parse_progress(line: &str) -> Option<Progress> {
 
 /// Splits a byte stream into lines on either `\r` or `\n`: git redraws a progress line
 /// in place with `\r`.
+/// The longest line of remote output kept.
+const MAX_LINE: usize = 4096;
+/// How many lines of remote output are kept for an error message (the last ones).
+const MAX_MESSAGES: usize = 200;
+
 fn read_lines(reader: impl Read, send: mpsc::Sender<String>) {
     let mut reader = BufReader::new(reader);
     let mut line = Vec::new();
@@ -84,13 +89,23 @@ fn read_lines(reader: impl Read, send: mpsc::Sender<String>) {
                 let _ = send.send(String::from_utf8_lossy(&line).into_owned());
                 line.clear();
             }
-        } else {
+        } else if line.len() < MAX_LINE {
             line.push(byte[0]);
         }
+        // Past the limit the rest of the line is dropped: a remote can send a line as
+        // long as it likes, and none of it is worth holding in memory.
     }
     if !line.is_empty() {
         let _ = send.send(String::from_utf8_lossy(&line).into_owned());
     }
+}
+
+/// `read_lines` over bytes, for the integration tests.
+#[doc(hidden)]
+pub fn read_lines_for_test(bytes: &[u8]) -> Vec<String> {
+    let (send, receive) = mpsc::channel();
+    read_lines(bytes, send);
+    receive.try_iter().collect()
 }
 
 /// Stops git and everything it started (ssh, hooks): they share a process group because
@@ -163,7 +178,12 @@ fn run_command(
     let mut messages: Vec<String> = Vec::new();
     let mut handle = |line: String, messages: &mut Vec<String>| match parse_progress(&line) {
         Some(progress) => on_progress(progress),
-        None => messages.push(line),
+        None => {
+            if messages.len() >= MAX_MESSAGES {
+                messages.remove(0);
+            }
+            messages.push(line);
+        }
     };
 
     let status = loop {
@@ -326,6 +346,9 @@ impl Repo {
         if url.is_empty() {
             return Err(Error::InvalidUrl(url.to_owned()));
         }
+        // Git runs from the destination's parent, so a relative path would mean one place
+        // to the existence check and cleanup and another to git.
+        let destination = &std::path::absolute(destination)?;
         let existed = destination.exists();
         if existed {
             let empty = destination

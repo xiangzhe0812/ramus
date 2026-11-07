@@ -10,7 +10,7 @@ use std::{
 use crate::{
     Error, Repo,
     discard::checked_path,
-    runner::{run_git, run_git_with_env},
+    runner::{run_git, run_git_hookless, run_git_with_env},
 };
 
 /// Which operation stopped for conflicts.
@@ -238,7 +238,7 @@ impl Repo {
             return Error::Conflicts(conflicted);
         }
         if in_progress.is_some() {
-            let _ = run_git(self.root(), &[kind.command(), "--abort"]);
+            let _ = run_git_hookless(self.root(), &[kind.command(), "--abort"]);
         }
         fallback
     }
@@ -354,7 +354,7 @@ impl Repo {
         let Some(in_progress) = self.in_progress()? else {
             return Ok(());
         };
-        run_git(self.root(), &[in_progress.kind.command(), "--abort"]).map(|_| ())
+        run_git_hookless(self.root(), &[in_progress.kind.command(), "--abort"]).map(|_| ())
     }
 
     /// Finishes the operation once every conflict is resolved, committing the result.

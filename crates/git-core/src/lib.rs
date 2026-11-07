@@ -27,4 +27,4 @@ pub use history::{CommitFile, CommitInfo};
 pub use repo::{DiffOptions, Repo};
 pub use stash::{Stash, StashFile, parse_stash_subject};
 pub use status::{BranchStatus, ChangeKind, FileChange, Head, RepoStatus};
-pub use sync::{CancelToken, Progress};
+pub use sync::{CancelToken, Progress, read_lines_for_test};

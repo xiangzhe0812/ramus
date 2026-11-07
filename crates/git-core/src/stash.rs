@@ -5,15 +5,16 @@
 use crate::{
     CommitFile, CommitInfo, DiffOptions, Error, FileDiff, Repo,
     history::{LOG_FORMAT, parse_log},
-    runner::{run_git, run_git_with_env},
+    runner::{run_git, run_git_hookless_env},
 };
 
 /// Runs a `git stash` subcommand. Stash builds its own pathspecs internally (to find and
 /// clean untracked files), and the runner's usual `GIT_LITERAL_PATHSPECS=1` makes git read
 /// them literally, so untracked files get left behind. No pathspec here comes from the
-/// user, so literal mode is safe to turn off.
+/// user, so literal mode is safe to turn off. Hooks are off too: stash writes a ref, which
+/// would run the repository's `reference-transaction` hook even in an untrusted repo.
 fn run_stash(repo: &Repo, args: &[&str]) -> Result<Vec<u8>, Error> {
-    run_git_with_env(
+    run_git_hookless_env(
         repo.root(),
         args,
         &[("GIT_LITERAL_PATHSPECS", "0".as_ref())],

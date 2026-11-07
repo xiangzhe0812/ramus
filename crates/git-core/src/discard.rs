@@ -8,7 +8,7 @@ use std::{
 
 use crate::{
     ChangeKind, Error, FileChange, Repo,
-    runner::{run_git, run_git_with_env},
+    runner::{run_git_hookless, run_git_hookless_env},
 };
 
 /// What a discard saved, so it can be undone.
@@ -88,7 +88,7 @@ impl DiscardBackup {
 impl Repo {
     /// `.git/ramus`, resolved the way git would (it may be a worktree's private folder).
     fn ramus_dir(&self) -> Result<PathBuf, Error> {
-        let output = run_git(self.root(), &["rev-parse", "--git-path", "ramus"])?;
+        let output = run_git_hookless(self.root(), &["rev-parse", "--git-path", "ramus"])?;
         let path = PathBuf::from(String::from_utf8_lossy(&output).trim());
         Ok(if path.is_absolute() {
             path
@@ -159,10 +159,11 @@ impl Repo {
                     std::ffi::OsStr::new("ramus@localhost"),
                 ),
             ]);
-            run_git_with_env(self.root(), args, &vars)
+            run_git_hookless_env(self.root(), args, &vars)
         };
 
-        let has_head = run_git(self.root(), &["rev-parse", "--verify", "--quiet", "HEAD"]).is_ok();
+        let has_head =
+            run_git_hookless(self.root(), &["rev-parse", "--verify", "--quiet", "HEAD"]).is_ok();
         let result = (|| {
             if has_head {
                 run(&["read-tree", "HEAD"])?;
@@ -185,7 +186,7 @@ impl Repo {
             let commit = String::from_utf8_lossy(&run(&commit_args)?)
                 .trim()
                 .to_owned();
-            run_git(
+            run_git_hookless(
                 self.root(),
                 &["update-ref", &format!("refs/ramus/discarded/{id}"), &commit],
             )?;
@@ -210,9 +211,9 @@ impl Repo {
         match (change.index, change.original_path.as_deref()) {
             // A rename: the new name doesn't exist in HEAD, the old one does.
             (Some(ChangeKind::Renamed | ChangeKind::Copied), Some(old)) => {
-                run_git(self.root(), &["rm", "-f", "-q", "--", &change.path])?;
+                run_git_hookless(self.root(), &["rm", "-f", "-q", "--", &change.path])?;
                 if change.index == Some(ChangeKind::Renamed) {
-                    run_git(
+                    run_git_hookless(
                         self.root(),
                         &[
                             "restore",
@@ -228,9 +229,9 @@ impl Repo {
             }
             // New in the index: there is nothing in HEAD to go back to, so remove it.
             _ if !in_head(change.index) => {
-                run_git(self.root(), &["rm", "-f", "-q", "--", &change.path]).map(drop)
+                run_git_hookless(self.root(), &["rm", "-f", "-q", "--", &change.path]).map(drop)
             }
-            _ => run_git(
+            _ => run_git_hookless(
                 self.root(),
                 &[
                     "restore",
@@ -250,7 +251,8 @@ impl Repo {
     pub fn undo_discard(&self, backup: &DiscardBackup) -> Result<(), Error> {
         if let Some(commit) = &backup.commit {
             for path in &backup.tracked {
-                let saved = run_git(self.root(), &["ls-tree", "--name-only", commit, "--", path])?;
+                let saved =
+                    run_git_hookless(self.root(), &["ls-tree", "--name-only", commit, "--", path])?;
                 if saved.is_empty() {
                     // It was deleted when discarded; it came back, so delete it again.
                     match fs::remove_file(checked_path(self.root(), path, false)?) {
@@ -260,7 +262,7 @@ impl Repo {
                         _ => {}
                     }
                 } else {
-                    run_git(
+                    run_git_hookless(
                         self.root(),
                         &[
                             "restore",

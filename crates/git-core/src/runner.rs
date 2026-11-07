@@ -68,6 +68,32 @@ pub(crate) fn run_git_with_env(
     }
 }
 
+/// Like [`run_git_with_env`], with the repository's hooks switched off.
+///
+/// Updating any ref runs the repository's `reference-transaction` hook, and a repository
+/// that has not been trusted must not get to run programs. Actions that stay available
+/// in that state but write refs (stash, discard, abort) use this.
+pub(crate) fn run_git_hookless_env(
+    dir: &Path,
+    args: &[&str],
+    env: &[(&str, &std::ffi::OsStr)],
+) -> Result<Vec<u8>, Error> {
+    let mut full = vec!["-c", "core.hooksPath=/dev/null"];
+    full.extend_from_slice(args);
+    run_git_with_env(dir, &full, env).map_err(|error| match error {
+        // Name the real subcommand in the message, not the `-c` we put in front.
+        Error::Git { command, stderr } if command == "-c" => Error::Git {
+            command: args.first().copied().unwrap_or_default().to_owned(),
+            stderr,
+        },
+        other => other,
+    })
+}
+
+pub(crate) fn run_git_hookless(dir: &Path, args: &[&str]) -> Result<Vec<u8>, Error> {
+    run_git_hookless_env(dir, args, &[])
+}
+
 /// Runs `git` with `input` on stdin, e.g. `git commit -F -` so a message never
 /// touches the command line or a temp file.
 pub(crate) fn run_git_with_input(

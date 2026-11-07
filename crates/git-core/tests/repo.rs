@@ -3896,3 +3896,102 @@ mod resolving_conflicts {
         let _ = OperationKind::Merge;
     }
 }
+
+mod ref_update_hooks {
+    //! Writing a ref runs the repository's `reference-transaction` hook. In a repository
+    //! that hasn't been trusted, the actions that stay available must not run it.
+
+    use std::os::unix::fs::PermissionsExt;
+
+    use super::*;
+
+    /// A repo whose `reference-transaction` hook drops a marker outside the repo.
+    fn hooked_repo() -> (TempDir, TempDir, std::path::PathBuf) {
+        let dir = new_repo();
+        commit_file(dir.path(), "a.txt", "one\n");
+        let outside = TempDir::new().unwrap();
+        let marker = outside.path().join("PWNED");
+        let hook = dir.path().join(".git/hooks/reference-transaction");
+        fs::create_dir_all(hook.parent().unwrap()).unwrap();
+        fs::write(&hook, format!("#!/bin/sh\ntouch '{}'\n", marker.display())).unwrap();
+        fs::set_permissions(&hook, fs::Permissions::from_mode(0o755)).unwrap();
+        (dir, outside, marker)
+    }
+
+    fn dirty(dir: &Path) {
+        fs::write(dir.join("a.txt"), "one\ntwo\n").unwrap();
+    }
+
+    #[test]
+    fn stashing_and_dropping_run_no_hooks() {
+        let (dir, _outside, marker) = hooked_repo();
+        dirty(dir.path());
+        let repo = Repo::open(dir.path()).unwrap();
+
+        repo.stash_push("x").unwrap();
+        assert!(!marker.exists(), "stash push ran the repository's hook");
+
+        let stash = repo.stashes().unwrap().remove(0);
+        repo.stash_drop(&stash).unwrap();
+        assert!(!marker.exists(), "stash drop ran the repository's hook");
+    }
+
+    #[test]
+    fn discarding_and_undoing_run_no_hooks() {
+        let (dir, _outside, marker) = hooked_repo();
+        dirty(dir.path());
+        let repo = Repo::open(dir.path()).unwrap();
+        let status = repo.status().unwrap();
+        let change = status.files.iter().find(|f| f.path == "a.txt").unwrap();
+
+        let backup = repo.discard(&[change]).unwrap();
+        assert!(!marker.exists(), "discard ran the repository's hook");
+
+        repo.undo_discard(&backup).unwrap();
+        assert!(!marker.exists(), "undo ran the repository's hook");
+    }
+
+    #[test]
+    fn aborting_a_stopped_operation_runs_no_hooks() {
+        let dir = new_repo();
+        commit_file(dir.path(), "a.txt", "base\n");
+        git(dir.path(), &["switch", "-q", "-c", "other"]);
+        fs::write(dir.path().join("a.txt"), "other\n").unwrap();
+        git(dir.path(), &["commit", "-qam", "other"]);
+        git(dir.path(), &["switch", "-q", "main"]);
+        fs::write(dir.path().join("a.txt"), "main\n").unwrap();
+        git(dir.path(), &["commit", "-qam", "main"]);
+        let repo = Repo::open(dir.path()).unwrap();
+        assert!(repo.merge("other").is_err());
+
+        // The hook is planted after the merge stopped, as a hostile folder would have it.
+        let outside = TempDir::new().unwrap();
+        let marker = outside.path().join("PWNED");
+        let hook = dir.path().join(".git/hooks/reference-transaction");
+        fs::create_dir_all(hook.parent().unwrap()).unwrap();
+        fs::write(&hook, format!("#!/bin/sh\ntouch '{}'\n", marker.display())).unwrap();
+        fs::set_permissions(&hook, fs::Permissions::from_mode(0o755)).unwrap();
+
+        repo.abort_operation().unwrap();
+        assert!(!marker.exists(), "abort ran the repository's hook");
+        assert!(repo.in_progress().unwrap().is_none());
+    }
+}
+
+mod hostile_remote_output {
+    use git_core::read_lines_for_test;
+
+    #[test]
+    fn a_huge_line_is_cut_down_instead_of_filling_memory() {
+        let huge = "x".repeat(5_000_000);
+        let lines = read_lines_for_test(huge.as_bytes());
+        assert_eq!(lines.len(), 1);
+        assert!(lines[0].len() <= 8192, "{} bytes kept", lines[0].len());
+    }
+
+    #[test]
+    fn ordinary_lines_and_carriage_return_progress_still_split() {
+        let lines = read_lines_for_test(b"one\ntwo\rthree\n\n");
+        assert_eq!(lines, ["one", "two", "three"]);
+    }
+}
