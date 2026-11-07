@@ -4,6 +4,7 @@ description = "Ramus, a Git desktop client built with GPUI"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+repository.workspace = true
 
 [dependencies]
 git-core.workspace = true

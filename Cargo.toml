@@ -6,6 +6,7 @@ members = ["crates/git-core", "crates/ramus"]
 version = "0.1.0"
 edition = "2024"
 license = "MIT OR Apache-2.0"
+repository = "https://github.com/xiangzhe0812/ramus"
 
 [workspace.dependencies]
 # GPUI is not published as a stable crate. gpui-component pins the `gpui-pre` snapshot

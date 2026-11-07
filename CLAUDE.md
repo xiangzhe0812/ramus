@@ -1,6 +1,6 @@
 # Ramus
 
-A Git desktop client in Rust and GPUI. Read `docs/design-decisions.md` before changing anything: scope, stack and milestone order are settled there.
+A Git desktop client in Rust and GPUI. Scope, stack and milestone order are settled in the maintainer's design notes (`docs/design-decisions.md`, kept out of the repository). If you don't have that file, ask before changing scope or the security model described in the README.
 
 ## Commands
 
@@ -18,4 +18,4 @@ A Git desktop client in Rust and GPUI. Read `docs/design-decisions.md` before ch
 - Text inputs come from `gpui-component`; `component_theme.rs` maps our `Theme` onto its theme. Don't write a text editor.
 - Every git call goes through `git-core`'s runner, which neutralises repo-configured commands (fsmonitor, filters). Never spawn `git` directly from the UI crate.
 - Build one milestone at a time and stop for review between milestones.
-- UI design lives in the canvas linked from `docs/design-decisions.md`; match it.
+- The UI follows the maintainer's design canvas (private); match the existing views' layout and spacing.

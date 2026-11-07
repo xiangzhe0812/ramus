@@ -1,2 +1,4 @@
 /target
+# Maintainer's private design notes; not published.
+/docs
 .DS_Store
