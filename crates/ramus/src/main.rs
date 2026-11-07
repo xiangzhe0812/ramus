@@ -16,6 +16,7 @@ mod palette_view;
 mod repo_state;
 mod secrets;
 mod settings;
+mod stash_view;
 mod theme;
 mod title_bar;
 mod welcome;
@@ -26,7 +27,7 @@ use gpui::{AppContext, Bounds, KeyBinding, WindowBounds, WindowOptions, px, size
 use crate::{
     actions::{
         CloneRepository, DiscardSelected, OpenRepository, SelectNextFile, SelectPreviousFile,
-        ShowChanges, ShowHistory, ToggleBranches, TogglePalette, ToggleSelectedFile,
+        ShowChanges, ShowHistory, ShowStashes, ToggleBranches, TogglePalette, ToggleSelectedFile,
     },
     repo_state::RepoState,
     theme::Theme,
@@ -46,6 +47,7 @@ fn main() {
             KeyBinding::new("cmd-k", TogglePalette, None),
             KeyBinding::new("cmd-1", ShowChanges, None),
             KeyBinding::new("cmd-2", ShowHistory, None),
+            KeyBinding::new("cmd-3", ShowStashes, None),
             KeyBinding::new("cmd-backspace", DiscardSelected, Some("Workspace")),
             KeyBinding::new("down", SelectNextFile, Some("ChangesList")),
             KeyBinding::new("up", SelectPreviousFile, Some("ChangesList")),

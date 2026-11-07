@@ -9,7 +9,7 @@ use crate::settings::{self, Settings};
 
 use git_core::{
     Branch, BranchList, CancelToken, CommitInfo, DiffHunk, DiscardBackup, FileChange, Progress,
-    Repo, RepoStatus,
+    Repo, RepoStatus, Stash,
 };
 use gpui::{Context, EventEmitter, SharedString, Task};
 
@@ -80,6 +80,9 @@ pub struct RepoState {
     /// Branches for the branch switcher, loaded when it opens.
     branches: Option<BranchList>,
     branches_task: Option<Task<()>>,
+    /// Stashes for the Stashes tab; `None` until loaded.
+    stashes: Option<Vec<Stash>>,
+    stashes_task: Option<Task<()>>,
     operation: Option<Operation>,
     /// The last fetch, pull or push that was started, so a failure can be retried.
     last_sync: Option<SyncKind>,
@@ -123,6 +126,8 @@ impl RepoState {
             trusted: false,
             branches: None,
             branches_task: None,
+            stashes: None,
+            stashes_task: None,
             operation: None,
             last_sync: None,
             push_after_pull: false,
@@ -402,6 +407,71 @@ impl RepoState {
         }));
     }
 
+    pub fn stashes(&self) -> Option<&[Stash]> {
+        self.stashes.as_deref()
+    }
+
+    /// Reads the stash list in the background.
+    pub fn load_stashes(&mut self, cx: &mut Context<Self>) {
+        let Some(repo) = self.repo.clone() else {
+            return;
+        };
+        self.stashes_task = Some(cx.spawn(async move |this, cx| {
+            let result = cx
+                .background_executor()
+                .spawn(async move { repo.stashes() })
+                .await;
+            this.update(cx, |this, cx| {
+                match result {
+                    Ok(stashes) => this.stashes = Some(stashes),
+                    Err(error) => this.error = Some(error.to_string().into()),
+                }
+                cx.notify();
+            })
+            .ok();
+        }));
+    }
+
+    /// Sets every change aside under `message` (git picks one if it is empty).
+    pub fn stash_changes(&mut self, message: String, cx: &mut Context<Self>) {
+        self.write_returning(
+            cx,
+            move |repo| repo.stash_push(&message),
+            |this, (), cx| this.load_stashes(cx),
+        );
+    }
+
+    /// Brings a stash back and keeps it. Applying can run the repository's merge
+    /// drivers, so it needs trust.
+    pub fn apply_stash(&mut self, stash: Stash, cx: &mut Context<Self>) {
+        if self.require_trust("apply a stash", cx) {
+            self.write_returning(
+                cx,
+                move |repo| repo.stash_apply(&stash),
+                |this, (), cx| this.load_stashes(cx),
+            );
+        }
+    }
+
+    /// Brings a stash back and removes it.
+    pub fn pop_stash(&mut self, stash: Stash, cx: &mut Context<Self>) {
+        if self.require_trust("apply a stash", cx) {
+            self.write_returning(
+                cx,
+                move |repo| repo.stash_pop(&stash),
+                |this, (), cx| this.load_stashes(cx),
+            );
+        }
+    }
+
+    pub fn drop_stash(&mut self, stash: Stash, cx: &mut Context<Self>) {
+        self.write_returning(
+            cx,
+            move |repo| repo.stash_drop(&stash),
+            |this, (), cx| this.load_stashes(cx),
+        );
+    }
+
     /// Whether `action` may run: refused, with an explanation, in a repository that
     /// hasn't been trusted, because checkouts and commits run the repo's own hooks.
     fn require_trust(&mut self, action: &str, cx: &mut Context<Self>) -> bool {
@@ -532,6 +602,9 @@ impl RepoState {
                 match result {
                     Ok((repo, status, remotes)) => {
                         this.remotes = remotes;
+                        if this.repo.as_ref().map(Repo::root) != Some(repo.root()) {
+                            this.stashes = None;
+                        }
                         this.trusted = this.settings.is_trusted(repo.root());
                         this.repo = Some(repo);
                         // Restoring discarded files into a different commit's tree would be
@@ -1283,6 +1356,75 @@ mod tests {
         );
         assert!(state.read_with(cx, |s, _| s.error().is_none()));
         settle(cx, &state);
+    }
+
+    #[gpui::test]
+    async fn stashing_sets_work_aside_and_the_list_shows_it(cx: &mut TestAppContext) {
+        let dir = repo_without_hooks();
+        fs::write(dir.path().join("a.txt"), "edited\n").unwrap();
+        let state = open_trusted(cx, dir.path());
+
+        state.update(cx, |state, cx| state.stash_changes("my note".into(), cx));
+        cx.executor().run_until_parked();
+
+        state.read_with(cx, |s, _| {
+            assert!(s.error().is_none(), "{:?}", s.error());
+            let stashes = s.stashes().expect("loaded");
+            assert_eq!(stashes.len(), 1);
+            assert_eq!(stashes[0].message, "my note");
+            assert!(s.status().unwrap().files.is_empty());
+        });
+    }
+
+    #[gpui::test]
+    async fn popping_a_stash_returns_the_work_and_empties_the_list(cx: &mut TestAppContext) {
+        let dir = repo_without_hooks();
+        fs::write(dir.path().join("a.txt"), "edited\n").unwrap();
+        let state = open_trusted(cx, dir.path());
+        state.update(cx, |state, cx| state.stash_changes("n".into(), cx));
+        cx.executor().run_until_parked();
+        let stash = state.read_with(cx, |s, _| s.stashes().unwrap()[0].clone());
+
+        state.update(cx, |state, cx| state.pop_stash(stash, cx));
+        cx.executor().run_until_parked();
+
+        state.read_with(cx, |s, _| {
+            assert!(s.error().is_none(), "{:?}", s.error());
+            assert!(s.stashes().unwrap().is_empty());
+            // The edited a.txt and the untracked b.txt both came back.
+            assert_eq!(s.status().unwrap().files.len(), 2);
+        });
+    }
+
+    #[gpui::test]
+    async fn applying_a_stash_needs_trust_but_stashing_and_dropping_do_not(
+        cx: &mut TestAppContext,
+    ) {
+        let dir = repo_without_hooks();
+        fs::write(dir.path().join("a.txt"), "edited\n").unwrap();
+        let state = cx.new(|_| RepoState::default());
+        state.update(cx, |state, cx| state.open(dir.path().to_owned(), cx));
+        cx.executor().run_until_parked();
+        assert!(!state.read_with(cx, |s, _| s.is_trusted()));
+
+        state.update(cx, |state, cx| state.stash_changes("n".into(), cx));
+        cx.executor().run_until_parked();
+        let stash = state.read_with(cx, |s, _| s.stashes().unwrap()[0].clone());
+
+        state.update(cx, |state, cx| state.apply_stash(stash.clone(), cx));
+        cx.executor().run_until_parked();
+        state.read_with(cx, |s, _| {
+            assert!(s.error().is_some_and(|e| e.contains("Trust")));
+            assert!(
+                s.status().unwrap().files.is_empty(),
+                "nothing may be applied"
+            );
+        });
+
+        state.update(cx, |state, cx| state.dismiss_error(cx));
+        state.update(cx, |state, cx| state.drop_stash(stash, cx));
+        cx.executor().run_until_parked();
+        state.read_with(cx, |s, _| assert!(s.stashes().unwrap().is_empty()));
     }
 
     #[gpui::test]

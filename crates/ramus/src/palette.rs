@@ -14,6 +14,8 @@ pub enum Command {
     SwitchBranch,
     ShowChanges,
     ShowHistory,
+    ShowStashes,
+    StashChanges,
     Sync(SyncKind),
     StageAll,
     UnstageAll,
@@ -108,6 +110,12 @@ fn all_commands(situation: &Situation) -> Vec<Entry> {
         Some("⌘2"),
         Command::ShowHistory,
     ));
+    entries.push(Entry::command(
+        "Show stashes",
+        Some("⌘3"),
+        Command::ShowStashes,
+    ));
+    entries.push(Entry::command("Stash changes", None, Command::StashChanges));
     if !situation.busy {
         let primary = situation.primary_sync.as_ref();
         if let Some((kind, label)) = primary {
@@ -232,10 +240,14 @@ mod tests {
     #[test]
     fn commands_starting_with_the_query_come_first() {
         let s = situation(&[], &[]);
-        // "Show changes" and "Show history" and "Switch branch…" contain "s"; "Stage all
-        // changes" starts with "st" but "Show…" does not.
+        // Many labels contain "st" (Show stashes, Unstage all changes…); only some start
+        // with it, and those must all come before the ones that merely contain it.
         let found = entries(&s, "st");
-        assert_eq!(found[0].label, "Stage all changes");
+        let starts = |label: &str| label.to_lowercase().starts_with("st");
+        let leading = found.iter().take_while(|e| starts(&e.label)).count();
+        assert!(leading >= 2, "{:?}", labels(&found));
+        assert!(found[leading..].iter().all(|e| !starts(&e.label)));
+        assert!(labels(&found[..leading]).contains(&"Stage all changes"));
     }
 
     #[test]

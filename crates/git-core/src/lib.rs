@@ -9,6 +9,7 @@ mod failure;
 mod history;
 mod repo;
 mod runner;
+mod stash;
 mod status;
 mod sync;
 
@@ -19,5 +20,6 @@ pub use error::Error;
 pub use failure::FailureKind;
 pub use history::{CommitFile, CommitInfo};
 pub use repo::{DiffOptions, Repo};
+pub use stash::{Stash, StashFile, parse_stash_subject};
 pub use status::{BranchStatus, ChangeKind, FileChange, Head, RepoStatus};
 pub use sync::{CancelToken, Progress};

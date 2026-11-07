@@ -39,7 +39,7 @@ pub struct CommitFile {
 const FIELD: char = '\0';
 const RECORD: char = '\x1e';
 
-const LOG_FORMAT: &str = "--format=%H%x00%h%x00%an%x00%ae%x00%ct%x00%P%x00%s%x00%b%x1e";
+pub(crate) const LOG_FORMAT: &str = "--format=%H%x00%h%x00%an%x00%ae%x00%ct%x00%P%x00%s%x00%b%x1e";
 
 pub(crate) fn parse_log(output: &[u8]) -> Result<Vec<CommitInfo>, Error> {
     let text = String::from_utf8_lossy(output);

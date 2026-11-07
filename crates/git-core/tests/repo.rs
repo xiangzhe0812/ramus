@@ -3421,3 +3421,197 @@ mod remotes {
         assert!(!marker.exists(), "fetch ran the ext transport");
     }
 }
+
+mod stashing {
+    use git_core::DiffOptions;
+
+    use super::*;
+
+    /// A repo with `a.txt` committed, then edited, plus an untracked `new.txt`.
+    fn dirty_repo() -> TempDir {
+        let dir = new_repo();
+        commit_file(dir.path(), "a.txt", "one\n");
+        fs::write(dir.path().join("a.txt"), "one\ntwo\n").unwrap();
+        fs::write(dir.path().join("new.txt"), "fresh\n").unwrap();
+        dir
+    }
+
+    fn is_clean(repo: &Repo) -> bool {
+        repo.status().unwrap().files.is_empty()
+    }
+
+    #[test]
+    fn stashing_sets_aside_tracked_and_untracked_changes() {
+        let dir = dirty_repo();
+        let repo = Repo::open(dir.path()).unwrap();
+
+        repo.stash_push("WIP theme tokens").unwrap();
+
+        assert!(is_clean(&repo));
+        assert_eq!(
+            fs::read_to_string(dir.path().join("a.txt")).unwrap(),
+            "one\n"
+        );
+        assert!(!dir.path().join("new.txt").exists());
+        let stashes = repo.stashes().unwrap();
+        assert_eq!(stashes.len(), 1);
+        assert_eq!(stashes[0].index, 0);
+        assert_eq!(stashes[0].message, "WIP theme tokens");
+        assert_eq!(stashes[0].branch, "main");
+    }
+
+    #[test]
+    fn without_a_message_the_default_one_is_made_readable() {
+        let dir = dirty_repo();
+        let repo = Repo::open(dir.path()).unwrap();
+        repo.stash_push("").unwrap();
+        let stash = &repo.stashes().unwrap()[0];
+        assert_eq!(stash.branch, "main");
+        assert!(!stash.message.is_empty());
+        assert!(!stash.message.starts_with("WIP on"), "{}", stash.message);
+    }
+
+    #[test]
+    fn nothing_to_stash_is_an_error_not_an_empty_stash() {
+        let dir = new_repo();
+        commit_file(dir.path(), "a.txt", "one\n");
+        let repo = Repo::open(dir.path()).unwrap();
+        assert!(repo.stash_push("x").is_err());
+        assert!(repo.stashes().unwrap().is_empty());
+    }
+
+    #[test]
+    fn the_newest_stash_is_first() {
+        let dir = dirty_repo();
+        let repo = Repo::open(dir.path()).unwrap();
+        repo.stash_push("first").unwrap();
+        fs::write(dir.path().join("a.txt"), "again\n").unwrap();
+        repo.stash_push("second").unwrap();
+        let stashes = repo.stashes().unwrap();
+        let names: Vec<_> = stashes
+            .iter()
+            .map(|s| (s.index, s.message.as_str()))
+            .collect();
+        assert_eq!(names, [(0, "second"), (1, "first")]);
+    }
+
+    #[test]
+    fn apply_keeps_the_stash_and_pop_removes_it() {
+        let dir = dirty_repo();
+        let repo = Repo::open(dir.path()).unwrap();
+        repo.stash_push("work").unwrap();
+
+        let stash = repo.stashes().unwrap().remove(0);
+        repo.stash_apply(&stash).unwrap();
+        assert_eq!(
+            fs::read_to_string(dir.path().join("a.txt")).unwrap(),
+            "one\ntwo\n"
+        );
+        assert!(dir.path().join("new.txt").exists());
+        assert_eq!(repo.stashes().unwrap().len(), 1);
+
+        git(dir.path(), &["checkout", "--", "a.txt"]);
+        fs::remove_file(dir.path().join("new.txt")).unwrap();
+        let stash = repo.stashes().unwrap().remove(0);
+        repo.stash_pop(&stash).unwrap();
+        assert!(repo.stashes().unwrap().is_empty());
+        assert!(dir.path().join("new.txt").exists());
+    }
+
+    #[test]
+    fn drop_discards_only_that_stash() {
+        let dir = dirty_repo();
+        let repo = Repo::open(dir.path()).unwrap();
+        repo.stash_push("keep").unwrap();
+        fs::write(dir.path().join("a.txt"), "x\n").unwrap();
+        repo.stash_push("lose").unwrap();
+        let stashes = repo.stashes().unwrap();
+        repo.stash_drop(&stashes[0]).unwrap();
+        let left = repo.stashes().unwrap();
+        assert_eq!(left.len(), 1);
+        assert_eq!(left[0].message, "keep");
+    }
+
+    #[test]
+    fn a_stale_entry_is_refused_instead_of_hitting_a_different_stash() {
+        let dir = dirty_repo();
+        let repo = Repo::open(dir.path()).unwrap();
+        repo.stash_push("old").unwrap();
+        let shown = repo.stashes().unwrap().remove(0);
+        // Someone stashes again (a terminal, say) after the list was drawn.
+        fs::write(dir.path().join("a.txt"), "changed\n").unwrap();
+        repo.stash_push("newer").unwrap();
+
+        assert!(repo.stash_drop(&shown).is_err());
+        assert!(repo.stash_apply(&shown).is_err());
+        assert!(repo.stash_pop(&shown).is_err());
+        assert_eq!(repo.stashes().unwrap().len(), 2);
+        assert!(is_clean(&repo));
+    }
+
+    #[test]
+    fn popping_over_clashing_local_changes_fails_and_keeps_both() {
+        let dir = dirty_repo();
+        let repo = Repo::open(dir.path()).unwrap();
+        repo.stash_push("work").unwrap();
+        fs::write(dir.path().join("a.txt"), "local edit\n").unwrap();
+        let stash = repo.stashes().unwrap().remove(0);
+
+        assert!(repo.stash_pop(&stash).is_err());
+
+        assert_eq!(repo.stashes().unwrap().len(), 1);
+        assert_eq!(
+            fs::read_to_string(dir.path().join("a.txt")).unwrap(),
+            "local edit\n"
+        );
+    }
+
+    #[test]
+    fn a_stash_lists_its_files_and_diffs_including_untracked_ones() {
+        let dir = dirty_repo();
+        let repo = Repo::open(dir.path()).unwrap();
+        repo.stash_push("work").unwrap();
+        let stash = repo.stashes().unwrap().remove(0);
+
+        let files = repo.stash_files(&stash).unwrap();
+        let paths: Vec<_> = files.iter().map(|f| f.file.path.as_str()).collect();
+        assert_eq!(paths, ["a.txt", "new.txt"]);
+
+        let tracked = repo
+            .stash_diff(&stash, &files[0], DiffOptions::default())
+            .unwrap();
+        assert!(tracked.hunks[0].lines.iter().any(|l| l.text == "two"));
+        let untracked = repo
+            .stash_diff(&stash, &files[1], DiffOptions::default())
+            .unwrap();
+        assert!(untracked.hunks[0].lines.iter().any(|l| l.text == "fresh"));
+    }
+}
+
+mod stash_subjects {
+    use git_core::parse_stash_subject;
+
+    #[test]
+    fn splits_the_branch_from_the_message() {
+        assert_eq!(
+            parse_stash_subject("On main: WIP theme tokens"),
+            ("main".to_owned(), "WIP theme tokens".to_owned())
+        );
+        assert_eq!(
+            parse_stash_subject("On feat/x: a: b"),
+            ("feat/x".to_owned(), "a: b".to_owned())
+        );
+        assert_eq!(
+            parse_stash_subject("WIP on main: 1a2b3c4 Fix the thing"),
+            ("main".to_owned(), "Fix the thing".to_owned())
+        );
+    }
+
+    #[test]
+    fn anything_else_is_kept_whole() {
+        assert_eq!(
+            parse_stash_subject("something odd"),
+            (String::new(), "something odd".to_owned())
+        );
+    }
+}

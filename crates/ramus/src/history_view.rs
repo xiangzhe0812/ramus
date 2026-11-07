@@ -87,7 +87,7 @@ fn rows_for(commits: &[CommitInfo], filter: &str, has_more: bool) -> Vec<Row> {
     rows
 }
 
-fn now() -> i64 {
+pub(crate) fn now() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|elapsed| elapsed.as_secs() as i64)

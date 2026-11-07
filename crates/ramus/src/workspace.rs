@@ -11,7 +11,7 @@ use crate::{
     accounts_view::AccountsView,
     actions::{
         AddRemote, CloneRepository, DiscardSelected, NewBranchHere, OpenRepository, ShowAccounts,
-        ShowChanges, ShowHistory, ToggleBranches, TogglePalette,
+        ShowChanges, ShowHistory, ShowStashes, ToggleBranches, TogglePalette,
     },
     add_remote_dialog::AddRemoteDialog,
     branch_popover::BranchPopover,
@@ -24,6 +24,7 @@ use crate::{
     palette_view::{PaletteView, RunEntry},
     repo_state::RepoState,
     secrets::Keychain,
+    stash_view::StashView,
     theme::{MONO_FONT, Theme},
     title_bar::{Tab, TabRequested, TitleBar},
     welcome::Welcome,
@@ -37,6 +38,7 @@ pub struct Workspace {
     title_bar: Entity<TitleBar>,
     changes: Entity<ChangesView>,
     history: Entity<HistoryView>,
+    stashes: Entity<StashView>,
     tab: Tab,
     welcome: Entity<Welcome>,
     branch_popover: Option<Entity<BranchPopover>>,
@@ -82,6 +84,7 @@ impl Workspace {
 
         let changes = cx.new(|cx| ChangesView::new(repo_state.clone(), window, cx));
         let history = cx.new(|cx| HistoryView::new(repo_state.clone(), window, cx));
+        let stashes = cx.new(|cx| StashView::new(repo_state.clone(), window, cx));
         let title_bar = cx.new(|cx| TitleBar::new(repo_state.clone(), cx));
         cx.subscribe(&title_bar, |this, _, event: &TabRequested, cx| {
             this.show(event.0, cx)
@@ -104,6 +107,7 @@ impl Workspace {
             title_bar,
             changes,
             history,
+            stashes,
             tab: Tab::Changes,
             welcome: cx.new(|_| Welcome),
             branch_popover: None,
@@ -413,6 +417,10 @@ impl Workspace {
             Command::SwitchBranch => window.dispatch_action(Box::new(ToggleBranches), cx),
             Command::ShowChanges => self.show(Tab::Changes, cx),
             Command::ShowHistory => self.show(Tab::History, cx),
+            Command::ShowStashes => self.show(Tab::Stashes, cx),
+            Command::StashChanges => self
+                .repo_state
+                .update(cx, |state, cx| state.stash_changes(String::new(), cx)),
             Command::DiscardSelected => window.dispatch_action(Box::new(DiscardSelected), cx),
             Command::Sync(kind) => self.repo_state.update(cx, |state, cx| state.sync(kind, cx)),
             Command::StageAll => self.repo_state.update(cx, |state, cx| state.stage_all(cx)),
@@ -693,6 +701,7 @@ impl Render for Workspace {
             match self.tab {
                 Tab::Changes => self.changes.clone().into_any_element(),
                 Tab::History => self.history.clone().into_any_element(),
+                Tab::Stashes => self.stashes.clone().into_any_element(),
             }
         } else {
             div()
@@ -800,6 +809,7 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::discard_selected))
             .on_action(cx.listener(|this, _: &ShowChanges, _, cx| this.show(Tab::Changes, cx)))
             .on_action(cx.listener(|this, _: &ShowHistory, _, cx| this.show(Tab::History, cx)))
+            .on_action(cx.listener(|this, _: &ShowStashes, _, cx| this.show(Tab::Stashes, cx)))
             .on_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, _, cx| {
                 if this.pending_discard.is_some() {
                     match event.keystroke.key.as_str() {

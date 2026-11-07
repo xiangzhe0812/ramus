@@ -10,11 +10,12 @@ use crate::{
     theme::{MONO_FONT, Theme},
 };
 
-/// The two views the window can show.
+/// The views the window can show.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Tab {
     Changes,
     History,
+    Stashes,
 }
 
 /// The user clicked a tab.
@@ -321,8 +322,13 @@ impl Render for TitleBar {
                     .border_1()
                     .border_color(theme.border)
                     .bg(theme.surface)
-                    .children([(Tab::Changes, "Changes"), (Tab::History, "History")].map(
-                        |(tab, label)| {
+                    .children(
+                        [
+                            (Tab::Changes, "Changes"),
+                            (Tab::History, "History"),
+                            (Tab::Stashes, "Stashes"),
+                        ]
+                        .map(|(tab, label)| {
                             let active = self.tab == tab;
                             div()
                                 .id(label)
@@ -345,8 +351,8 @@ impl Render for TitleBar {
                                     cx.listener(move |_, _, _, cx| cx.emit(TabRequested(tab))),
                                 )
                                 .child(label)
-                        },
-                    )),
+                        }),
+                    ),
             )
     }
 }
