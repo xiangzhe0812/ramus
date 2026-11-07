@@ -99,6 +99,11 @@ mod tests {
     /// The real keychain, under a name no real sign-in uses, removed afterwards.
     #[test]
     fn the_keychain_round_trips_a_secret() {
+        // A CI runner has no unlocked login keychain to write to.
+        if std::env::var_os("CI").is_some() {
+            eprintln!("skipped: no login keychain on CI");
+            return;
+        }
         let store = Keychain::new(
             "Ramus-test-delete-me",
             &format!("round-trip-{}", std::process::id()),
