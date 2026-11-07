@@ -3,6 +3,12 @@ name: Release
 # Pushing a tag like `v0.1.0` builds the installer and publishes it as a GitHub release.
 # "Run workflow" (any branch) builds the same installer and stops there, which is how to try
 # a build without publishing anything.
+#
+# The build and the publish are separate jobs so that the one that compiles third-party code
+# has no write access. The finished files cross between them through the Actions *cache*, not
+# artifact storage: the account's artifact quota can be full (and stay full for hours after
+# files are deleted), while the cache has its own limit and evicts old entries instead of
+# refusing new ones.
 on:
   push:
     tags: ["v*"]
@@ -56,10 +62,22 @@ jobs:
       - name: Checksums
         run: cd dist && shasum -a 256 *.dmg > SHA256SUMS.txt && cat SHA256SUMS.txt
 
-      # The hand-off to the publish job. It lives one day, the shortest GitHub allows, so it
-      # takes only a moment of the account's artifact storage (about 12 MB). If that storage
-      # is full this step fails: free some in Actions and run again.
-      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+      # The hand-off to the publish job. The key is per run (not per attempt) so a re-run of
+      # just the publish job still finds it.
+      - name: Hand the files to the publish job
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            dist/*.dmg
+            dist/SHA256SUMS.txt
+          key: release-${{ github.run_id }}
+
+      # For a manual rehearsal, which publishes nothing: keep the build for a day so it can be
+      # downloaded and tried. Best effort, since artifact storage may be full.
+      - name: Keep the build for a day (manual runs)
+        if: ${{ !startsWith(github.ref, 'refs/tags/v') }}
+        continue-on-error: true
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: ramus-macos
           path: |
@@ -73,16 +91,26 @@ jobs:
     needs: build
     # Only a tag publishes; a manual run stops after the build.
     if: startsWith(github.ref, 'refs/tags/v')
-    runs-on: ubuntu-latest
+    # Same operating system as the build, so the cache archive restores the same way.
+    runs-on: macos-latest
     # The only job allowed to write to the repository. It runs no build code: it downloads
     # the finished files and attaches them to the release.
     permissions:
       contents: write
     steps:
-      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+      - name: Get the files from the build job
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
-          name: ramus-macos
-          path: dist
+          path: |
+            dist/*.dmg
+            dist/SHA256SUMS.txt
+          key: release-${{ github.run_id }}
+          # Publishing nothing is better than publishing the wrong thing.
+          fail-on-cache-miss: true
+
+      # What was restored must be exactly what the checksum file says.
+      - name: Verify the checksum
+        run: cd dist && shasum -a 256 -c SHA256SUMS.txt
 
       - name: Create the release
         env:

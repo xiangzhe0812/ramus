@@ -103,8 +103,8 @@ attaches it, with a checksum file, to a new GitHub release (marked a pre-release
 version starts with `0.`). "Run workflow" on the Actions tab builds the installer without
 publishing and keeps it for a day as a downloadable artifact, so you can try a build first. The
 build job has read-only access; only a small separate job that runs no build code can write the
-release. The hand-off uses about 12 MB of Actions artifact storage for a day, so if the account's
-storage is full, free some in Actions first.
+release. The finished files cross between the two through the Actions cache, not artifact storage,
+so a full artifact quota cannot block a release.
 
 ### GitHub sign-in
 
