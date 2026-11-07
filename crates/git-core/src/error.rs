@@ -24,6 +24,8 @@ pub enum Error {
     DestinationNotEmpty(PathBuf),
     #[error("\"{0}\" is not a repository address")]
     InvalidUrl(String),
+    #[error("stopped with conflicts in {}", .0.join(", "))]
+    Conflicts(Vec<String>),
     #[error("unexpected git output: {0}")]
     Parse(String),
 }

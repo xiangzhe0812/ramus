@@ -1,7 +1,7 @@
 use std::collections::HashSet;
 
 use crate::{
-    DiffOptions, Error, FileDiff, Repo,
+    DiffOptions, Error, FileDiff, OperationKind, Repo,
     diff::parse_diff,
     runner::{run_git, run_git_allowing},
 };
@@ -213,19 +213,20 @@ impl Repo {
         parse_diff(&run_git(self.root(), &args)?)
     }
 
-    /// Adds a commit that undoes `commit`. If it conflicts, everything is put back as it
-    /// was and the error says so: resolving conflicts isn't supported yet.
+    /// Adds a commit that undoes `commit`. If it conflicts, the revert stays in progress
+    /// and `Error::Conflicts` names the files to resolve (or abort with
+    /// [`Repo::abort_operation`]).
     pub fn revert(&self, commit: &CommitInfo) -> Result<(), Error> {
-        self.replay("revert", &["revert", "--no-edit"], commit)
+        self.replay(OperationKind::Revert, &["revert", "--no-edit"], commit)
     }
 
     /// Applies `commit`'s change on top of the current branch, with the same conflict
     /// behaviour as [`Repo::revert`].
     pub fn cherry_pick(&self, commit: &CommitInfo) -> Result<(), Error> {
-        self.replay("cherry-pick", &["cherry-pick"], commit)
+        self.replay(OperationKind::CherryPick, &["cherry-pick"], commit)
     }
 
-    fn replay(&self, name: &str, base: &[&str], commit: &CommitInfo) -> Result<(), Error> {
+    fn replay(&self, kind: OperationKind, base: &[&str], commit: &CommitInfo) -> Result<(), Error> {
         let mut args: Vec<&str> = base.to_vec();
         if commit.is_merge() {
             args.extend(["-m", "1"]);
@@ -233,26 +234,20 @@ impl Repo {
         args.push(&commit.id);
         match run_git(self.root(), &args) {
             Ok(_) => Ok(()),
-            Err(error) => {
-                // Leave nothing half done, whatever went wrong.
-                let _ = run_git(self.root(), &[name, "--abort"]);
-                Err(error)
-            }
+            // Conflicts stay for the user to resolve; any other failure is cleaned up.
+            Err(error) => Err(self.stopped_or(kind, error)),
         }
     }
 
-    /// Merges `branch` into the current branch. If it conflicts, the merge is aborted and
-    /// the working tree is as it was.
+    /// Merges `branch` into the current branch. If it conflicts, the merge stays in
+    /// progress for the user to resolve or abort.
     pub fn merge(&self, branch: &str) -> Result<(), Error> {
         if branch.is_empty() || branch.starts_with('-') {
             return Err(Error::InvalidBranchName(branch.to_owned()));
         }
         match run_git(self.root(), &["merge", "--no-edit", branch]) {
             Ok(_) => Ok(()),
-            Err(error) => {
-                let _ = run_git(self.root(), &["merge", "--abort"]);
-                Err(error)
-            }
+            Err(error) => Err(self.stopped_or(OperationKind::Merge, error)),
         }
     }
 }

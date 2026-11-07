@@ -29,7 +29,11 @@ pub struct DiscardBackup {
 /// A folder that has become a symlink since git listed the path could lead anywhere, and
 /// writing or deleting through it would reach outside the repository. With
 /// `create_parents`, missing folders are created one at a time, with the same check.
-fn checked_path(root: &Path, relative: &str, create_parents: bool) -> Result<PathBuf, Error> {
+pub(crate) fn checked_path(
+    root: &Path,
+    relative: &str,
+    create_parents: bool,
+) -> Result<PathBuf, Error> {
     let unsafe_path = || Error::UnsafePath(relative.to_owned());
     let relative_path = Path::new(relative);
     // Only plain names joined by single slashes, exactly as git lists them: no `..`, no `.`,

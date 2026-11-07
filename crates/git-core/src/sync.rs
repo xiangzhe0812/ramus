@@ -16,7 +16,7 @@ use std::{
 };
 
 use crate::{
-    Error, Repo,
+    Error, OperationKind, Repo,
     runner::{defended_command, run_git},
 };
 
@@ -252,8 +252,7 @@ impl Repo {
     }
 
     /// Brings in the upstream's commits even when the branches have diverged, joining them
-    /// with a merge commit. A conflict backs out completely, since resolving one isn't
-    /// possible here yet, and says which files clashed.
+    /// with a merge commit. A conflict leaves the merge in progress, to resolve or abort.
     pub fn pull_merge(
         &self,
         cancel: &CancelToken,
@@ -265,20 +264,11 @@ impl Repo {
             cancel,
             on_progress,
         );
-        if result.is_err() && self.root().join(".git/MERGE_HEAD").exists() {
-            let clashing = run_git(self.root(), &["diff", "--name-only", "--diff-filter=U"])
-                .map(|out| String::from_utf8_lossy(&out).trim().replace('\n', ", "))
-                .unwrap_or_default();
-            let _ = run_git(self.root(), &["merge", "--abort"]);
-            return Err(Error::Git {
-                command: "pull".into(),
-                stderr: format!(
-                    "your changes and the remote's clash in {clashing}. Ramus can't resolve \
-                     conflicts yet, so nothing was changed; merge in a terminal."
-                ),
-            });
-        }
-        result
+        // A conflict leaves the merge in progress, to be resolved or aborted.
+        result.map_err(|error| match error {
+            Error::Git { .. } => self.stopped_or(OperationKind::Merge, error),
+            other => other,
+        })
     }
 
     /// Pushes the current branch to its upstream.

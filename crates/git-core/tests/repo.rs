@@ -2441,7 +2441,7 @@ mod history {
     }
 
     #[test]
-    fn a_conflicting_revert_is_aborted_and_leaves_nothing_behind() {
+    fn a_conflicting_revert_stays_in_progress_with_the_conflict_in_place() {
         let dir = new_repo();
         commit_file(dir.path(), "a.txt", "one\n");
         fs::write(dir.path().join("a.txt"), "two\n").unwrap();
@@ -2454,24 +2454,28 @@ mod history {
             .find(|c| c.subject == "to two")
             .unwrap();
 
-        let error = repo.revert(&to_two).unwrap_err().to_string();
-        assert!(
-            error.to_lowercase().contains("conflict"),
-            "the reason should be in the message, got {error:?}"
-        );
+        let error = repo.revert(&to_two).unwrap_err();
 
+        assert!(
+            matches!(&error, Error::Conflicts(files) if files == &["a.txt"]),
+            "{error}"
+        );
+        assert_eq!(
+            repo.in_progress().unwrap().map(|p| p.kind),
+            Some(git_core::OperationKind::Revert)
+        );
+        assert!(
+            fs::read_to_string(dir.path().join("a.txt"))
+                .unwrap()
+                .contains("<<<<<<<")
+        );
+        repo.abort_operation().unwrap();
+        assert!(repo.in_progress().unwrap().is_none());
         assert_eq!(
             fs::read_to_string(dir.path().join("a.txt")).unwrap(),
             "three\n"
         );
-        assert!(
-            repo.status().unwrap().files.is_empty(),
-            "no conflict markers or leftovers"
-        );
-        assert!(
-            !dir.path().join(".git/REVERT_HEAD").exists(),
-            "the revert must be aborted"
-        );
+        assert!(repo.status().unwrap().files.is_empty());
     }
 
     #[test]
@@ -2498,7 +2502,7 @@ mod history {
     }
 
     #[test]
-    fn a_conflicting_cherry_pick_is_aborted() {
+    fn a_conflicting_cherry_pick_stays_in_progress_and_can_be_aborted() {
         let dir = new_repo();
         commit_file(dir.path(), "a.txt", "base\n");
         git(dir.path(), &["switch", "-q", "-c", "other"]);
@@ -2512,7 +2516,13 @@ mod history {
         let pick = log_all(&repo).remove(0);
         git(dir.path(), &["switch", "-q", "main"]);
 
-        assert!(repo.cherry_pick(&pick).is_err());
+        assert!(matches!(repo.cherry_pick(&pick), Err(Error::Conflicts(_))));
+        assert_eq!(
+            repo.in_progress().unwrap().map(|p| p.kind),
+            Some(git_core::OperationKind::CherryPick)
+        );
+
+        repo.abort_operation().unwrap();
         assert_eq!(
             fs::read_to_string(dir.path().join("a.txt")).unwrap(),
             "main side\n"
@@ -2538,7 +2548,7 @@ mod history {
     }
 
     #[test]
-    fn a_conflicting_merge_is_aborted_and_the_tree_is_as_it_was() {
+    fn a_conflicting_merge_stays_in_progress_and_names_the_branch() {
         let dir = new_repo();
         commit_file(dir.path(), "a.txt", "base\n");
         git(dir.path(), &["switch", "-q", "-c", "feature"]);
@@ -2552,7 +2562,15 @@ mod history {
 
         let error = repo.merge("feature").unwrap_err();
 
-        assert!(matches!(error, Error::Git { .. }));
+        assert!(
+            matches!(&error, Error::Conflicts(files) if files == &["a.txt"]),
+            "{error}"
+        );
+        let progress = repo.in_progress().unwrap().unwrap();
+        assert_eq!(progress.kind, git_core::OperationKind::Merge);
+        assert_eq!(progress.merging.as_deref(), Some("feature"));
+
+        repo.abort_operation().unwrap();
         assert_eq!(
             fs::read_to_string(dir.path().join("a.txt")).unwrap(),
             "main side\n"
@@ -3264,7 +3282,7 @@ mod merge_pull {
     }
 
     #[test]
-    fn a_conflict_is_backed_out_and_explained() {
+    fn a_conflict_stays_in_progress_for_the_user_to_resolve() {
         let (_remote, a, b) = remote_with_two_clones();
         fs::write(b.path().join("shared.txt"), "one\nB\nthree\n").unwrap();
         git(b.path(), &["commit", "-qam", "b edit"]);
@@ -3272,18 +3290,21 @@ mod merge_pull {
         fs::write(a.path().join("shared.txt"), "one\nA\nthree\n").unwrap();
         git(a.path(), &["commit", "-qam", "a edit"]);
         let repo = Repo::open(a.path()).unwrap();
-        let before = fs::read_to_string(a.path().join("shared.txt")).unwrap();
 
         let error = repo
             .pull_merge(&CancelToken::new(), &mut no_progress)
             .unwrap_err();
 
-        assert!(error.to_string().contains("shared.txt"), "{error}");
+        assert!(
+            matches!(&error, Error::Conflicts(f) if f == &["shared.txt"]),
+            "{error}"
+        );
+        assert!(repo.in_progress().unwrap().is_some());
+        repo.abort_operation().unwrap();
         assert_eq!(
             fs::read_to_string(a.path().join("shared.txt")).unwrap(),
-            before
+            "one\nA\nthree\n"
         );
-        assert!(!a.path().join(".git/MERGE_HEAD").exists());
         assert!(repo.status().unwrap().files.is_empty());
         assert_eq!(parents_of_head(a.path()), 1);
     }
@@ -3613,5 +3634,248 @@ mod stash_subjects {
             parse_stash_subject("something odd"),
             (String::new(), "something odd".to_owned())
         );
+    }
+}
+
+mod resolving_conflicts {
+    use git_core::{Choice, ConflictKind, OperationKind, Side, resolve_region};
+
+    use super::*;
+
+    /// `main` and `feature` edit line two of `f.txt` differently; `main` is checked out.
+    fn clashing_repo() -> (TempDir, Repo) {
+        let dir = new_repo();
+        commit_file(dir.path(), "f.txt", "one\ntwo\nthree\n");
+        git(dir.path(), &["switch", "-q", "-c", "feature"]);
+        fs::write(dir.path().join("f.txt"), "one\nFEATURE\nthree\n").unwrap();
+        git(dir.path(), &["commit", "-qam", "feature edit"]);
+        git(dir.path(), &["switch", "-q", "main"]);
+        fs::write(dir.path().join("f.txt"), "one\nMAIN\nthree\n").unwrap();
+        git(dir.path(), &["commit", "-qam", "main edit"]);
+        let repo = Repo::open(dir.path()).unwrap();
+        (dir, repo)
+    }
+
+    fn head_parents(dir: &Path) -> usize {
+        let out = Command::new("git")
+            .arg("-C")
+            .arg(dir)
+            .args(["rev-list", "--parents", "-n1", "HEAD"])
+            .output()
+            .unwrap();
+        String::from_utf8_lossy(&out.stdout)
+            .split_whitespace()
+            .count()
+            - 1
+    }
+
+    #[test]
+    fn nothing_is_in_progress_in_an_ordinary_repo() {
+        let dir = new_repo();
+        commit_file(dir.path(), "a.txt", "a\n");
+        assert!(
+            Repo::open(dir.path())
+                .unwrap()
+                .in_progress()
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn a_conflicted_file_is_read_with_its_markers_and_classified() {
+        let (_dir, repo) = clashing_repo();
+        assert!(repo.merge("feature").is_err());
+
+        assert_eq!(
+            repo.conflict_kind("f.txt").unwrap(),
+            ConflictKind::BothChanged
+        );
+        let text = repo.conflict_text("f.txt").unwrap().unwrap();
+        let regions = git_core::conflict_regions(&text);
+        assert_eq!(regions.len(), 1);
+        assert_eq!(regions[0].ours, ["MAIN\n"]);
+        assert_eq!(regions[0].theirs, ["FEATURE\n"]);
+    }
+
+    #[test]
+    fn resolving_by_text_then_continuing_commits_a_merge() {
+        let (dir, repo) = clashing_repo();
+        assert!(repo.merge("feature").is_err());
+        let text = repo.conflict_text("f.txt").unwrap().unwrap();
+        let both = resolve_region(&text, 0, Choice::Both);
+
+        repo.resolve_with_text("f.txt", &both).unwrap();
+        assert!(repo.conflicted_paths().unwrap().is_empty());
+        repo.continue_operation().unwrap();
+
+        assert!(repo.in_progress().unwrap().is_none());
+        assert_eq!(
+            fs::read_to_string(dir.path().join("f.txt")).unwrap(),
+            "one\nMAIN\nFEATURE\nthree\n"
+        );
+        assert_eq!(head_parents(dir.path()), 2, "a merge commit");
+        assert!(repo.status().unwrap().files.is_empty());
+    }
+
+    #[test]
+    fn taking_a_whole_side_resolves_the_file() {
+        for (side, expected) in [
+            (Side::Ours, "one\nMAIN\nthree\n"),
+            (Side::Theirs, "one\nFEATURE\nthree\n"),
+        ] {
+            let (dir, repo) = clashing_repo();
+            assert!(repo.merge("feature").is_err());
+            repo.resolve_with_side("f.txt", side).unwrap();
+            repo.continue_operation().unwrap();
+            assert_eq!(
+                fs::read_to_string(dir.path().join("f.txt")).unwrap(),
+                expected
+            );
+        }
+    }
+
+    #[test]
+    fn continuing_with_conflicts_left_is_refused_and_changes_nothing() {
+        let (_dir, repo) = clashing_repo();
+        assert!(repo.merge("feature").is_err());
+        assert!(matches!(
+            repo.continue_operation(),
+            Err(Error::Conflicts(_))
+        ));
+        assert!(repo.in_progress().unwrap().is_some());
+    }
+
+    #[test]
+    fn resolving_a_file_that_is_not_in_conflict_is_refused() {
+        let (dir, repo) = clashing_repo();
+        commit_file(dir.path(), "other.txt", "x\n");
+        assert!(repo.merge("feature").is_err());
+        fs::write(dir.path().join("other.txt"), "changed\n").unwrap();
+        assert!(
+            repo.resolve_with_text("other.txt", "overwritten\n")
+                .is_err()
+        );
+        assert!(repo.resolve_with_side("other.txt", Side::Theirs).is_err());
+        assert_eq!(
+            fs::read_to_string(dir.path().join("other.txt")).unwrap(),
+            "changed\n"
+        );
+    }
+
+    #[test]
+    fn a_folder_swapped_for_a_symlink_cannot_redirect_a_resolution_outside_the_repo() {
+        let dir = new_repo();
+        fs::create_dir(dir.path().join("sub")).unwrap();
+        commit_file(dir.path(), "sub/f.txt", "one\n");
+        git(dir.path(), &["switch", "-q", "-c", "feature"]);
+        fs::write(dir.path().join("sub/f.txt"), "feature\n").unwrap();
+        git(dir.path(), &["commit", "-qam", "feature edit"]);
+        git(dir.path(), &["switch", "-q", "main"]);
+        fs::write(dir.path().join("sub/f.txt"), "main\n").unwrap();
+        git(dir.path(), &["commit", "-qam", "main edit"]);
+        let repo = Repo::open(dir.path()).unwrap();
+        assert!(matches!(repo.merge("feature"), Err(Error::Conflicts(_))));
+
+        // After git listed the conflict, the folder becomes a link to somewhere else.
+        let outside = TempDir::new().unwrap();
+        fs::write(outside.path().join("f.txt"), "outside\n").unwrap();
+        fs::remove_dir_all(dir.path().join("sub")).unwrap();
+        std::os::unix::fs::symlink(outside.path(), dir.path().join("sub")).unwrap();
+
+        assert!(matches!(
+            repo.resolve_with_text("sub/f.txt", "pwned\n"),
+            Err(Error::UnsafePath(_))
+        ));
+        assert!(matches!(
+            repo.conflict_text("sub/f.txt"),
+            Err(Error::UnsafePath(_))
+        ));
+        assert!(matches!(
+            repo.resolve_with_side("sub/f.txt", Side::Ours),
+            Err(Error::UnsafePath(_))
+        ));
+        assert_eq!(
+            fs::read_to_string(outside.path().join("f.txt")).unwrap(),
+            "outside\n"
+        );
+    }
+
+    /// `feature` deletes `gone.txt` while `main` edits it.
+    fn delete_modify_repo() -> (TempDir, Repo) {
+        let dir = new_repo();
+        commit_file(dir.path(), "gone.txt", "keep me\n");
+        commit_file(dir.path(), "stay.txt", "s\n");
+        git(dir.path(), &["switch", "-q", "-c", "feature"]);
+        git(dir.path(), &["rm", "-q", "gone.txt"]);
+        git(dir.path(), &["commit", "-qm", "delete it"]);
+        git(dir.path(), &["switch", "-q", "main"]);
+        fs::write(dir.path().join("gone.txt"), "edited here\n").unwrap();
+        git(dir.path(), &["commit", "-qam", "edit it"]);
+        let repo = Repo::open(dir.path()).unwrap();
+        (dir, repo)
+    }
+
+    #[test]
+    fn a_file_deleted_by_them_can_be_kept_or_deleted() {
+        let (dir, repo) = delete_modify_repo();
+        assert!(repo.merge("feature").is_err());
+        assert_eq!(
+            repo.conflict_kind("gone.txt").unwrap(),
+            ConflictKind::DeletedByThem
+        );
+        repo.resolve_keep("gone.txt").unwrap();
+        repo.continue_operation().unwrap();
+        assert_eq!(
+            fs::read_to_string(dir.path().join("gone.txt")).unwrap(),
+            "edited here\n"
+        );
+
+        let (dir, repo) = delete_modify_repo();
+        assert!(repo.merge("feature").is_err());
+        repo.resolve_delete("gone.txt").unwrap();
+        repo.continue_operation().unwrap();
+        assert!(!dir.path().join("gone.txt").exists());
+    }
+
+    #[test]
+    fn a_cherry_pick_continues_into_a_normal_commit() {
+        let (dir, repo) = clashing_repo();
+        let feature_tip = {
+            let out = Command::new("git")
+                .arg("-C")
+                .arg(dir.path())
+                .args(["rev-parse", "feature"])
+                .output()
+                .unwrap();
+            String::from_utf8_lossy(&out.stdout).trim().to_owned()
+        };
+        let commit = repo
+            .log(0, 50)
+            .unwrap()
+            .into_iter()
+            .chain({
+                git(dir.path(), &["switch", "-q", "feature"]);
+                let all = repo.log(0, 50).unwrap();
+                git(dir.path(), &["switch", "-q", "main"]);
+                all
+            })
+            .find(|c| c.id == feature_tip)
+            .unwrap();
+
+        assert!(matches!(
+            repo.cherry_pick(&commit),
+            Err(Error::Conflicts(_))
+        ));
+        repo.resolve_with_side("f.txt", Side::Theirs).unwrap();
+        repo.continue_operation().unwrap();
+
+        assert_eq!(repo.in_progress().unwrap(), None);
+        assert_eq!(head_parents(dir.path()), 1, "a plain commit, not a merge");
+        assert_eq!(
+            fs::read_to_string(dir.path().join("f.txt")).unwrap(),
+            "one\nFEATURE\nthree\n"
+        );
+        let _ = OperationKind::Merge;
     }
 }

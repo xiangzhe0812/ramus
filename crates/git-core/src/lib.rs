@@ -2,6 +2,7 @@
 //! `git` CLI runner. Nothing in this crate may depend on `gpui`.
 
 mod branch;
+mod conflict;
 mod diff;
 mod discard;
 mod error;
@@ -14,6 +15,10 @@ mod status;
 mod sync;
 
 pub use branch::{Branch, BranchKind, BranchList, relative_time};
+pub use conflict::{
+    Choice, ConflictKind, ConflictRegion, InProgress, OperationKind, Side, conflict_regions,
+    resolve_region,
+};
 pub use diff::{DiffHunk, DiffLine, DiffLineKind, FileDiff, FileDiffs};
 pub use discard::DiscardBackup;
 pub use error::Error;

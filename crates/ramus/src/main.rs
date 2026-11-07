@@ -6,6 +6,7 @@ mod branch_popover;
 mod changes_view;
 mod clone_dialog;
 mod component_theme;
+mod conflicts_view;
 mod diff_rows;
 mod diff_view;
 mod error_banner;

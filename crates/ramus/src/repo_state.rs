@@ -8,8 +8,8 @@ use std::{
 use crate::settings::{self, Settings};
 
 use git_core::{
-    Branch, BranchList, CancelToken, CommitInfo, DiffHunk, DiscardBackup, FileChange, Progress,
-    Repo, RepoStatus, Stash,
+    Branch, BranchList, CancelToken, CommitInfo, DiffHunk, DiscardBackup, FileChange, InProgress,
+    Progress, Repo, RepoStatus, Stash,
 };
 use gpui::{Context, EventEmitter, SharedString, Task};
 
@@ -64,6 +64,8 @@ pub struct RepoState {
     status: Option<RepoStatus>,
     /// Names of the open repository's remotes; empty means it is local only.
     remotes: Vec<String>,
+    /// A merge, cherry-pick or revert that stopped and is waiting to be finished.
+    in_progress: Option<InProgress>,
     error: Option<SharedString>,
     /// Bumped on every load so a slow, older load can't overwrite a newer one.
     generation: u64,
@@ -117,6 +119,7 @@ impl RepoState {
             repo: None,
             status: None,
             remotes: Vec::new(),
+            in_progress: None,
             error: None,
             generation: 0,
             load: None,
@@ -240,7 +243,7 @@ impl RepoState {
                     Ok(()) if quiet => {}
                     Ok(()) => this.error = None,
                     // The user asked for this, so it isn't an error to report.
-                    Err(git_core::Error::Cancelled) => {}
+                    Err(git_core::Error::Cancelled | git_core::Error::Conflicts(_)) => {}
                     Err(_) if quiet => {}
                     Err(error) => this.error = Some(error.to_string().into()),
                 }
@@ -483,6 +486,64 @@ impl RepoState {
         self.trusted
     }
 
+    /// The merge, cherry-pick or revert waiting for its conflicts to be dealt with.
+    pub fn in_progress(&self) -> Option<&InProgress> {
+        self.in_progress.as_ref()
+    }
+
+    /// Paths in conflict right now.
+    pub fn conflicted_paths(&self) -> Vec<String> {
+        self.status
+            .as_ref()
+            .map(|status| {
+                status
+                    .files
+                    .iter()
+                    .filter(|file| file.kind() == git_core::ChangeKind::Conflicted)
+                    .map(|file| file.path.clone())
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    /// Saves `text` as the resolution of `path` and stages it.
+    pub fn resolve_with_text(&mut self, path: String, text: String, cx: &mut Context<Self>) {
+        self.write(cx, None, move |repo| repo.resolve_with_text(&path, &text));
+    }
+
+    pub fn resolve_with_side(
+        &mut self,
+        path: String,
+        side: git_core::Side,
+        cx: &mut Context<Self>,
+    ) {
+        self.write(cx, None, move |repo| repo.resolve_with_side(&path, side));
+    }
+
+    pub fn resolve_keep(&mut self, path: String, cx: &mut Context<Self>) {
+        self.write(cx, None, move |repo| repo.resolve_keep(&path));
+    }
+
+    pub fn resolve_delete(&mut self, path: String, cx: &mut Context<Self>) {
+        self.write(cx, None, move |repo| repo.resolve_delete(&path));
+    }
+
+    /// Gives up on the stopped operation, putting everything back as it was.
+    pub fn abort_operation(&mut self, cx: &mut Context<Self>) {
+        self.write(cx, None, |repo| repo.abort_operation());
+    }
+
+    /// Finishes the stopped operation once every conflict is resolved. This commits, so
+    /// the repository's hooks run and it needs trust. If a pull's merge was waiting on
+    /// this, the push that follows is the user's next click.
+    pub fn continue_operation(&mut self, cx: &mut Context<Self>) {
+        if self.require_trust("finish the merge", cx) {
+            self.write(cx, Some(RepoEvent::Committed), |repo| {
+                repo.continue_operation()
+            });
+        }
+    }
+
     /// Whether the open repository has anywhere to fetch from or push to.
     pub fn has_remote(&self) -> bool {
         !self.remotes.is_empty()
@@ -591,7 +652,8 @@ impl RepoState {
                     };
                     let status = repo.status()?;
                     let remotes = repo.remotes().unwrap_or_default();
-                    Ok::<_, git_core::Error>((repo, status, remotes))
+                    let in_progress = repo.in_progress().ok().flatten();
+                    Ok::<_, git_core::Error>((repo, status, remotes, in_progress))
                 })
                 .await;
 
@@ -600,8 +662,9 @@ impl RepoState {
                     return;
                 }
                 match result {
-                    Ok((repo, status, remotes)) => {
+                    Ok((repo, status, remotes, in_progress)) => {
                         this.remotes = remotes;
+                        this.in_progress = in_progress;
                         if this.repo.as_ref().map(Repo::root) != Some(repo.root()) {
                             this.stashes = None;
                         }
@@ -745,6 +808,8 @@ impl RepoState {
                         this.error = None;
                         on_success(this, value, cx);
                     }
+                    // Stopping for conflicts is a state to resolve, not a failure.
+                    Err(git_core::Error::Conflicts(_)) => this.error = None,
                     Err(error) => this.error = Some(error.to_string().into()),
                 }
                 // Reload even after a failure: a hook may have changed things.
@@ -1309,7 +1374,9 @@ mod tests {
     }
 
     #[gpui::test]
-    async fn a_conflicting_pull_then_push_stops_before_pushing(cx: &mut TestAppContext) {
+    async fn a_conflicting_pull_then_push_stops_for_resolving_and_does_not_push(
+        cx: &mut TestAppContext,
+    ) {
         let (remote, a, b) = remote_and_two_clones();
         fs::write(b.path().join("a.txt"), "B\n").unwrap();
         git(b.path(), &["commit", "-qam", "b edit"]);
@@ -1322,11 +1389,9 @@ mod tests {
         settle(cx, &state);
 
         state.read_with(cx, |s, _| {
-            assert!(
-                s.error().is_some_and(|e| e.contains("a.txt")),
-                "{:?}",
-                s.error()
-            )
+            assert!(s.error().is_none(), "{:?}", s.error());
+            assert_eq!(s.conflicted_paths(), ["a.txt"]);
+            assert!(s.in_progress().is_some());
         });
         let remote_main = String::from_utf8(
             Command::new("git")
@@ -1858,7 +1923,7 @@ mod tests {
     }
 
     #[gpui::test]
-    async fn a_conflicting_merge_reports_an_error_and_leaves_the_tree_alone(
+    async fn a_conflicting_merge_stays_in_progress_without_an_error_banner(
         cx: &mut TestAppContext,
     ) {
         let dir = repo_without_hooks();
@@ -1873,23 +1938,117 @@ mod tests {
         state.update(cx, |state, cx| state.merge_branch("feature".into(), cx));
         cx.executor().run_until_parked();
 
+        state.read_with(cx, |s, _| {
+            assert!(s.error().is_none(), "{:?}", s.error());
+            assert_eq!(s.conflicted_paths(), ["a.txt"]);
+            let progress = s.in_progress().expect("the merge is waiting");
+            assert_eq!(progress.merging.as_deref(), Some("feature"));
+        });
+    }
+
+    #[gpui::test]
+    async fn resolving_and_continuing_finishes_the_merge(cx: &mut TestAppContext) {
+        let dir = repo_without_hooks();
+        git(dir.path(), &["switch", "-q", "-c", "feature"]);
+        fs::write(dir.path().join("a.txt"), "feature side\n").unwrap();
+        git(dir.path(), &["commit", "-q", "-a", "-m", "feature edit"]);
+        git(dir.path(), &["switch", "-q", "main"]);
+        fs::write(dir.path().join("a.txt"), "main side\n").unwrap();
+        git(dir.path(), &["commit", "-q", "-a", "-m", "main edit"]);
+        let state = open_trusted(cx, dir.path());
+        state.update(cx, |state, cx| state.merge_branch("feature".into(), cx));
+        cx.executor().run_until_parked();
+
+        state.update(cx, |state, cx| {
+            state.resolve_with_text("a.txt".into(), "resolved\n".into(), cx)
+        });
+        cx.executor().run_until_parked();
+        state.read_with(cx, |s, _| {
+            assert!(s.conflicted_paths().is_empty());
+            assert!(s.in_progress().is_some(), "still waiting to be continued");
+        });
+
+        state.update(cx, |state, cx| state.continue_operation(cx));
+        cx.executor().run_until_parked();
+        state.read_with(cx, |s, _| {
+            assert!(s.error().is_none(), "{:?}", s.error());
+            assert!(s.in_progress().is_none());
+        });
+        assert_eq!(
+            fs::read_to_string(dir.path().join("a.txt")).unwrap(),
+            "resolved\n"
+        );
+    }
+
+    #[gpui::test]
+    async fn aborting_puts_everything_back(cx: &mut TestAppContext) {
+        let dir = repo_without_hooks();
+        git(dir.path(), &["switch", "-q", "-c", "feature"]);
+        fs::write(dir.path().join("a.txt"), "feature side\n").unwrap();
+        git(dir.path(), &["commit", "-q", "-a", "-m", "feature edit"]);
+        git(dir.path(), &["switch", "-q", "main"]);
+        fs::write(dir.path().join("a.txt"), "main side\n").unwrap();
+        git(dir.path(), &["commit", "-q", "-a", "-m", "main edit"]);
+        let state = open_trusted(cx, dir.path());
+        state.update(cx, |state, cx| state.merge_branch("feature".into(), cx));
+        cx.executor().run_until_parked();
+
+        state.update(cx, |state, cx| state.abort_operation(cx));
+        cx.executor().run_until_parked();
+
+        state.read_with(cx, |s, _| {
+            assert!(s.in_progress().is_none());
+            assert!(s.conflicted_paths().is_empty());
+        });
         assert_eq!(
             fs::read_to_string(dir.path().join("a.txt")).unwrap(),
             "main side\n"
         );
-        state.read_with(cx, |s, _| {
-            assert!(s.error().is_some(), "the conflict should be reported");
-            let conflicted = s
-                .status()
-                .unwrap()
-                .files
-                .iter()
-                .any(|f| f.kind() == git_core::ChangeKind::Conflicted);
-            assert!(!conflicted, "no half-merged files");
+    }
+
+    #[gpui::test]
+    async fn continuing_needs_trust(cx: &mut TestAppContext) {
+        let dir = repo_without_hooks();
+        git(dir.path(), &["switch", "-q", "-c", "feature"]);
+        fs::write(dir.path().join("a.txt"), "f\n").unwrap();
+        git(dir.path(), &["commit", "-q", "-a", "-m", "f"]);
+        git(dir.path(), &["switch", "-q", "main"]);
+        fs::write(dir.path().join("a.txt"), "m\n").unwrap();
+        git(dir.path(), &["commit", "-q", "-a", "-m", "m"]);
+        let _ = git_merge_conflict(dir.path());
+        let state = cx.new(|_| RepoState::default());
+        state.update(cx, |state, cx| state.open(dir.path().to_owned(), cx));
+        cx.executor().run_until_parked();
+        assert!(!state.read_with(cx, |s, _| s.is_trusted()));
+
+        state.update(cx, |state, cx| {
+            state.resolve_with_text("a.txt".into(), "x\n".into(), cx)
         });
-        assert!(
-            !dir.path().join(".git/MERGE_HEAD").exists(),
-            "the merge must be aborted"
-        );
+        cx.executor().run_until_parked();
+        state.update(cx, |state, cx| state.continue_operation(cx));
+        cx.executor().run_until_parked();
+
+        state.read_with(cx, |s, _| {
+            assert!(s.error().is_some_and(|e| e.contains("Trust")));
+            assert!(s.in_progress().is_some(), "nothing was committed");
+        });
+    }
+
+    /// Starts a merge of `feature`, which conflicts, using plain git.
+    fn git_merge_conflict(dir: &Path) -> bool {
+        Command::new("git")
+            .arg("-C")
+            .arg(dir)
+            .args([
+                "-c",
+                "user.name=T",
+                "-c",
+                "user.email=t@e.com",
+                "merge",
+                "feature",
+            ])
+            .output()
+            .map(|out| !out.status.success())
+            .unwrap_or(false)
     }
 }

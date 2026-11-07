@@ -17,6 +17,7 @@ use crate::{
     branch_popover::BranchPopover,
     changes_view::{ChangesEvent, ChangesView},
     clone_dialog::CloneDialog,
+    conflicts_view::{ConflictsView, abort_label, operation_summary},
     error_banner,
     github::{self, Endpoints},
     history_view::HistoryView,
@@ -38,6 +39,7 @@ pub struct Workspace {
     title_bar: Entity<TitleBar>,
     changes: Entity<ChangesView>,
     history: Entity<HistoryView>,
+    conflicts: Entity<ConflictsView>,
     stashes: Entity<StashView>,
     tab: Tab,
     welcome: Entity<Welcome>,
@@ -85,6 +87,7 @@ impl Workspace {
         let changes = cx.new(|cx| ChangesView::new(repo_state.clone(), window, cx));
         let history = cx.new(|cx| HistoryView::new(repo_state.clone(), window, cx));
         let stashes = cx.new(|cx| StashView::new(repo_state.clone(), window, cx));
+        let conflicts = cx.new(|cx| ConflictsView::new(repo_state.clone(), window, cx));
         let title_bar = cx.new(|cx| TitleBar::new(repo_state.clone(), cx));
         cx.subscribe(&title_bar, |this, _, event: &TabRequested, cx| {
             this.show(event.0, cx)
@@ -107,6 +110,7 @@ impl Workspace {
             title_bar,
             changes,
             history,
+            conflicts,
             stashes,
             tab: Tab::Changes,
             welcome: cx.new(|_| Welcome),
@@ -583,6 +587,54 @@ impl Workspace {
         )
     }
 
+    /// Shown on every tab while a merge, cherry-pick or revert waits on its conflicts.
+    fn operation_banner(&self, theme: &Theme, cx: &mut Context<Self>) -> Option<impl IntoElement> {
+        let state = self.repo_state.read(cx);
+        let progress = state.in_progress()?.clone();
+        let branch = state
+            .status()
+            .map(|status| match &status.branch.head {
+                git_core::Head::Branch(name) => name.clone(),
+                git_core::Head::Detached(sha) => format!("detached {sha}"),
+            })
+            .unwrap_or_default();
+        let open = state.conflicted_paths().len();
+        let text = operation_summary(progress.kind, progress.merging.as_deref(), &branch, open);
+        Some(
+            div()
+                .mx(px(16.))
+                .mb(px(12.))
+                .h(px(48.))
+                .px(px(16.))
+                .flex()
+                .items_center()
+                .gap(px(12.))
+                .rounded(px(12.))
+                .border_1()
+                .border_color(theme.modified.text)
+                .bg(theme.modified.background)
+                .text_color(theme.modified.text)
+                .child(div().flex_1().min_w_0().truncate().child(text))
+                .child(
+                    div()
+                        .id("abort-operation")
+                        .h(px(32.))
+                        .px(px(14.))
+                        .flex()
+                        .items_center()
+                        .rounded(px(16.))
+                        .border_1()
+                        .border_color(theme.modified.text)
+                        .cursor_pointer()
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.repo_state
+                                .update(cx, |state, cx| state.abort_operation(cx));
+                        }))
+                        .child(abort_label(progress.kind)),
+                ),
+        )
+    }
+
     /// Shown while the open repository isn't trusted yet.
     fn restricted_banner(&self, theme: &Theme, cx: &mut Context<Self>) -> Option<impl IntoElement> {
         let state = self.repo_state.read(cx);
@@ -697,8 +749,14 @@ impl Render for Workspace {
         let theme = cx.global::<Theme>().clone();
         let has_repo = self.repo_state.read(cx).repo().is_some();
 
+        let resolving = {
+            let state = self.repo_state.read(cx);
+            state.in_progress().is_some() || !state.conflicted_paths().is_empty()
+        };
         let body = if has_repo {
             match self.tab {
+                // While a merge waits on conflicts, the Changes tab is where they are resolved.
+                Tab::Changes if resolving => self.conflicts.clone().into_any_element(),
                 Tab::Changes => self.changes.clone().into_any_element(),
                 Tab::History => self.history.clone().into_any_element(),
                 Tab::Stashes => self.stashes.clone().into_any_element(),
@@ -828,6 +886,7 @@ impl Render for Workspace {
             .text_size(px(13.))
             .child(self.title_bar.clone())
             .children(self.restricted_banner(&theme, cx))
+            .children(self.operation_banner(&theme, cx))
             .children(self.error_banner(&theme, cx))
             .children(self.undo_banner(&theme, cx))
             .child(body)
