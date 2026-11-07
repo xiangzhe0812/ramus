@@ -1,7 +1,11 @@
 //! Merge conflicts: noticing that an operation stopped for them, reading the conflicted
 //! files, resolving them, and finishing or abandoning the operation.
 
-use std::fs;
+use std::{
+    fs,
+    io::{Read, Write},
+    os::unix::fs::OpenOptionsExt,
+};
 
 use crate::{
     Error, Repo,
@@ -264,11 +268,25 @@ impl Repo {
     /// (or isn't there).
     pub fn conflict_text(&self, path: &str) -> Result<Option<String>, Error> {
         let full = checked_path(self.root(), path, false)?;
-        match fs::read(&full) {
-            Ok(bytes) => Ok(String::from_utf8(bytes).ok()),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
-            Err(error) => Err(error.into()),
+        // `checked_path` vets the folders on the way; the file itself must not be a link
+        // (or anything but a plain file) either, or this would read wherever it points.
+        let mut file = match fs::OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+            .open(&full)
+        {
+            Ok(file) => file,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            // ELOOP: the last component is a symlink. Not text we will show.
+            Err(error) if error.raw_os_error() == Some(libc::ELOOP) => return Ok(None),
+            Err(error) => return Err(error.into()),
+        };
+        if !file.metadata()?.is_file() {
+            return Ok(None);
         }
+        let mut bytes = Vec::new();
+        file.read_to_end(&mut bytes)?;
+        Ok(String::from_utf8(bytes).ok())
     }
 
     fn require_conflicted(&self, path: &str) -> Result<(), Error> {
@@ -286,7 +304,22 @@ impl Repo {
     pub fn resolve_with_text(&self, path: &str, text: &str) -> Result<(), Error> {
         self.require_conflicted(path)?;
         let full = checked_path(self.root(), path, false)?;
-        fs::write(&full, text)?;
+        // Replace a plain file only. A link in the last place would be written through,
+        // so it is refused (O_NOFOLLOW also closes the gap between this check and the write).
+        if !fs::symlink_metadata(&full)?.is_file() {
+            return Err(Error::UnsafePath(path.to_owned()));
+        }
+        let mut file = fs::OpenOptions::new()
+            .write(true)
+            .truncate(true)
+            .custom_flags(libc::O_NOFOLLOW)
+            .open(&full)
+            .map_err(|error| match error.raw_os_error() {
+                Some(libc::ELOOP) => Error::UnsafePath(path.to_owned()),
+                _ => error.into(),
+            })?;
+        file.write_all(text.as_bytes())?;
+        drop(file);
         run_git(self.root(), &["add", "--", path]).map(|_| ())
     }
 

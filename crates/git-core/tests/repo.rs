@@ -3801,6 +3801,23 @@ mod resolving_conflicts {
         );
     }
 
+    #[test]
+    fn a_conflicted_file_swapped_for_a_symlink_is_neither_read_nor_written_through() {
+        let (dir, repo) = clashing_repo();
+        assert!(repo.merge("feature").is_err());
+        let outside = TempDir::new().unwrap();
+        let secret = outside.path().join("secret.txt");
+        fs::write(&secret, "TOP SECRET\n").unwrap();
+        fs::remove_file(dir.path().join("f.txt")).unwrap();
+        std::os::unix::fs::symlink(&secret, dir.path().join("f.txt")).unwrap();
+
+        // Reading must not hand back the target's contents.
+        assert_eq!(repo.conflict_text("f.txt").unwrap(), None);
+        // Writing must not follow the link.
+        assert!(repo.resolve_with_text("f.txt", "pwned\n").is_err());
+        assert_eq!(fs::read_to_string(&secret).unwrap(), "TOP SECRET\n");
+    }
+
     /// `feature` deletes `gone.txt` while `main` edits it.
     fn delete_modify_repo() -> (TempDir, Repo) {
         let dir = new_repo();
