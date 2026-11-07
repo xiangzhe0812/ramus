@@ -59,6 +59,17 @@ Don't paste addresses with a token or password in them (`https://user:token@host
 Credentials are never stored by Ramus except the GitHub token, which lives in the keychain. Git
 itself uses your normal credential helpers and `ssh-agent`.
 
+## Install
+
+Download the latest `Ramus-<version>-arm64.dmg` from the
+[Releases](https://github.com/xiangzhe0812/ramus/releases) page (Apple Silicon, macOS 13 or
+later), open it and drag **Ramus** onto **Applications**. Each release lists a SHA-256
+checksum file next to the disk image.
+
+The app is signed with an ad-hoc signature, not an Apple Developer ID, and is not notarized,
+so macOS shows "Ramus can't be opened" the first time. Open it with **right-click → Open**
+(or System Settings → Privacy & Security → **Open Anyway**). You only do this once.
+
 ## Building
 
 You need macOS, a recent stable Rust toolchain (the native `aarch64-apple-darwin` one) and Xcode
@@ -73,6 +84,24 @@ cargo clippy --workspace --all-targets
 ```
 
 `git` must be on your `PATH`; Ramus shells out to it for everything that changes a repository. Use a current release: git itself ships fixes for hostile-repository bugs (symlink and `.git` tricks on clone) that Ramus relies on.
+
+### Building the installer
+
+`packaging/macos/build.sh` builds a release binary and produces `dist/Ramus.app` and
+`dist/Ramus-<version>-<arch>.dmg`. With a Developer ID certificate, sign it by setting
+`CODESIGN_IDENTITY="Developer ID Application: …"`.
+
+Releases are built by GitHub Actions (`.github/workflows/release.yml`). To publish one, set the
+version in `Cargo.toml`, then tag and push it:
+
+```sh
+git tag v0.1.0 && git push origin v0.1.0
+```
+
+The workflow checks the tag matches the crate version, builds the disk image on a macOS runner and
+attaches it, with a checksum file, to a new GitHub release (marked a pre-release while the
+version starts with `0.`). "Run workflow" on the Actions tab builds the installer without
+publishing, so you can try a build first.
 
 ### GitHub sign-in
 

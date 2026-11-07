@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>CFBundleName</key>
+  <string>Ramus</string>
+  <key>CFBundleDisplayName</key>
+  <string>Ramus</string>
+  <key>CFBundleIdentifier</key>
+  <string>io.github.xiangzhe0812.ramus</string>
+  <key>CFBundleExecutable</key>
+  <string>Ramus</string>
+  <key>CFBundleIconFile</key>
+  <string>Ramus</string>
+  <key>CFBundlePackageType</key>
+  <string>APPL</string>
+  <key>CFBundleVersion</key>
+  <string>__VERSION__</string>
+  <key>CFBundleShortVersionString</key>
+  <string>__VERSION__</string>
+  <key>LSApplicationCategoryType</key>
+  <string>public.app-category.developer-tools</string>
+  <key>LSMinimumSystemVersion</key>
+  <string>13.0</string>
+  <key>NSHighResolutionCapable</key>
+  <true/>
+  <key>NSSupportsAutomaticGraphicsSwitching</key>
+  <true/>
+  <key>NSHumanReadableCopyright</key>
+  <string>Licensed under MIT OR Apache-2.0</string>
+</dict>
+</plist>

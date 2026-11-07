@@ -40,6 +40,17 @@ use crate::{
     workspace::Workspace,
 };
 
+/// The repository path given on the command line, if any. Anything starting with `-` is
+/// not a path: macOS can launch an app with a `-psn_…` argument, which must not be
+/// mistaken for a folder to open.
+fn repository_argument(
+    args: impl IntoIterator<Item = std::ffi::OsString>,
+) -> Option<std::path::PathBuf> {
+    args.into_iter()
+        .find(|arg| !arg.to_string_lossy().starts_with('-'))
+        .map(Into::into)
+}
+
 fn main() {
     gpui_platform::application().run(|cx| {
         gpui_component::init(cx);
@@ -61,8 +72,8 @@ fn main() {
         ]);
 
         let repo_state = cx.new(|_| RepoState::persistent());
-        if let Some(path) = std::env::args_os().nth(1) {
-            repo_state.update(cx, |state, cx| state.open(path.into(), cx));
+        if let Some(path) = repository_argument(std::env::args_os().skip(1)) {
+            repo_state.update(cx, |state, cx| state.open(path, cx));
         }
 
         let bounds = Bounds::centered(None, size(px(1440.), px(900.)), cx);
@@ -86,4 +97,33 @@ fn main() {
         .expect("failed to open window");
         cx.activate(true);
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{ffi::OsString, path::PathBuf};
+
+    use super::repository_argument;
+
+    fn args(list: &[&str]) -> Vec<OsString> {
+        list.iter().map(OsString::from).collect()
+    }
+
+    #[test]
+    fn the_first_plain_argument_is_the_repository() {
+        assert_eq!(
+            repository_argument(args(&["/work/repo"])),
+            Some(PathBuf::from("/work/repo"))
+        );
+        assert_eq!(repository_argument(args(&[])), None);
+    }
+
+    #[test]
+    fn flags_macos_adds_when_launching_are_not_paths() {
+        assert_eq!(repository_argument(args(&["-psn_0_12345"])), None);
+        assert_eq!(
+            repository_argument(args(&["-psn_0_12345", "/work/repo"])),
+            Some(PathBuf::from("/work/repo"))
+        );
+    }
 }

@@ -1,4 +1,6 @@
 /target
+# Installer output.
+/dist
 # Maintainer's private design notes; not published.
 /docs
 .DS_Store
