@@ -21,6 +21,8 @@ pub enum SyncKind {
     Push,
     /// Push a branch for the first time and track it.
     Publish,
+    /// Pull, merging if the branches have diverged.
+    PullMerge,
     /// Download a repository for the first time.
     Clone,
 }
@@ -33,6 +35,7 @@ impl SyncKind {
             Self::Pull => "Pulling",
             Self::Push => "Pushing",
             Self::Publish => "Publishing",
+            Self::PullMerge => "Merging",
             Self::Clone => "Cloning",
         }
     }
@@ -76,6 +79,10 @@ pub struct RepoState {
     branches: Option<BranchList>,
     branches_task: Option<Task<()>>,
     operation: Option<Operation>,
+    /// The last fetch, pull or push that was started, so a failure can be retried.
+    last_sync: Option<SyncKind>,
+    /// A merge-pull is running only so that a push can follow it.
+    push_after_pull: bool,
     /// The most recent discard, kept so it can be undone, with a line saying what it was.
     last_discard: Option<(DiscardBackup, String)>,
     /// The commit HEAD was at when `last_discard` was made. Undo only makes sense there.
@@ -114,6 +121,8 @@ impl RepoState {
             branches: None,
             branches_task: None,
             operation: None,
+            last_sync: None,
+            push_after_pull: false,
             last_discard: None,
             discard_head: None,
         }
@@ -189,6 +198,7 @@ impl RepoState {
         if self.action.is_some() || !self.require_trust("fetch, push or pull", cx) {
             return;
         }
+        self.last_sync = Some(kind);
         self.run_cancellable(
             kind,
             move |cancel, report| match kind {
@@ -196,9 +206,11 @@ impl RepoState {
                 SyncKind::Pull => repo.pull(cancel, report),
                 SyncKind::Push => repo.push(cancel, report),
                 SyncKind::Publish => repo.publish(cancel, report),
+                SyncKind::PullMerge => repo.pull_merge(cancel, report),
                 SyncKind::Clone => unreachable!("cloning has its own entry point"),
             },
             |this, result, cx| {
+                let succeeded = result.is_ok();
                 match result {
                     Ok(()) => this.error = None,
                     // The user asked for this, so it isn't an error to report.
@@ -208,9 +220,35 @@ impl RepoState {
                 // New remote branches and counts: the lists and status are stale.
                 this.branches = None;
                 this.refresh(cx);
+                if std::mem::take(&mut this.push_after_pull) && succeeded {
+                    this.sync(SyncKind::Push, cx);
+                }
             },
             cx,
         );
+    }
+
+    /// Whether a failed fetch, pull or push can be tried again.
+    pub fn can_retry(&self) -> bool {
+        self.last_sync.is_some() && self.operation.is_none()
+    }
+
+    /// Repeats the last fetch, pull or push, after it failed.
+    pub fn retry_sync(&mut self, cx: &mut Context<Self>) {
+        if let Some(kind) = self.last_sync {
+            self.error = None;
+            self.sync(kind, cx);
+        }
+    }
+
+    /// The fix for a rejected push: bring in what the remote has (merging if the
+    /// branches diverged), then push. If the merge conflicts, it is backed out and the
+    /// push does not happen.
+    pub fn pull_then_push(&mut self, cx: &mut Context<Self>) {
+        self.error = None;
+        self.sync(SyncKind::PullMerge, cx);
+        // `sync` declines (untrusted repo, busy) without starting anything.
+        self.push_after_pull = self.operation.is_some();
     }
 
     /// Clones `url` into `destination` and opens it. A repository the user chose to
@@ -1118,6 +1156,99 @@ mod tests {
             assert!(state.operation().is_none());
         });
         assert!(!parent.path().join("copy").exists());
+    }
+
+    /// Two clones that have each committed since the remote last moved.
+    fn diverged_clones() -> (TempDir, TempDir, TempDir) {
+        let (remote, a, b) = remote_and_two_clones();
+        fs::write(b.path().join("from-b.txt"), "b\n").unwrap();
+        git(b.path(), &["add", "."]);
+        git(b.path(), &["commit", "-q", "-m", "b"]);
+        git(b.path(), &["push", "-q", "origin", "main"]);
+        fs::write(a.path().join("from-a.txt"), "a\n").unwrap();
+        git(a.path(), &["add", "."]);
+        git(a.path(), &["commit", "-q", "-m", "a"]);
+        (remote, a, b)
+    }
+
+    fn remote_has_file(remote: &Path, name: &str) -> bool {
+        Command::new("git")
+            .arg("-C")
+            .arg(remote)
+            .args(["cat-file", "-e", &format!("main:{name}")])
+            .status()
+            .unwrap()
+            .success()
+    }
+
+    #[gpui::test]
+    async fn pull_then_push_fixes_a_rejected_push(cx: &mut TestAppContext) {
+        let (remote, a, _b) = diverged_clones();
+        let state = open_trusted(cx, a.path());
+
+        state.update(cx, |state, cx| state.sync(SyncKind::Push, cx));
+        settle(cx, &state);
+        assert!(
+            state.read_with(cx, |s, _| s.error().is_some()),
+            "push should be rejected"
+        );
+
+        state.update(cx, |state, cx| state.pull_then_push(cx));
+        settle(cx, &state);
+
+        state.read_with(cx, |s, _| assert!(s.error().is_none(), "{:?}", s.error()));
+        assert!(remote_has_file(remote.path(), "from-a.txt"));
+        assert!(remote_has_file(remote.path(), "from-b.txt"));
+    }
+
+    #[gpui::test]
+    async fn a_conflicting_pull_then_push_stops_before_pushing(cx: &mut TestAppContext) {
+        let (remote, a, b) = remote_and_two_clones();
+        fs::write(b.path().join("a.txt"), "B\n").unwrap();
+        git(b.path(), &["commit", "-qam", "b edit"]);
+        git(b.path(), &["push", "-q", "origin", "main"]);
+        fs::write(a.path().join("a.txt"), "A\n").unwrap();
+        git(a.path(), &["commit", "-qam", "a edit"]);
+        let state = open_trusted(cx, a.path());
+
+        state.update(cx, |state, cx| state.pull_then_push(cx));
+        settle(cx, &state);
+
+        state.read_with(cx, |s, _| {
+            assert!(
+                s.error().is_some_and(|e| e.contains("a.txt")),
+                "{:?}",
+                s.error()
+            )
+        });
+        let remote_main = String::from_utf8(
+            Command::new("git")
+                .arg("-C")
+                .arg(remote.path())
+                .args(["show", "main:a.txt"])
+                .output()
+                .unwrap()
+                .stdout,
+        )
+        .unwrap();
+        assert_eq!(remote_main, "B\n", "nothing may be pushed after a conflict");
+    }
+
+    #[gpui::test]
+    async fn retry_repeats_the_sync_that_failed(cx: &mut TestAppContext) {
+        let (_remote, a, _b) = diverged_clones();
+        let state = open_trusted(cx, a.path());
+        state.update(cx, |state, cx| state.sync(SyncKind::Pull, cx));
+        settle(cx, &state);
+        assert!(state.read_with(cx, |s, _| s.error().is_some()));
+
+        state.update(cx, |state, cx| state.retry_sync(cx));
+        assert_eq!(
+            state.read_with(cx, |s, _| s.operation().map(|o| o.kind)),
+            Some(SyncKind::Pull)
+        );
+        assert!(state.read_with(cx, |s, _| s.error().is_none()));
+        settle(cx, &state);
     }
 
     #[gpui::test]

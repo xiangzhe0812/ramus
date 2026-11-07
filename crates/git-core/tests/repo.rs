@@ -3199,3 +3199,142 @@ mod cloning {
         assert!(!destination.exists());
     }
 }
+
+mod merge_pull {
+    use git_core::{CancelToken, Progress};
+
+    use super::*;
+
+    fn no_progress(_: Progress) {}
+
+    fn clone_of(remote: &Path) -> TempDir {
+        isolate_from_host_git_config();
+        let dir = TempDir::new().unwrap();
+        git(dir.path(), &["clone", "-q", remote.to_str().unwrap(), "."]);
+        dir
+    }
+
+    /// A bare remote holding `shared.txt`, and two clones of it.
+    fn remote_with_two_clones() -> (TempDir, TempDir, TempDir) {
+        isolate_from_host_git_config();
+        let remote = TempDir::new().unwrap();
+        git(remote.path(), &["init", "-q", "--bare", "-b", "main"]);
+        let seed = new_repo();
+        commit_file(seed.path(), "shared.txt", "one\ntwo\nthree\n");
+        git(
+            seed.path(),
+            &["remote", "add", "origin", remote.path().to_str().unwrap()],
+        );
+        git(seed.path(), &["push", "-q", "origin", "main"]);
+        let (a, b) = (clone_of(remote.path()), clone_of(remote.path()));
+        (remote, a, b)
+    }
+
+    fn parents_of_head(dir: &Path) -> usize {
+        let out = Command::new("git")
+            .arg("-C")
+            .arg(dir)
+            .args(["rev-list", "--parents", "-n1", "HEAD"])
+            .output()
+            .unwrap();
+        String::from_utf8_lossy(&out.stdout)
+            .split_whitespace()
+            .count()
+            - 1
+    }
+
+    #[test]
+    fn diverged_branches_are_joined_by_a_merge_commit() {
+        let (_remote, a, b) = remote_with_two_clones();
+        commit_file(b.path(), "from-b.txt", "b\n");
+        git(b.path(), &["push", "-q", "origin", "main"]);
+        commit_file(a.path(), "from-a.txt", "a\n");
+        let repo = Repo::open(a.path()).unwrap();
+
+        // A plain pull refuses, as it should.
+        assert!(repo.pull(&CancelToken::new(), &mut no_progress).is_err());
+
+        repo.pull_merge(&CancelToken::new(), &mut no_progress)
+            .unwrap();
+
+        assert!(a.path().join("from-a.txt").exists());
+        assert!(a.path().join("from-b.txt").exists());
+        assert_eq!(parents_of_head(a.path()), 2);
+        assert_eq!(repo.status().unwrap().branch.behind, 0);
+    }
+
+    #[test]
+    fn a_conflict_is_backed_out_and_explained() {
+        let (_remote, a, b) = remote_with_two_clones();
+        fs::write(b.path().join("shared.txt"), "one\nB\nthree\n").unwrap();
+        git(b.path(), &["commit", "-qam", "b edit"]);
+        git(b.path(), &["push", "-q", "origin", "main"]);
+        fs::write(a.path().join("shared.txt"), "one\nA\nthree\n").unwrap();
+        git(a.path(), &["commit", "-qam", "a edit"]);
+        let repo = Repo::open(a.path()).unwrap();
+        let before = fs::read_to_string(a.path().join("shared.txt")).unwrap();
+
+        let error = repo
+            .pull_merge(&CancelToken::new(), &mut no_progress)
+            .unwrap_err();
+
+        assert!(error.to_string().contains("shared.txt"), "{error}");
+        assert_eq!(
+            fs::read_to_string(a.path().join("shared.txt")).unwrap(),
+            before
+        );
+        assert!(!a.path().join(".git/MERGE_HEAD").exists());
+        assert!(repo.status().unwrap().files.is_empty());
+        assert_eq!(parents_of_head(a.path()), 1);
+    }
+
+    #[test]
+    fn it_is_a_plain_fast_forward_when_nothing_diverged() {
+        let (_remote, a, b) = remote_with_two_clones();
+        commit_file(b.path(), "from-b.txt", "b\n");
+        git(b.path(), &["push", "-q", "origin", "main"]);
+        let repo = Repo::open(a.path()).unwrap();
+        repo.pull_merge(&CancelToken::new(), &mut no_progress)
+            .unwrap();
+        assert!(a.path().join("from-b.txt").exists());
+        assert_eq!(parents_of_head(a.path()), 1);
+    }
+}
+
+mod failure_kinds {
+    use git_core::FailureKind;
+
+    #[test]
+    fn recognises_the_common_ways_a_remote_says_no() {
+        let cases = [
+            (
+                "git push failed:  ! [rejected]        main -> main (fetch first)\nerror: failed to push some refs",
+                FailureKind::Rejected,
+            ),
+            (
+                "! [rejected] main -> main (non-fast-forward)",
+                FailureKind::Rejected,
+            ),
+            (
+                "remote: HTTP Basic: Access denied\nfatal: Authentication failed for 'https://x/y.git/'",
+                FailureKind::Authentication,
+            ),
+            (
+                "fatal: could not read Username for 'https://github.com': terminal prompts disabled",
+                FailureKind::Authentication,
+            ),
+            (
+                "git@github.com: Permission denied (publickey).\nfatal: Could not read from remote repository.",
+                FailureKind::Authentication,
+            ),
+            (
+                "fatal: unable to access 'https://x/': Could not resolve host: x",
+                FailureKind::Other,
+            ),
+            ("", FailureKind::Other),
+        ];
+        for (message, expected) in cases {
+            assert_eq!(FailureKind::of(message), expected, "{message}");
+        }
+    }
+}

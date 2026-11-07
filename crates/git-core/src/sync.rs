@@ -232,6 +232,36 @@ impl Repo {
         )
     }
 
+    /// Brings in the upstream's commits even when the branches have diverged, joining them
+    /// with a merge commit. A conflict backs out completely, since resolving one isn't
+    /// possible here yet, and says which files clashed.
+    pub fn pull_merge(
+        &self,
+        cancel: &CancelToken,
+        on_progress: &mut dyn FnMut(Progress),
+    ) -> Result<(), Error> {
+        let result = run_network(
+            self,
+            &["pull", "--no-rebase", "--no-edit", "--progress"],
+            cancel,
+            on_progress,
+        );
+        if result.is_err() && self.root().join(".git/MERGE_HEAD").exists() {
+            let clashing = run_git(self.root(), &["diff", "--name-only", "--diff-filter=U"])
+                .map(|out| String::from_utf8_lossy(&out).trim().replace('\n', ", "))
+                .unwrap_or_default();
+            let _ = run_git(self.root(), &["merge", "--abort"]);
+            return Err(Error::Git {
+                command: "pull".into(),
+                stderr: format!(
+                    "your changes and the remote's clash in {clashing}. Ramus can't resolve \
+                     conflicts yet, so nothing was changed; merge in a terminal."
+                ),
+            });
+        }
+        result
+    }
+
     /// Pushes the current branch to its upstream.
     pub fn push(
         &self,

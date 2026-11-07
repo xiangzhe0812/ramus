@@ -1,8 +1,10 @@
 use gpui::{
     AppContext, Context, Entity, FocusHandle, Focusable, InteractiveElement, IntoElement,
-    ParentElement, PathPromptOptions, Render, StatefulInteractiveElement, Styled, Window, div,
-    prelude::FluentBuilder, px,
+    ParentElement, PathPromptOptions, Render, SharedString, StatefulInteractiveElement, Styled,
+    Window, div, prelude::FluentBuilder, px,
 };
+
+use git_core::FailureKind;
 
 use crate::{
     accounts::AccountsState,
@@ -14,6 +16,7 @@ use crate::{
     branch_popover::BranchPopover,
     changes_view::{ChangesEvent, ChangesView},
     clone_dialog::CloneDialog,
+    error_banner,
     github::{self, Endpoints},
     history_view::HistoryView,
     palette::{Command, Target},
@@ -36,6 +39,7 @@ pub struct Workspace {
     palette: Option<Entity<PaletteView>>,
     clone_dialog: Option<Entity<CloneDialog>>,
     accounts: Entity<AccountsState>,
+    error_details_open: bool,
     accounts_view: Option<Entity<AccountsView>>,
     /// Files the user asked to discard, waiting for them to confirm.
     pending_discard: Option<Vec<git_core::FileChange>>,
@@ -94,6 +98,7 @@ impl Workspace {
                 )
             }),
             accounts_view: None,
+            error_details_open: false,
             pending_discard: None,
             repo_state,
             focus_handle,
@@ -403,40 +408,117 @@ impl Workspace {
     }
 
     fn error_banner(&self, theme: &Theme, cx: &mut Context<Self>) -> Option<impl IntoElement> {
-        let message = self.repo_state.read(cx).error()?.clone();
+        let state = self.repo_state.read(cx);
+        let message = state.error()?.clone();
+        let present = error_banner::present(&message);
+        let idle = state.operation().is_none();
+        let offer_fix = present.kind == FailureKind::Rejected && state.is_trusted() && idle;
+        let offer_retry = present.kind != FailureKind::Rejected && state.can_retry();
+        let open = self.error_details_open && present.has_details;
+
+        let outline = |id: &'static str, label: &'static str| {
+            div()
+                .id(id)
+                .h(px(32.))
+                .px(px(14.))
+                .flex()
+                .items_center()
+                .rounded(px(16.))
+                .border_1()
+                .border_color(theme.error_border)
+                .cursor_pointer()
+                .hover(|b| b.bg(theme.error_border))
+                .child(label)
+        };
+
         Some(
             div()
                 .mx(px(16.))
                 .mb(px(12.))
-                .min_h(px(48.))
-                .px(px(16.))
-                .py(px(8.))
                 .flex()
-                .items_center()
-                .gap(px(12.))
+                .flex_col()
                 .rounded(px(12.))
                 .border_1()
                 .border_color(theme.error_border)
                 .bg(theme.error_background)
                 .text_color(theme.error_text)
-                .child(div().flex_1().child(message))
                 .child(
                     div()
-                        .id("dismiss-error")
-                        .h(px(32.))
-                        .px(px(14.))
+                        .min_h(px(48.))
+                        .px(px(16.))
+                        .py(px(8.))
                         .flex()
                         .items_center()
-                        .rounded(px(16.))
-                        .border_1()
-                        .border_color(theme.error_border)
-                        .cursor_pointer()
-                        .on_click(cx.listener(|this, _, _, cx| {
-                            this.repo_state
-                                .update(cx, |state, cx| state.dismiss_error(cx));
-                        }))
-                        .child("Dismiss"),
-                ),
+                        .gap(px(12.))
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .flex()
+                                .flex_col()
+                                .child(
+                                    div()
+                                        .font_weight(gpui::FontWeight::SEMIBOLD)
+                                        .child(SharedString::from(present.title.clone())),
+                                )
+                                .children(present.hint.clone().map(|hint| {
+                                    div().text_size(px(12.)).child(SharedString::from(hint))
+                                })),
+                        )
+                        .when(offer_fix, |row| {
+                            row.child(
+                                outline("pull-then-push", "Pull, then push")
+                                    .bg(theme.accent)
+                                    .border_color(theme.accent)
+                                    .text_color(theme.accent_text)
+                                    .font_weight(gpui::FontWeight::SEMIBOLD)
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.repo_state
+                                            .update(cx, |state, cx| state.pull_then_push(cx));
+                                    })),
+                            )
+                        })
+                        .when(offer_retry, |row| {
+                            row.child(outline("retry-sync", "Retry").on_click(cx.listener(
+                                |this, _, _, cx| {
+                                    this.repo_state.update(cx, |state, cx| state.retry_sync(cx));
+                                },
+                            )))
+                        })
+                        .when(present.has_details, |row| {
+                            row.child(
+                                outline(
+                                    "error-details",
+                                    if open { "Details ▾" } else { "Details ▸" },
+                                )
+                                .on_click(cx.listener(
+                                    |this, _, _, cx| {
+                                        this.error_details_open = !this.error_details_open;
+                                        cx.notify();
+                                    },
+                                )),
+                            )
+                        })
+                        .child(outline("dismiss-error", "Dismiss").on_click(cx.listener(
+                            |this, _, _, cx| {
+                                this.error_details_open = false;
+                                this.repo_state
+                                    .update(cx, |state, cx| state.dismiss_error(cx));
+                            },
+                        ))),
+                )
+                .when(open, |banner| {
+                    banner.child(
+                        div()
+                            .px(px(16.))
+                            .py(px(10.))
+                            .border_t_1()
+                            .border_color(theme.error_border)
+                            .font_family(MONO_FONT)
+                            .text_size(px(12.))
+                            .child(message),
+                    )
+                }),
         )
     }
 
