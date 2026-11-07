@@ -267,7 +267,7 @@ mod tests {
     use gpui::{AppContext, TestAppContext};
 
     use super::*;
-    use crate::{github, github::Endpoints, secrets::MemoryStore};
+    use crate::{github::Endpoints, secrets::MemoryStore};
 
     #[gpui::test]
     fn escape_closes_and_abandons_a_sign_in(cx: &mut TestAppContext) {
@@ -279,7 +279,7 @@ mod tests {
             AccountsState::new(
                 Arc::new(MemoryStore::default()),
                 Endpoints::default(),
-                github::PLACEHOLDER_CLIENT_ID.into(),
+                String::new(),
             )
         });
         let (view, cx) = cx.add_window_view({
@@ -292,7 +292,7 @@ mod tests {
             cx.subscribe(&view, move |_, _: &DismissEvent, _| flag.set(true))
                 .detach();
         });
-        // The placeholder client ID fails at once, which renders the failure message.
+        // An empty client ID fails at once, which renders the failure message.
         accounts.update(cx, |a, cx| a.sign_in(cx));
         cx.run_until_parked();
         assert!(matches!(

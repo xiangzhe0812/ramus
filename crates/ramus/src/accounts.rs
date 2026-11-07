@@ -86,11 +86,11 @@ impl AccountsState {
         if matches!(self.flow, Flow::Requesting | Flow::Waiting { .. }) {
             return;
         }
-        if self.client_id == github::PLACEHOLDER_CLIENT_ID {
+        if self.client_id.trim().is_empty() {
             self.flow = Flow::Failed(
-                "Ramus has no GitHub OAuth app registered yet. Register one at \
-                 github.com/settings/developers with Device Flow enabled, then start Ramus with \
-                 RAMUS_GITHUB_CLIENT_ID set to its client ID."
+                "No GitHub OAuth client ID is configured. Start Ramus with \
+                 RAMUS_GITHUB_CLIENT_ID set to the client ID of an OAuth app that has Device \
+                 Flow enabled."
                     .into(),
             );
             cx.notify();
@@ -403,7 +403,7 @@ mod tests {
     }
 
     #[gpui::test]
-    fn without_a_registered_app_it_explains_instead_of_calling_github(cx: &mut TestAppContext) {
+    fn without_a_client_id_it_explains_instead_of_calling_github(cx: &mut TestAppContext) {
         let fake = Fake::default();
         let address = fake.serve();
         let state = cx.new(|_| {
@@ -413,7 +413,7 @@ mod tests {
                     web: address.clone(),
                     api: address,
                 },
-                github::PLACEHOLDER_CLIENT_ID.into(),
+                String::new(),
             )
         });
         state.update(cx, |s, cx| s.sign_in(cx));

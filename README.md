@@ -76,15 +76,14 @@ cargo clippy --workspace --all-targets
 
 ### GitHub sign-in
 
-Sign-in needs a GitHub OAuth app with **Device Flow** enabled. Create one at
-`github.com/settings/developers` and start Ramus with its client ID:
+Ramus ships with the client ID of its own GitHub OAuth app, so sign-in works out of the box
+(⌘K → Accounts…). The client ID is public by design and no client secret is used. To use your
+own app instead, for a fork or for development, create an OAuth app with **Device Flow**
+enabled at `github.com/settings/developers` and start Ramus with its client ID:
 
 ```sh
 RAMUS_GITHUB_CLIENT_ID=<your client id> cargo run -p ramus
 ```
-
-Until a client ID is set, the Accounts dialog explains this instead of contacting GitHub. The
-client ID is not a secret; no client secret is used.
 
 ## Layout
 

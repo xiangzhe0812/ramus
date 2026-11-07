@@ -8,11 +8,10 @@ use std::{fmt, time::Duration};
 
 use serde::Deserialize;
 
-/// The OAuth app's client ID. Not a secret, but it must be one registered at
-/// github.com/settings/developers with "Enable Device Flow" ticked. Until the app is
-/// registered this is a placeholder and sign-in explains that instead of calling GitHub.
-/// `RAMUS_GITHUB_CLIENT_ID` overrides it, for development.
-pub const PLACEHOLDER_CLIENT_ID: &str = "REGISTER-A-GITHUB-OAUTH-APP";
+/// The client ID of Ramus's own GitHub OAuth app (Device Flow enabled). A client ID is
+/// public by design, and no client secret is used or needed. `RAMUS_GITHUB_CLIENT_ID`
+/// overrides it, so a fork or a development build can use its own app.
+pub const CLIENT_ID: &str = "Ov23liq1p4Dh8CgBr6SI";
 
 /// What the token may do. Only identity for now; ask for more when a feature needs it.
 pub const SCOPE: &str = "read:user";
@@ -20,8 +19,9 @@ pub const SCOPE: &str = "read:user";
 pub fn client_id() -> String {
     std::env::var("RAMUS_GITHUB_CLIENT_ID")
         .ok()
-        .filter(|id| !id.trim().is_empty())
-        .unwrap_or_else(|| PLACEHOLDER_CLIENT_ID.to_owned())
+        .map(|id| id.trim().to_owned())
+        .filter(|id| !id.is_empty())
+        .unwrap_or_else(|| CLIENT_ID.to_owned())
 }
 
 /// Where GitHub lives. Tests point this at a local fake.
@@ -407,6 +407,15 @@ mod tests {
         );
         let seen = elsewhere.requests.lock().unwrap().len();
         assert_eq!(seen, 0);
+    }
+
+    #[test]
+    fn the_shipped_client_id_looks_like_a_real_one() {
+        // GitHub OAuth app client IDs are 20 characters starting `Ov23li`; a placeholder or
+        // a typo would not be.
+        assert_eq!(CLIENT_ID.len(), 20, "{CLIENT_ID}");
+        assert!(CLIENT_ID.starts_with("Ov23li"));
+        assert!(CLIENT_ID.chars().all(|c| c.is_ascii_alphanumeric()));
     }
 
     #[test]

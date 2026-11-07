@@ -912,7 +912,7 @@ mod tests {
             AccountsState::new(
                 Arc::new(MemoryStore::default()),
                 Endpoints::default(),
-                crate::github::PLACEHOLDER_CLIENT_ID.into(),
+                String::new(),
             )
         });
         let (workspace, cx) =
