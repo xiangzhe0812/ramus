@@ -334,24 +334,13 @@ mod tests {
     }
 
     mod dialog {
-        use std::{cell::Cell, process::Command, rc::Rc};
+        use std::{cell::Cell, rc::Rc};
 
         use gpui::{TestAppContext, VisualTestContext};
         use tempfile::TempDir;
 
         use super::super::*;
-
-        fn git(dir: &Path, args: &[&str]) {
-            let ok = Command::new("git")
-                .arg("-C")
-                .arg(dir)
-                .args(["-c", "user.name=T", "-c", "user.email=t@e.com"])
-                .args(args)
-                .status()
-                .unwrap()
-                .success();
-            assert!(ok, "git {args:?} failed");
-        }
+        use crate::testutil::git;
 
         /// A dialog that will clone into a fresh folder, and a flag saying it closed.
         fn open<'a>(

@@ -18,6 +18,8 @@ mod repo_state;
 mod secrets;
 mod settings;
 mod stash_view;
+#[cfg(test)]
+mod testutil;
 mod theme;
 mod title_bar;
 mod welcome;
@@ -26,11 +28,14 @@ mod workspace;
 use gpui::{AppContext, Bounds, KeyBinding, WindowBounds, WindowOptions, px, size};
 
 use crate::{
+    accounts::AccountsState,
     actions::{
         CloneRepository, DiscardSelected, OpenRepository, SelectNextFile, SelectPreviousFile,
         ShowChanges, ShowHistory, ShowStashes, ToggleBranches, TogglePalette, ToggleSelectedFile,
     },
+    github::Endpoints,
     repo_state::RepoState,
+    secrets::Keychain,
     theme::Theme,
     workspace::Workspace,
 };
@@ -67,7 +72,14 @@ fn main() {
                 ..Default::default()
             },
             |window, cx| {
-                let workspace = cx.new(|cx| Workspace::new(repo_state, window, cx));
+                let accounts = cx.new(|_| {
+                    AccountsState::new(
+                        std::sync::Arc::new(Keychain::github()),
+                        Endpoints::default(),
+                        crate::github::client_id(),
+                    )
+                });
+                let workspace = cx.new(|cx| Workspace::new(repo_state, accounts, window, cx));
                 cx.new(|cx| gpui_component::Root::new(workspace, window, cx))
             },
         )

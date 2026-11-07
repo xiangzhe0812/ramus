@@ -691,24 +691,13 @@ impl Render for ConflictsView {
 
 #[cfg(test)]
 mod tests {
-    use std::{fs, path::Path, process::Command};
+    use std::{fs, path::Path};
 
     use gpui::{AppContext, TestAppContext, VisualTestContext};
     use tempfile::TempDir;
 
     use super::*;
-
-    fn git(dir: &Path, args: &[&str]) -> bool {
-        Command::new("git")
-            .arg("-C")
-            .arg(dir)
-            .args(["-c", "user.name=T", "-c", "user.email=t@e.com"])
-            .args(args)
-            .output()
-            .unwrap()
-            .status
-            .success()
-    }
+    use crate::testutil::git_ok as git;
 
     /// `main` and `feature` both change lines 2 and 5 of `f.txt` (two regions) and
     /// `feature` deletes `gone.txt` while `main` edits it. The merge is started.

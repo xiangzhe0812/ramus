@@ -246,7 +246,7 @@ impl Render for TitleBar {
                             .px(px(7.))
                             .rounded(px(10.))
                             .text_size(px(11.))
-                            .bg(gpui::rgba(0xffffff38))
+                            .bg(theme.accent_chip)
                             .child(count.to_string())
                     }))
             }))

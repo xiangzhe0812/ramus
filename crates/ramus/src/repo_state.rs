@@ -836,17 +836,7 @@ mod tests {
     use tempfile::TempDir;
 
     use super::*;
-
-    fn git(dir: &Path, args: &[&str]) {
-        let status = Command::new("git")
-            .arg("-C")
-            .arg(dir)
-            .args(["-c", "user.name=T", "-c", "user.email=t@e.com"])
-            .args(args)
-            .status()
-            .unwrap();
-        assert!(status.success(), "git {args:?} failed");
-    }
+    use crate::testutil::git;
 
     /// A repo with one commit and a hook that rejects every commit.
     fn repo_with_rejecting_hook() -> TempDir {
@@ -1872,10 +1862,8 @@ mod tests {
     fn head_commit(
         cx: &mut TestAppContext,
         state: &gpui::Entity<RepoState>,
-        dir: &Path,
     ) -> git_core::CommitInfo {
         let repo = state.read_with(cx, |s, _| s.repo().unwrap().clone());
-        let _ = dir;
         repo.log(0, 1).unwrap().remove(0)
     }
 
@@ -1886,7 +1874,7 @@ mod tests {
         let state = cx.new(|_| RepoState::default());
         state.update(cx, |state, cx| state.open(dir.path().to_owned(), cx));
         cx.executor().run_until_parked();
-        let commit = head_commit(cx, &state, dir.path());
+        let commit = head_commit(cx, &state);
         let before = commit_count(dir.path());
 
         state.update(cx, |state, cx| state.revert_commit(commit.clone(), cx));
@@ -1913,7 +1901,7 @@ mod tests {
         git(dir.path(), &["add", "."]);
         git(dir.path(), &["commit", "-q", "-m", "add extra"]);
         let state = open_trusted(cx, dir.path());
-        let target = head_commit(cx, &state, dir.path());
+        let target = head_commit(cx, &state);
 
         state.update(cx, |state, cx| state.revert_commit(target, cx));
         cx.executor().run_until_parked();
@@ -2017,7 +2005,10 @@ mod tests {
         git(dir.path(), &["switch", "-q", "main"]);
         fs::write(dir.path().join("a.txt"), "m\n").unwrap();
         git(dir.path(), &["commit", "-q", "-a", "-m", "m"]);
-        let _ = git_merge_conflict(dir.path());
+        assert!(
+            !crate::testutil::git_ok(dir.path(), &["merge", "feature"]),
+            "the merge should conflict"
+        );
         let state = cx.new(|_| RepoState::default());
         state.update(cx, |state, cx| state.open(dir.path().to_owned(), cx));
         cx.executor().run_until_parked();
@@ -2034,23 +2025,5 @@ mod tests {
             assert!(s.error().is_some_and(|e| e.contains("Trust")));
             assert!(s.in_progress().is_some(), "nothing was committed");
         });
-    }
-
-    /// Starts a merge of `feature`, which conflicts, using plain git.
-    fn git_merge_conflict(dir: &Path) -> bool {
-        Command::new("git")
-            .arg("-C")
-            .arg(dir)
-            .args([
-                "-c",
-                "user.name=T",
-                "-c",
-                "user.email=t@e.com",
-                "merge",
-                "feature",
-            ])
-            .output()
-            .map(|out| !out.status.success())
-            .unwrap_or(false)
     }
 }

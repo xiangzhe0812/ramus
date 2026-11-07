@@ -1,7 +1,7 @@
 use gpui::{
-    AppContext, Context, Entity, FocusHandle, Focusable, InteractiveElement, IntoElement,
-    ParentElement, PathPromptOptions, Render, SharedString, StatefulInteractiveElement, Styled,
-    Window, div, prelude::FluentBuilder, px,
+    AnyElement, AppContext, Context, Entity, FocusHandle, Focusable, InteractiveElement,
+    IntoElement, ParentElement, PathPromptOptions, Render, SharedString,
+    StatefulInteractiveElement, Styled, Window, div, prelude::FluentBuilder, px,
 };
 
 use git_core::FailureKind;
@@ -19,12 +19,10 @@ use crate::{
     clone_dialog::CloneDialog,
     conflicts_view::{ConflictsView, abort_label, operation_summary},
     error_banner,
-    github::{self, Endpoints},
     history_view::HistoryView,
     palette::{Command, Target},
     palette_view::{PaletteView, RunEntry},
     repo_state::RepoState,
-    secrets::Keychain,
     stash_view::StashView,
     theme::{MONO_FONT, Theme},
     title_bar::{Tab, TabRequested, TitleBar},
@@ -33,6 +31,16 @@ use crate::{
 
 /// How often the open repository is fetched in the background.
 const AUTO_FETCH_EVERY: std::time::Duration = std::time::Duration::from_secs(300);
+
+/// An overlay drawn over the window. Only one can be open at a time, so opening any of
+/// them closes whichever was showing.
+enum Modal {
+    Branches(Entity<BranchPopover>),
+    Palette(Entity<PaletteView>),
+    Clone(Entity<CloneDialog>),
+    Accounts(Entity<AccountsView>),
+    AddRemote(Entity<AddRemoteDialog>),
+}
 
 pub struct Workspace {
     repo_state: Entity<RepoState>,
@@ -43,20 +51,22 @@ pub struct Workspace {
     stashes: Entity<StashView>,
     tab: Tab,
     welcome: Entity<Welcome>,
-    branch_popover: Option<Entity<BranchPopover>>,
-    palette: Option<Entity<PaletteView>>,
-    clone_dialog: Option<Entity<CloneDialog>>,
+    /// The one overlay that can be open (branches, palette, Clone, Accounts, Add remote).
+    modal: Option<Modal>,
     accounts: Entity<AccountsState>,
     error_details_open: bool,
-    add_remote: Option<Entity<AddRemoteDialog>>,
-    accounts_view: Option<Entity<AccountsView>>,
     /// Files the user asked to discard, waiting for them to confirm.
     pending_discard: Option<Vec<git_core::FileChange>>,
     focus_handle: FocusHandle,
 }
 
 impl Workspace {
-    pub fn new(repo_state: Entity<RepoState>, window: &mut Window, cx: &mut Context<Self>) -> Self {
+    pub fn new(
+        repo_state: Entity<RepoState>,
+        accounts: Entity<AccountsState>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
         cx.observe(&repo_state, |_, _, cx| cx.notify()).detach();
 
         // Edits made outside the app (a terminal commit, an editor save) show up on return.
@@ -114,19 +124,9 @@ impl Workspace {
             stashes,
             tab: Tab::Changes,
             welcome: cx.new(|_| Welcome),
-            branch_popover: None,
-            palette: None,
-            clone_dialog: None,
-            accounts: cx.new(|_| {
-                AccountsState::new(
-                    std::sync::Arc::new(Keychain::github()),
-                    Endpoints::default(),
-                    github::client_id(),
-                )
-            }),
-            accounts_view: None,
+            modal: None,
+            accounts,
             error_details_open: false,
-            add_remote: None,
             pending_discard: None,
             repo_state,
             focus_handle,
@@ -184,7 +184,7 @@ impl Workspace {
                 .flex()
                 .items_center()
                 .justify_center()
-                .bg(gpui::rgba(0x00000099))
+                .bg(theme.scrim_strong)
                 .on_mouse_down(
                     gpui::MouseButton::Left,
                     cx.listener(|this, _, _, cx| this.cancel_discard(cx)),
@@ -286,123 +286,98 @@ impl Workspace {
         )
     }
 
-    fn close_branches(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.branch_popover.take().is_some() {
-            // Keyboard shortcuts work from the workspace, so hand focus back to it.
+    /// Closes whatever overlay is open and gives the keyboard back to the workspace
+    /// (its shortcuts only work while it holds focus).
+    fn close_modal(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(modal) = self.modal.take() {
+            // A sign-in nobody can see any more shouldn't keep polling.
+            if matches!(modal, Modal::Accounts(_)) {
+                self.accounts.update(cx, |accounts, cx| accounts.cancel(cx));
+            }
             window.focus(&self.focus_handle, cx);
             cx.notify();
         }
     }
 
-    fn close_add_remote(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.add_remote.take().is_some() {
-            window.focus(&self.focus_handle, cx);
-            cx.notify();
-        }
+    /// Shows `modal` as the only overlay. The caller closes the previous one *before*
+    /// building the new view, because closing hands focus back to the workspace and would
+    /// take it from the new view's input.
+    fn show_modal(&mut self, modal: Modal, cx: &mut Context<Self>) {
+        self.modal = Some(modal);
+        cx.notify();
+    }
+
+    /// Closes the overlay when the view it shows asks to be dismissed.
+    fn close_on_dismiss<V: gpui::EventEmitter<gpui::DismissEvent> + 'static>(
+        &self,
+        view: &Entity<V>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        cx.subscribe_in(
+            view,
+            window,
+            |this, _, _: &gpui::DismissEvent, window, cx| this.close_modal(window, cx),
+        )
+        .detach();
     }
 
     fn open_add_remote(&mut self, _: &AddRemote, window: &mut Window, cx: &mut Context<Self>) {
-        if self.add_remote.is_some() || self.repo_state.read(cx).repo().is_none() {
+        if matches!(self.modal, Some(Modal::AddRemote(_)))
+            || self.repo_state.read(cx).repo().is_none()
+        {
             return;
         }
-        self.close_branches(window, cx);
-        self.close_palette(window, cx);
+        self.close_modal(window, cx);
         let dialog = cx.new(|cx| AddRemoteDialog::new(self.repo_state.clone(), window, cx));
-        cx.subscribe_in(
-            &dialog,
-            window,
-            |this, _, _: &gpui::DismissEvent, window, cx| this.close_add_remote(window, cx),
-        )
-        .detach();
-        self.add_remote = Some(dialog);
-        cx.notify();
+        self.close_on_dismiss(&dialog, window, cx);
+        self.show_modal(Modal::AddRemote(dialog), cx);
     }
 
     /// Opens the branch popover already asking for a new branch's name.
     fn new_branch_here(&mut self, _: &NewBranchHere, window: &mut Window, cx: &mut Context<Self>) {
-        self.close_branches(window, cx);
+        self.close_modal(window, cx);
         self.toggle_branches(&ToggleBranches, window, cx);
-        if let Some(popover) = &self.branch_popover {
+        if let Some(Modal::Branches(popover)) = &self.modal {
             popover.update(cx, |popover, cx| popover.start_creating(window, cx));
         }
     }
 
-    fn close_accounts(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.accounts_view.take().is_some() {
-            window.focus(&self.focus_handle, cx);
-            cx.notify();
-        }
-    }
-
     fn open_accounts(&mut self, _: &ShowAccounts, window: &mut Window, cx: &mut Context<Self>) {
-        if self.accounts_view.is_some() {
+        if matches!(self.modal, Some(Modal::Accounts(_))) {
             return;
         }
-        self.close_branches(window, cx);
-        self.close_palette(window, cx);
+        self.close_modal(window, cx);
         let view = cx.new(|cx| AccountsView::new(self.accounts.clone(), window, cx));
-        cx.subscribe_in(
-            &view,
-            window,
-            |this, _, _: &gpui::DismissEvent, window, cx| this.close_accounts(window, cx),
-        )
-        .detach();
-        self.accounts_view = Some(view);
-        cx.notify();
-    }
-
-    fn close_clone(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.clone_dialog.take().is_some() {
-            window.focus(&self.focus_handle, cx);
-            cx.notify();
-        }
+        self.close_on_dismiss(&view, window, cx);
+        self.show_modal(Modal::Accounts(view), cx);
     }
 
     fn open_clone(&mut self, _: &CloneRepository, window: &mut Window, cx: &mut Context<Self>) {
-        if self.clone_dialog.is_some() {
+        if matches!(self.modal, Some(Modal::Clone(_))) {
             return;
         }
-        self.close_branches(window, cx);
-        self.close_palette(window, cx);
+        self.close_modal(window, cx);
         let dialog = cx.new(|cx| CloneDialog::new(self.repo_state.clone(), window, cx));
-        cx.subscribe_in(
-            &dialog,
-            window,
-            |this, _, _: &gpui::DismissEvent, window, cx| this.close_clone(window, cx),
-        )
-        .detach();
-        self.clone_dialog = Some(dialog);
-        cx.notify();
-    }
-
-    fn close_palette(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.palette.take().is_some() {
-            window.focus(&self.focus_handle, cx);
-            cx.notify();
-        }
+        self.close_on_dismiss(&dialog, window, cx);
+        self.show_modal(Modal::Clone(dialog), cx);
     }
 
     fn toggle_palette(&mut self, _: &TogglePalette, window: &mut Window, cx: &mut Context<Self>) {
-        if self.palette.is_some() {
-            self.close_palette(window, cx);
+        if matches!(self.modal, Some(Modal::Palette(_))) {
+            self.close_modal(window, cx);
             return;
         }
-        self.close_branches(window, cx);
+        self.close_modal(window, cx);
         let palette = cx.new(|cx| PaletteView::new(self.repo_state.clone(), window, cx));
-        cx.subscribe_in(
-            &palette,
-            window,
-            |this, _, _: &gpui::DismissEvent, window, cx| this.close_palette(window, cx),
-        )
-        .detach();
+        self.close_on_dismiss(&palette, window, cx);
         cx.subscribe_in(&palette, window, |this, _, event: &RunEntry, window, cx| {
             // Close first: the commands below expect the workspace to hold focus.
-            this.close_palette(window, cx);
+            this.close_modal(window, cx);
             this.run(event.0.clone(), window, cx);
         })
         .detach();
-        self.palette = Some(palette);
-        cx.notify();
+        self.show_modal(Modal::Palette(palette), cx);
     }
 
     fn run(&mut self, target: Target, window: &mut Window, cx: &mut Context<Self>) {
@@ -435,22 +410,90 @@ impl Workspace {
     }
 
     fn toggle_branches(&mut self, _: &ToggleBranches, window: &mut Window, cx: &mut Context<Self>) {
-        if self.branch_popover.is_some() {
-            self.close_branches(window, cx);
+        if matches!(self.modal, Some(Modal::Branches(_))) {
+            self.close_modal(window, cx);
             return;
         }
         if self.repo_state.read(cx).repo().is_none() {
             return;
         }
+        self.close_modal(window, cx);
         let popover = cx.new(|cx| BranchPopover::new(self.repo_state.clone(), window, cx));
-        cx.subscribe_in(
-            &popover,
-            window,
-            |this, _, _: &gpui::DismissEvent, window, cx| this.close_branches(window, cx),
-        )
-        .detach();
-        self.branch_popover = Some(popover);
-        cx.notify();
+        self.close_on_dismiss(&popover, window, cx);
+        self.show_modal(Modal::Branches(popover), cx);
+    }
+
+    /// The layer drawn over everything for the open overlay.
+    fn modal_layer(&self, modal: &Modal, theme: &Theme, cx: &mut Context<Self>) -> AnyElement {
+        // Centered dialogs sit on a dimmed scrim. `dismiss_on_outside_click` is off where
+        // losing a half-typed address to a stray click would be worse than a closed dialog.
+        let scrim =
+            |id: &'static str, top: f32, dismiss_on_outside_click: bool, child: AnyElement| {
+                div()
+                    .id(id)
+                    .absolute()
+                    .inset_0()
+                    .flex()
+                    .justify_center()
+                    .pt(px(top))
+                    .bg(theme.scrim)
+                    .on_mouse_down(
+                        gpui::MouseButton::Left,
+                        cx.listener(move |this, _, window, cx| {
+                            if dismiss_on_outside_click {
+                                this.close_modal(window, cx);
+                            } else {
+                                cx.stop_propagation();
+                            }
+                        }),
+                    )
+                    .child(child)
+                    .into_any_element()
+            };
+        match modal {
+            // The branch popover hangs under the branch button on a clear layer: a click
+            // anywhere else closes it.
+            Modal::Branches(popover) => div()
+                .id("popover-backdrop")
+                .absolute()
+                .inset_0()
+                .on_mouse_down(
+                    gpui::MouseButton::Left,
+                    cx.listener(|this, _, window, cx| this.close_modal(window, cx)),
+                )
+                .child(
+                    div()
+                        .absolute()
+                        .top(px(64.))
+                        .left(px(246.))
+                        .child(popover.clone()),
+                )
+                .into_any_element(),
+            Modal::Palette(palette) => scrim(
+                "palette-backdrop",
+                80.,
+                true,
+                palette.clone().into_any_element(),
+            ),
+            Modal::Accounts(view) => scrim(
+                "accounts-backdrop",
+                120.,
+                true,
+                view.clone().into_any_element(),
+            ),
+            Modal::Clone(dialog) => scrim(
+                "clone-backdrop",
+                120.,
+                false,
+                dialog.clone().into_any_element(),
+            ),
+            Modal::AddRemote(dialog) => scrim(
+                "add-remote-backdrop",
+                120.,
+                false,
+                dialog.clone().into_any_element(),
+            ),
+        }
     }
 
     fn open_repository(&mut self, _: &OpenRepository, _: &mut Window, cx: &mut Context<Self>) {
@@ -779,80 +822,10 @@ impl Render for Workspace {
                 .into_any_element()
         };
 
-        let popover = self.branch_popover.clone().map(|popover| {
-            // A transparent layer under the popover: a click anywhere else closes it.
-            div()
-                .id("popover-backdrop")
-                .absolute()
-                .inset_0()
-                .on_mouse_down(
-                    gpui::MouseButton::Left,
-                    cx.listener(|this, _, window, cx| this.close_branches(window, cx)),
-                )
-                .child(div().absolute().top(px(64.)).left(px(246.)).child(popover))
-        });
-
-        let clone = self.clone_dialog.clone().map(|dialog| {
-            // Not dismissed by a click outside: a half-typed address is easy to lose.
-            div()
-                .id("clone-backdrop")
-                .absolute()
-                .inset_0()
-                .flex()
-                .justify_center()
-                .pt(px(120.))
-                .bg(gpui::rgba(0x00000066))
-                .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                .child(dialog)
-        });
-
-        let add_remote = self.add_remote.clone().map(|dialog| {
-            div()
-                .id("add-remote-backdrop")
-                .absolute()
-                .inset_0()
-                .flex()
-                .justify_center()
-                .pt(px(120.))
-                .bg(gpui::rgba(0x00000066))
-                .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                .child(dialog)
-        });
-
-        let accounts = self.accounts_view.clone().map(|view| {
-            div()
-                .id("accounts-backdrop")
-                .absolute()
-                .inset_0()
-                .flex()
-                .justify_center()
-                .pt(px(120.))
-                .bg(gpui::rgba(0x00000066))
-                .on_mouse_down(
-                    gpui::MouseButton::Left,
-                    cx.listener(|this, _, window, cx| {
-                        this.accounts.update(cx, |a, cx| a.cancel(cx));
-                        this.close_accounts(window, cx)
-                    }),
-                )
-                .child(view)
-        });
-
-        let palette = self.palette.clone().map(|palette| {
-            div()
-                .id("palette-backdrop")
-                .absolute()
-                .inset_0()
-                .flex()
-                .justify_center()
-                .pt(px(80.))
-                .bg(gpui::rgba(0x00000066))
-                .on_mouse_down(
-                    gpui::MouseButton::Left,
-                    cx.listener(|this, _, window, cx| this.close_palette(window, cx)),
-                )
-                .child(palette)
-        });
+        let modal = self
+            .modal
+            .as_ref()
+            .map(|modal| self.modal_layer(modal, &theme, cx));
 
         div()
             .key_context("Workspace")
@@ -891,11 +864,127 @@ impl Render for Workspace {
             .children(self.undo_banner(&theme, cx))
             .child(body)
             .child(self.status_bar(&theme, cx))
-            .children(popover)
-            .children(palette)
-            .children(clone)
-            .children(accounts)
-            .children(add_remote)
+            .children(modal)
             .children(self.discard_dialog(&theme, cx))
+    }
+}
+
+#[cfg(test)]
+impl Workspace {
+    /// Which overlay is showing, by name.
+    fn modal_name(&self) -> &'static str {
+        match self.modal {
+            None => "none",
+            Some(Modal::Branches(_)) => "branches",
+            Some(Modal::Palette(_)) => "palette",
+            Some(Modal::Clone(_)) => "clone",
+            Some(Modal::Accounts(_)) => "accounts",
+            Some(Modal::AddRemote(_)) => "add-remote",
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use gpui::{Action, TestAppContext, VisualTestContext};
+
+    use super::*;
+    use crate::{github::Endpoints, secrets::MemoryStore, testutil};
+
+    /// A workspace over a real repository, with an in-memory account store, so nothing
+    /// here can reach the user's keychain.
+    fn open<'a>(
+        cx: &'a mut TestAppContext,
+        dir: &std::path::Path,
+    ) -> (Entity<Workspace>, &'a mut VisualTestContext) {
+        testutil::git(dir, &["init", "-q", "-b", "main"]);
+        testutil::git(dir, &["commit", "-q", "--allow-empty", "-m", "base"]);
+        cx.update(|cx| {
+            gpui_component::init(cx);
+            cx.set_global(Theme::dark());
+        });
+        let repo_state = cx.new(|_| RepoState::default());
+        repo_state.update(cx, |state, cx| state.open(dir.to_owned(), cx));
+        cx.run_until_parked();
+        let accounts = cx.new(|_| {
+            AccountsState::new(
+                Arc::new(MemoryStore::default()),
+                Endpoints::default(),
+                crate::github::PLACEHOLDER_CLIENT_ID.into(),
+            )
+        });
+        let (workspace, cx) =
+            cx.add_window_view(|window, cx| Workspace::new(repo_state, accounts, window, cx));
+        cx.run_until_parked();
+        (workspace, cx)
+    }
+
+    fn show(cx: &mut VisualTestContext, action: impl Action) {
+        cx.dispatch_action(action);
+        cx.run_until_parked();
+    }
+
+    fn name(workspace: &Entity<Workspace>, cx: &mut VisualTestContext) -> &'static str {
+        workspace.read_with(cx, |w, _| w.modal_name())
+    }
+
+    #[gpui::test]
+    fn each_overlay_replaces_whichever_was_open(cx: &mut TestAppContext) {
+        let dir = tempfile::TempDir::new().unwrap();
+        let (workspace, cx) = open(cx, dir.path());
+        assert_eq!(name(&workspace, cx), "none");
+
+        // Every overlay opened over every other one: only the newest may remain.
+        type Opener = fn(&mut VisualTestContext);
+        let openers: [(&str, Opener); 5] = [
+            ("clone", |cx| show(cx, CloneRepository)),
+            ("branches", |cx| show(cx, ToggleBranches)),
+            ("accounts", |cx| show(cx, ShowAccounts)),
+            ("palette", |cx| show(cx, TogglePalette)),
+            ("add-remote", |cx| show(cx, AddRemote)),
+        ];
+        for (first, open_first) in &openers {
+            for (second, open_second) in &openers {
+                if first == second {
+                    continue;
+                }
+                open_first(cx);
+                assert_eq!(name(&workspace, cx), *first, "opening {first}");
+                open_second(cx);
+                assert_eq!(
+                    name(&workspace, cx),
+                    *second,
+                    "{second} opened over {first} should replace it"
+                );
+                // Back to nothing for the next pair.
+                cx.simulate_keystrokes("escape");
+                cx.run_until_parked();
+                assert_eq!(name(&workspace, cx), "none", "escape closes {second}");
+            }
+        }
+    }
+
+    #[gpui::test]
+    fn the_shortcut_for_an_open_overlay_closes_it(cx: &mut TestAppContext) {
+        let dir = tempfile::TempDir::new().unwrap();
+        let (workspace, cx) = open(cx, dir.path());
+        show(cx, TogglePalette);
+        assert_eq!(name(&workspace, cx), "palette");
+        show(cx, TogglePalette);
+        assert_eq!(name(&workspace, cx), "none");
+        show(cx, ToggleBranches);
+        show(cx, ToggleBranches);
+        assert_eq!(name(&workspace, cx), "none");
+    }
+
+    #[gpui::test]
+    fn new_branch_here_replaces_the_palette_with_the_branch_popover(cx: &mut TestAppContext) {
+        let dir = tempfile::TempDir::new().unwrap();
+        let (workspace, cx) = open(cx, dir.path());
+        show(cx, TogglePalette);
+        show(cx, NewBranchHere);
+        assert_eq!(name(&workspace, cx), "branches");
     }
 }

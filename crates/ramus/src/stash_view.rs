@@ -606,24 +606,13 @@ impl Render for StashView {
 
 #[cfg(test)]
 mod tests {
-    use std::{fs, path::Path, process::Command};
+    use std::{fs, path::Path};
 
     use gpui::{AppContext, TestAppContext, VisualTestContext};
     use tempfile::TempDir;
 
     use super::*;
-
-    fn git(dir: &Path, args: &[&str]) {
-        let ok = Command::new("git")
-            .arg("-C")
-            .arg(dir)
-            .args(["-c", "user.name=T", "-c", "user.email=t@e.com"])
-            .args(args)
-            .status()
-            .unwrap()
-            .success();
-        assert!(ok, "git {args:?} failed");
-    }
+    use crate::testutil::git;
 
     /// A trusted repo with two stashes, "older" then "newer", and a clean tree.
     fn open<'a>(

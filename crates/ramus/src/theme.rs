@@ -29,6 +29,12 @@ pub struct Theme {
     /// A lighter accent for text links and small actions on a dark surface.
     pub accent_soft: Rgba,
     pub pill_active: Rgba,
+    /// Dims the window behind a dialog.
+    pub scrim: Rgba,
+    /// A heavier dim, behind a confirmation that interrupts what the user was doing.
+    pub scrim_strong: Rgba,
+    /// A count badge on an accent-coloured button.
+    pub accent_chip: Rgba,
     pub modified: Badge,
     pub added: Badge,
     pub deleted: Badge,
@@ -66,6 +72,9 @@ impl Theme {
             accent_text: rgb(0xffffff),
             accent_soft: rgb(0x6aa5ff),
             pill_active: rgb(0x262f40),
+            scrim: rgba(0x00000066),
+            scrim_strong: rgba(0x00000099),
+            accent_chip: rgba(0xffffff38),
             modified: badge(0x3a3020, 0xf0c878),
             added: badge(0x153327, 0x86e0b4),
             deleted: badge(0x40242a, 0xf59aa2),

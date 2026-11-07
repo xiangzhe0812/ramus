@@ -30,6 +30,17 @@ fn isolate_from_host_git_config() {
                 std::env::set_var(format!("GIT_{role}_NAME"), "Test");
                 std::env::set_var(format!("GIT_{role}_EMAIL"), "test@example.com");
             }
+            // An ssh that never answers, for the test that cancels a clone. Setting it here,
+            // once, keeps the process environment untouched while tests run in parallel.
+            let dir = TempDir::new().unwrap().keep();
+            let slow_ssh = dir.join("slow-ssh");
+            fs::write(&slow_ssh, "#!/bin/sh\nsleep 30\n").unwrap();
+            fs::set_permissions(
+                &slow_ssh,
+                std::os::unix::fs::PermissionsExt::from_mode(0o755),
+            )
+            .unwrap();
+            std::env::set_var("GIT_SSH_COMMAND", &slow_ssh);
         }
     });
 }
@@ -3223,15 +3234,10 @@ mod cloning {
 
     #[test]
     fn cancelling_stops_git_and_removes_what_it_started() {
+        // The shared setup points ssh at a script that never answers, which keeps git busy
+        // until it is killed.
+        isolate_from_host_git_config();
         let parent = TempDir::new().unwrap();
-        // An ssh that never answers keeps git busy until it is killed.
-        let slow_ssh = parent.path().join("slow-ssh");
-        fs::write(&slow_ssh, "#!/bin/sh\nsleep 30\n").unwrap();
-        {
-            use std::os::unix::fs::PermissionsExt;
-            fs::set_permissions(&slow_ssh, fs::Permissions::from_mode(0o755)).unwrap();
-        }
-
         let destination = parent.path().join("copy");
         let cancel = CancelToken::new();
         let canceller = cancel.clone();
@@ -3241,15 +3247,12 @@ mod cloning {
         });
 
         let started = Instant::now();
-        // SAFETY: no other test in this binary reads GIT_SSH_COMMAND.
-        unsafe { std::env::set_var("GIT_SSH_COMMAND", &slow_ssh) };
         let result = Repo::clone_from(
             "ssh://example.invalid/repo",
             &destination,
             &cancel,
             &mut no_progress,
         );
-        unsafe { std::env::remove_var("GIT_SSH_COMMAND") };
 
         assert!(matches!(result, Err(Error::Cancelled)), "{result:?}");
         assert!(started.elapsed() < Duration::from_secs(10));
@@ -3677,7 +3680,7 @@ mod stash_subjects {
 }
 
 mod resolving_conflicts {
-    use git_core::{Choice, ConflictKind, OperationKind, Side, resolve_region};
+    use git_core::{Choice, ConflictKind, Side, resolve_region};
 
     use super::*;
 
@@ -3932,7 +3935,6 @@ mod resolving_conflicts {
             fs::read_to_string(dir.path().join("f.txt")).unwrap(),
             "one\nFEATURE\nthree\n"
         );
-        let _ = OperationKind::Merge;
     }
 }
 
