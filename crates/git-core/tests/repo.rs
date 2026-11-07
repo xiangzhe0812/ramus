@@ -3040,3 +3040,162 @@ mod untrusted_signature_verification {
         assert!(!marker.exists(), "the log ran the repository's gpg program");
     }
 }
+
+mod cloning {
+    use std::time::{Duration, Instant};
+
+    use git_core::CancelToken;
+
+    use super::*;
+
+    fn no_progress(_: git_core::Progress) {}
+
+    /// A repository with one commit to clone from.
+    fn source() -> TempDir {
+        let dir = new_repo();
+        commit_file(dir.path(), "hello.txt", "hi\n");
+        dir
+    }
+
+    fn clone_into(url: &str, destination: &Path) -> Result<Repo, Error> {
+        Repo::clone_from(url, destination, &CancelToken::new(), &mut no_progress)
+    }
+
+    #[test]
+    fn clones_into_a_new_folder_and_opens_it() {
+        let from = source();
+        let parent = TempDir::new().unwrap();
+        let destination = parent.path().join("copy");
+
+        let repo = clone_into(from.path().to_str().unwrap(), &destination).unwrap();
+
+        assert_eq!(
+            repo.root().canonicalize().unwrap(),
+            destination.canonicalize().unwrap()
+        );
+        assert_eq!(
+            fs::read_to_string(destination.join("hello.txt")).unwrap(),
+            "hi\n"
+        );
+        assert!(repo.status().unwrap().branch.upstream.is_some());
+    }
+
+    #[test]
+    fn creates_missing_parent_folders() {
+        let from = source();
+        let parent = TempDir::new().unwrap();
+        let destination = parent.path().join("a/b/copy");
+        clone_into(from.path().to_str().unwrap(), &destination).unwrap();
+        assert!(destination.join("hello.txt").exists());
+    }
+
+    #[test]
+    fn an_existing_empty_folder_is_fine() {
+        let from = source();
+        let destination = TempDir::new().unwrap();
+        clone_into(from.path().to_str().unwrap(), destination.path()).unwrap();
+        assert!(destination.path().join("hello.txt").exists());
+    }
+
+    #[test]
+    fn a_folder_with_files_in_it_is_refused_and_left_alone() {
+        let from = source();
+        let destination = TempDir::new().unwrap();
+        fs::write(destination.path().join("mine.txt"), "mine\n").unwrap();
+
+        let error = clone_into(from.path().to_str().unwrap(), destination.path()).unwrap_err();
+
+        assert!(matches!(error, Error::DestinationNotEmpty(_)), "{error}");
+        assert_eq!(
+            fs::read_to_string(destination.path().join("mine.txt")).unwrap(),
+            "mine\n"
+        );
+        assert!(!destination.path().join("hello.txt").exists());
+    }
+
+    #[test]
+    fn a_file_in_the_way_is_refused() {
+        let from = source();
+        let parent = TempDir::new().unwrap();
+        let destination = parent.path().join("file");
+        fs::write(&destination, "x").unwrap();
+        let error = clone_into(from.path().to_str().unwrap(), &destination).unwrap_err();
+        assert!(matches!(error, Error::DestinationNotEmpty(_)), "{error}");
+    }
+
+    #[test]
+    fn a_failed_clone_leaves_no_folder_behind() {
+        let parent = TempDir::new().unwrap();
+        let destination = parent.path().join("copy");
+        let missing = parent.path().join("no-such-repo");
+        assert!(clone_into(missing.to_str().unwrap(), &destination).is_err());
+        assert!(!destination.exists());
+    }
+
+    #[test]
+    fn an_empty_url_is_rejected_without_running_git() {
+        let parent = TempDir::new().unwrap();
+        let error = clone_into("   ", &parent.path().join("copy")).unwrap_err();
+        assert!(matches!(error, Error::InvalidUrl(_)), "{error}");
+    }
+
+    #[test]
+    fn a_url_that_looks_like_an_option_is_not_one() {
+        let parent = TempDir::new().unwrap();
+        let marker = parent.path().join("ran");
+        let url = format!("--upload-pack=touch {}", marker.display());
+        // An existing, empty destination is what an option-shaped URL would end up
+        // treating as the repository to clone from.
+        let destination = parent.path().join("copy");
+        fs::create_dir(&destination).unwrap();
+        let error = clone_into(&url, &destination).unwrap_err();
+        assert!(!marker.exists(), "git took the URL as an option");
+        // Git names what it took for the repository; it must be the URL, not our folder.
+        assert!(error.to_string().contains("--upload-pack="), "{error}");
+    }
+
+    #[test]
+    fn the_ext_transport_cannot_run_commands() {
+        let parent = TempDir::new().unwrap();
+        let marker = parent.path().join("ran");
+        let url = format!("ext::sh -c touch% {}", marker.display());
+        let result = clone_into(&url, &parent.path().join("copy"));
+        assert!(result.is_err());
+        assert!(!marker.exists(), "the ext transport ran a command");
+    }
+
+    #[test]
+    fn cancelling_stops_git_and_removes_what_it_started() {
+        let parent = TempDir::new().unwrap();
+        // An ssh that never answers keeps git busy until it is killed.
+        let slow_ssh = parent.path().join("slow-ssh");
+        fs::write(&slow_ssh, "#!/bin/sh\nsleep 30\n").unwrap();
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&slow_ssh, fs::Permissions::from_mode(0o755)).unwrap();
+        }
+
+        let destination = parent.path().join("copy");
+        let cancel = CancelToken::new();
+        let canceller = cancel.clone();
+        std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(500));
+            canceller.cancel();
+        });
+
+        let started = Instant::now();
+        // SAFETY: no other test in this binary reads GIT_SSH_COMMAND.
+        unsafe { std::env::set_var("GIT_SSH_COMMAND", &slow_ssh) };
+        let result = Repo::clone_from(
+            "ssh://example.invalid/repo",
+            &destination,
+            &cancel,
+            &mut no_progress,
+        );
+        unsafe { std::env::remove_var("GIT_SSH_COMMAND") };
+
+        assert!(matches!(result, Err(Error::Cancelled)), "{result:?}");
+        assert!(started.elapsed() < Duration::from_secs(10));
+        assert!(!destination.exists());
+    }
+}

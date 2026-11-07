@@ -4,7 +4,7 @@ use gpui::{
 };
 
 use crate::{
-    actions::OpenRepository,
+    actions::{CloneRepository, OpenRepository},
     theme::{MONO_FONT, Theme},
 };
 
@@ -43,38 +43,68 @@ impl Render for Welcome {
                     )
                     .child(
                         div()
-                            .id("open-repository")
-                            .h(px(56.))
-                            .px(px(16.))
                             .flex()
-                            .items_center()
-                            .rounded(px(10.))
-                            .border_1()
-                            .border_color(theme.border)
-                            .bg(theme.background)
-                            .cursor_pointer()
-                            .hover(|style| style.bg(theme.surface_selected))
-                            .on_click(cx.listener(|_, _, window, cx| {
-                                window.dispatch_action(Box::new(OpenRepository), cx)
-                            }))
-                            .child(
-                                div()
-                                    .flex_1()
-                                    .font_weight(gpui::FontWeight::MEDIUM)
-                                    .child("Open a local repository…"),
-                            )
-                            .child(
-                                div()
-                                    .px(px(6.))
-                                    .rounded(px(4.))
-                                    .border_1()
-                                    .border_color(theme.border)
-                                    .font_family(MONO_FONT)
-                                    .text_size(px(11.))
-                                    .text_color(theme.text_muted)
-                                    .child("⌘ O"),
-                            ),
+                            .flex_col()
+                            .gap(px(8.))
+                            .child(action_row(
+                                "open-repository",
+                                "Open a local repository…",
+                                "⌘ O",
+                                &theme,
+                                cx.listener(|_, _, window, cx| {
+                                    window.dispatch_action(Box::new(OpenRepository), cx)
+                                }),
+                            ))
+                            .child(action_row(
+                                "clone-repository",
+                                "Clone a repository…",
+                                "⇧ ⌘ O",
+                                &theme,
+                                cx.listener(|_, _, window, cx| {
+                                    window.dispatch_action(Box::new(CloneRepository), cx)
+                                }),
+                            )),
                     ),
             )
     }
+}
+
+/// One of the big buttons under the heading: a label and its keyboard shortcut.
+fn action_row(
+    id: &'static str,
+    label: &'static str,
+    shortcut: &'static str,
+    theme: &Theme,
+    on_click: impl Fn(&gpui::ClickEvent, &mut Window, &mut gpui::App) + 'static,
+) -> impl IntoElement {
+    div()
+        .id(id)
+        .h(px(56.))
+        .px(px(16.))
+        .flex()
+        .items_center()
+        .rounded(px(10.))
+        .border_1()
+        .border_color(theme.border)
+        .bg(theme.background)
+        .cursor_pointer()
+        .hover(|style| style.bg(theme.surface_selected))
+        .on_click(on_click)
+        .child(
+            div()
+                .flex_1()
+                .font_weight(gpui::FontWeight::MEDIUM)
+                .child(label),
+        )
+        .child(
+            div()
+                .px(px(6.))
+                .rounded(px(4.))
+                .border_1()
+                .border_color(theme.border)
+                .font_family(MONO_FONT)
+                .text_size(px(11.))
+                .text_color(theme.text_muted)
+                .child(shortcut),
+        )
 }

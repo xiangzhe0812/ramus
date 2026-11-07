@@ -1,6 +1,7 @@
 mod actions;
 mod branch_popover;
 mod changes_view;
+mod clone_dialog;
 mod component_theme;
 mod diff_rows;
 mod diff_view;
@@ -18,8 +19,8 @@ use gpui::{AppContext, Bounds, KeyBinding, WindowBounds, WindowOptions, px, size
 
 use crate::{
     actions::{
-        DiscardSelected, OpenRepository, SelectNextFile, SelectPreviousFile, ShowChanges,
-        ShowHistory, ToggleBranches, TogglePalette, ToggleSelectedFile,
+        CloneRepository, DiscardSelected, OpenRepository, SelectNextFile, SelectPreviousFile,
+        ShowChanges, ShowHistory, ToggleBranches, TogglePalette, ToggleSelectedFile,
     },
     repo_state::RepoState,
     theme::Theme,
@@ -35,6 +36,7 @@ fn main() {
         cx.bind_keys([
             KeyBinding::new("cmd-o", OpenRepository, None),
             KeyBinding::new("cmd-b", ToggleBranches, None),
+            KeyBinding::new("cmd-shift-o", CloneRepository, None),
             KeyBinding::new("cmd-k", TogglePalette, None),
             KeyBinding::new("cmd-1", ShowChanges, None),
             KeyBinding::new("cmd-2", ShowHistory, None),

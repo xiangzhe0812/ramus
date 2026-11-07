@@ -6,10 +6,12 @@ use gpui::{
 
 use crate::{
     actions::{
-        DiscardSelected, OpenRepository, ShowChanges, ShowHistory, ToggleBranches, TogglePalette,
+        CloneRepository, DiscardSelected, OpenRepository, ShowChanges, ShowHistory, ToggleBranches,
+        TogglePalette,
     },
     branch_popover::BranchPopover,
     changes_view::{ChangesEvent, ChangesView},
+    clone_dialog::CloneDialog,
     history_view::HistoryView,
     palette::{Command, Target},
     palette_view::{PaletteView, RunEntry},
@@ -28,6 +30,7 @@ pub struct Workspace {
     welcome: Entity<Welcome>,
     branch_popover: Option<Entity<BranchPopover>>,
     palette: Option<Entity<PaletteView>>,
+    clone_dialog: Option<Entity<CloneDialog>>,
     /// Files the user asked to discard, waiting for them to confirm.
     pending_discard: Option<Vec<git_core::FileChange>>,
     focus_handle: FocusHandle,
@@ -76,6 +79,7 @@ impl Workspace {
             welcome: cx.new(|_| Welcome),
             branch_popover: None,
             palette: None,
+            clone_dialog: None,
             pending_discard: None,
             repo_state,
             focus_handle,
@@ -243,6 +247,30 @@ impl Workspace {
         }
     }
 
+    fn close_clone(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.clone_dialog.take().is_some() {
+            window.focus(&self.focus_handle, cx);
+            cx.notify();
+        }
+    }
+
+    fn open_clone(&mut self, _: &CloneRepository, window: &mut Window, cx: &mut Context<Self>) {
+        if self.clone_dialog.is_some() {
+            return;
+        }
+        self.close_branches(window, cx);
+        self.close_palette(window, cx);
+        let dialog = cx.new(|cx| CloneDialog::new(self.repo_state.clone(), window, cx));
+        cx.subscribe_in(
+            &dialog,
+            window,
+            |this, _, _: &gpui::DismissEvent, window, cx| this.close_clone(window, cx),
+        )
+        .detach();
+        self.clone_dialog = Some(dialog);
+        cx.notify();
+    }
+
     fn close_palette(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.palette.take().is_some() {
             window.focus(&self.focus_handle, cx);
@@ -284,6 +312,7 @@ impl Workspace {
         };
         match command {
             Command::OpenRepository => window.dispatch_action(Box::new(OpenRepository), cx),
+            Command::CloneRepository => window.dispatch_action(Box::new(CloneRepository), cx),
             Command::SwitchBranch => window.dispatch_action(Box::new(ToggleBranches), cx),
             Command::ShowChanges => self.show(Tab::Changes, cx),
             Command::ShowHistory => self.show(Tab::History, cx),
@@ -522,6 +551,20 @@ impl Render for Workspace {
                 .child(div().absolute().top(px(64.)).left(px(246.)).child(popover))
         });
 
+        let clone = self.clone_dialog.clone().map(|dialog| {
+            // Not dismissed by a click outside: a half-typed address is easy to lose.
+            div()
+                .id("clone-backdrop")
+                .absolute()
+                .inset_0()
+                .flex()
+                .justify_center()
+                .pt(px(120.))
+                .bg(gpui::rgba(0x00000066))
+                .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                .child(dialog)
+        });
+
         let palette = self.palette.clone().map(|palette| {
             div()
                 .id("palette-backdrop")
@@ -544,6 +587,7 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::open_repository))
             .on_action(cx.listener(Self::toggle_branches))
             .on_action(cx.listener(Self::toggle_palette))
+            .on_action(cx.listener(Self::open_clone))
             .on_action(cx.listener(Self::discard_selected))
             .on_action(cx.listener(|this, _: &ShowChanges, _, cx| this.show(Tab::Changes, cx)))
             .on_action(cx.listener(|this, _: &ShowHistory, _, cx| this.show(Tab::History, cx)))
@@ -571,6 +615,7 @@ impl Render for Workspace {
             .child(self.status_bar(&theme, cx))
             .children(popover)
             .children(palette)
+            .children(clone)
             .children(self.discard_dialog(&theme, cx))
     }
 }

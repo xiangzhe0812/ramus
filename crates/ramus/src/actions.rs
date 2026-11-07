@@ -11,6 +11,7 @@ actions!(
         ToggleSelectedFile,
         ShowChanges,
         ShowHistory,
-        TogglePalette
+        TogglePalette,
+        CloneRepository
     ]
 );

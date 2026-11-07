@@ -342,7 +342,7 @@ mod tests {
 
         // Enter runs the highlighted entry, not the first.
         cx.simulate_keystrokes("down down enter");
-        assert_eq!(*ran.borrow(), [Target::Command(Command::SwitchBranch)]);
+        assert_eq!(*ran.borrow(), [Target::Command(Command::CloneRepository)]);
     }
 
     #[gpui::test]

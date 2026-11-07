@@ -21,6 +21,8 @@ pub enum SyncKind {
     Push,
     /// Push a branch for the first time and track it.
     Publish,
+    /// Download a repository for the first time.
+    Clone,
 }
 
 impl SyncKind {
@@ -31,6 +33,7 @@ impl SyncKind {
             Self::Pull => "Pulling",
             Self::Push => "Pushing",
             Self::Publish => "Publishing",
+            Self::Clone => "Cloning",
         }
     }
 }
@@ -186,10 +189,75 @@ impl RepoState {
         if self.action.is_some() || !self.require_trust("fetch, push or pull", cx) {
             return;
         }
+        self.run_cancellable(
+            kind,
+            move |cancel, report| match kind {
+                SyncKind::Fetch => repo.fetch(cancel, report),
+                SyncKind::Pull => repo.pull(cancel, report),
+                SyncKind::Push => repo.push(cancel, report),
+                SyncKind::Publish => repo.publish(cancel, report),
+                SyncKind::Clone => unreachable!("cloning has its own entry point"),
+            },
+            |this, result, cx| {
+                match result {
+                    Ok(()) => this.error = None,
+                    // The user asked for this, so it isn't an error to report.
+                    Err(git_core::Error::Cancelled) => {}
+                    Err(error) => this.error = Some(error.to_string().into()),
+                }
+                // New remote branches and counts: the lists and status are stale.
+                this.branches = None;
+                this.refresh(cx);
+            },
+            cx,
+        );
+    }
 
+    /// Clones `url` into `destination` and opens it. A repository the user chose to
+    /// clone is trusted from the start: they asked for it, and its config is not cloned.
+    pub fn clone_repository(&mut self, url: String, destination: PathBuf, cx: &mut Context<Self>) {
+        if self.action.is_some() {
+            return;
+        }
+        self.run_cancellable(
+            SyncKind::Clone,
+            move |cancel, report| Repo::clone_from(&url, &destination, cancel, report),
+            |this, result, cx| match result {
+                Ok(repo) => {
+                    let root = repo.root().to_owned();
+                    this.settings.trust(&root);
+                    if let Some(path) = &this.settings_path
+                        && let Err(error) = this.settings.save(path)
+                    {
+                        this.error =
+                            Some(format!("Couldn't save the trust setting: {error}").into());
+                    }
+                    this.open(root, cx);
+                }
+                Err(git_core::Error::Cancelled) => {}
+                Err(error) => this.error = Some(error.to_string().into()),
+            },
+            cx,
+        );
+    }
+
+    /// Runs `work` on a background thread as the current cancellable operation, showing
+    /// its progress, then hands the result to `finish` on the main thread.
+    fn run_cancellable<T: Send + 'static>(
+        &mut self,
+        kind: SyncKind,
+        work: impl FnOnce(
+            &CancelToken,
+            &mut dyn FnMut(git_core::Progress),
+        ) -> Result<T, git_core::Error>
+        + Send
+        + 'static,
+        finish: impl FnOnce(&mut Self, Result<T, git_core::Error>, &mut Context<Self>) + 'static,
+        cx: &mut Context<Self>,
+    ) {
         let cancel = CancelToken::new();
         let (progress_sender, progress_receiver) = mpsc::channel();
-        let finished: Arc<Mutex<Option<Result<(), git_core::Error>>>> = Arc::default();
+        let finished: Arc<Mutex<Option<Result<T, git_core::Error>>>> = Arc::default();
 
         let work = {
             let (cancel, finished) = (cancel.clone(), finished.clone());
@@ -197,12 +265,7 @@ impl RepoState {
                 let mut report = |progress| {
                     let _ = progress_sender.send(progress);
                 };
-                let result = match kind {
-                    SyncKind::Fetch => repo.fetch(&cancel, &mut report),
-                    SyncKind::Pull => repo.pull(&cancel, &mut report),
-                    SyncKind::Push => repo.push(&cancel, &mut report),
-                    SyncKind::Publish => repo.publish(&cancel, &mut report),
-                };
+                let result = work(&cancel, &mut report);
                 *finished.lock().expect("result slot") = Some(result);
             })
         };
@@ -237,15 +300,7 @@ impl RepoState {
             this.update(cx, |this, cx| {
                 this.action = None;
                 this.operation = None;
-                match result {
-                    Ok(()) => this.error = None,
-                    // The user asked for this, so it isn't an error to report.
-                    Err(git_core::Error::Cancelled) => {}
-                    Err(error) => this.error = Some(error.to_string().into()),
-                }
-                // New remote branches and counts: the lists and status are stale.
-                this.branches = None;
-                this.refresh(cx);
+                finish(this, result, cx);
                 cx.notify();
             })
             .ok();
@@ -1009,6 +1064,60 @@ mod tests {
             assert!(state.operation().is_none());
             assert!(state.error().is_none());
         });
+    }
+
+    #[gpui::test]
+    async fn a_cloned_repository_opens_and_is_trusted(cx: &mut TestAppContext) {
+        let (remote, _a, _b) = remote_and_two_clones();
+        let parent = TempDir::new().unwrap();
+        let destination = parent.path().join("copy");
+        let state = cx.new(|_| RepoState::default());
+
+        state.update(cx, |state, cx| {
+            state.clone_repository(
+                remote.path().to_str().unwrap().to_owned(),
+                destination.clone(),
+                cx,
+            )
+        });
+        assert_eq!(
+            state.read_with(cx, |s, _| s.operation().map(|o| o.kind)),
+            Some(SyncKind::Clone)
+        );
+        settle(cx, &state);
+
+        state.read_with(cx, |state, _| {
+            assert!(state.error().is_none(), "{:?}", state.error());
+            assert!(state.operation().is_none());
+            assert_eq!(
+                state.repo().unwrap().root().canonicalize().unwrap(),
+                destination.canonicalize().unwrap()
+            );
+            assert!(state.is_trusted());
+        });
+    }
+
+    #[gpui::test]
+    async fn a_failed_clone_reports_why_and_opens_nothing(cx: &mut TestAppContext) {
+        let parent = TempDir::new().unwrap();
+        let missing = parent.path().join("no-such-repo");
+        let state = cx.new(|_| RepoState::default());
+
+        state.update(cx, |state, cx| {
+            state.clone_repository(
+                missing.to_str().unwrap().to_owned(),
+                parent.path().join("copy"),
+                cx,
+            )
+        });
+        settle(cx, &state);
+
+        state.read_with(cx, |state, _| {
+            assert!(state.error().is_some());
+            assert!(state.repo().is_none());
+            assert!(state.operation().is_none());
+        });
+        assert!(!parent.path().join("copy").exists());
     }
 
     #[gpui::test]

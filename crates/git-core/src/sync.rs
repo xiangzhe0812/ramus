@@ -4,6 +4,7 @@
 use std::{
     io::{BufReader, Read},
     os::unix::process::CommandExt,
+    path::Path,
     process::Stdio,
     sync::{
         Arc,
@@ -120,7 +121,23 @@ fn run_network(
     cancel: &CancelToken,
     on_progress: &mut dyn FnMut(Progress),
 ) -> Result<(), Error> {
-    let mut command = defended_command(repo.root(), args)?;
+    let command = defended_command(repo.root(), args)?;
+    run_command(
+        command,
+        args.first().copied().unwrap_or_default(),
+        cancel,
+        on_progress,
+    )
+}
+
+/// Runs a prepared network `command` (named `name` in errors): progress, cancellation and
+/// the no-terminal session described on [`run_network`].
+fn run_command(
+    mut command: std::process::Command,
+    name: &str,
+    cancel: &CancelToken,
+    on_progress: &mut dyn FnMut(Progress),
+) -> Result<(), Error> {
     command
         .stdin(Stdio::null())
         .stdout(Stdio::null())
@@ -169,7 +186,7 @@ fn run_network(
         Ok(())
     } else {
         Err(Error::Git {
-            command: args.first().copied().unwrap_or_default().to_owned(),
+            command: name.to_owned(),
             stderr: messages.join("\n").trim().to_owned(),
         })
     }
@@ -247,6 +264,61 @@ impl Repo {
             cancel,
             on_progress,
         )
+    }
+}
+
+impl Repo {
+    /// Clones `url` into `destination` and opens the result.
+    ///
+    /// `destination` must not exist, or be an empty folder; anything else is refused
+    /// untouched. A clone that fails or is cancelled removes the folder this call made.
+    ///
+    /// The URL comes from the user, but may have come from a web page, so git is kept from
+    /// treating it as an option (`--`) and from the `ext::` transport, which runs a
+    /// command. Nothing the remote sends can set config, so a fresh clone is as trusted as
+    /// the user's own settings.
+    pub fn clone_from(
+        url: &str,
+        destination: &Path,
+        cancel: &CancelToken,
+        on_progress: &mut dyn FnMut(Progress),
+    ) -> Result<Repo, Error> {
+        let url = url.trim();
+        if url.is_empty() {
+            return Err(Error::InvalidUrl(url.to_owned()));
+        }
+        let existed = destination.exists();
+        if existed {
+            let empty = destination
+                .read_dir()
+                .map(|mut entries| entries.next().is_none())
+                .unwrap_or(false);
+            if !empty {
+                return Err(Error::DestinationNotEmpty(destination.to_owned()));
+            }
+        }
+        let parent = destination
+            .parent()
+            .filter(|parent| !parent.as_os_str().is_empty())
+            .unwrap_or(Path::new("."));
+        std::fs::create_dir_all(parent)?;
+
+        let mut command = std::process::Command::new("git");
+        command
+            .current_dir(parent)
+            .args(["-c", "core.fsmonitor=false"])
+            .args(["-c", "protocol.ext.allow=never"])
+            .args(["clone", "--progress", "--", url])
+            .arg(destination)
+            .env("GIT_TERMINAL_PROMPT", "0")
+            .env("GIT_ALLOW_PROTOCOL", "file:git:http:https:ssh");
+        let result = run_command(command, "clone", cancel, on_progress);
+        if result.is_err() && !existed {
+            // Git cleans up after itself on an error, but not when it is killed.
+            let _ = std::fs::remove_dir_all(destination);
+        }
+        result?;
+        Repo::open(destination)
     }
 }
 

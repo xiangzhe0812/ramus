@@ -20,6 +20,10 @@ pub enum Error {
     NoRemote,
     #[error("this repository has several remotes and none is called origin ({}); set an upstream from a terminal", .0.join(", "))]
     AmbiguousRemote(Vec<String>),
+    #[error("{} already exists and is not an empty folder", .0.display())]
+    DestinationNotEmpty(PathBuf),
+    #[error("\"{0}\" is not a repository address")]
+    InvalidUrl(String),
     #[error("unexpected git output: {0}")]
     Parse(String),
 }
