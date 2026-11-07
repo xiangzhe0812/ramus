@@ -2,6 +2,7 @@ mod accounts;
 mod accounts_view;
 mod actions;
 mod add_remote_dialog;
+mod assets;
 mod branch_popover;
 mod changes_view;
 mod clone_dialog;
@@ -18,10 +19,12 @@ mod repo_state;
 mod secrets;
 mod settings;
 mod stash_view;
+mod syntax;
 #[cfg(test)]
 mod testutil;
 mod theme;
 mod title_bar;
+mod ui;
 mod welcome;
 mod workspace;
 
@@ -52,51 +55,53 @@ fn repository_argument(
 }
 
 fn main() {
-    gpui_platform::application().run(|cx| {
-        gpui_component::init(cx);
-        let theme = Theme::dark();
-        component_theme::apply(&theme, cx);
-        cx.set_global(theme);
-        cx.bind_keys([
-            KeyBinding::new("cmd-o", OpenRepository, None),
-            KeyBinding::new("cmd-b", ToggleBranches, None),
-            KeyBinding::new("cmd-shift-o", CloneRepository, None),
-            KeyBinding::new("cmd-k", TogglePalette, None),
-            KeyBinding::new("cmd-1", ShowChanges, None),
-            KeyBinding::new("cmd-2", ShowHistory, None),
-            KeyBinding::new("cmd-3", ShowStashes, None),
-            KeyBinding::new("cmd-backspace", DiscardSelected, Some("Workspace")),
-            KeyBinding::new("down", SelectNextFile, Some("ChangesList")),
-            KeyBinding::new("up", SelectPreviousFile, Some("ChangesList")),
-            KeyBinding::new("space", ToggleSelectedFile, Some("ChangesList")),
-        ]);
+    gpui_platform::application()
+        .with_assets(assets::Assets)
+        .run(|cx| {
+            gpui_component::init(cx);
+            let theme = Theme::dark();
+            component_theme::apply(&theme, cx);
+            cx.set_global(theme);
+            cx.bind_keys([
+                KeyBinding::new("cmd-o", OpenRepository, None),
+                KeyBinding::new("cmd-b", ToggleBranches, None),
+                KeyBinding::new("cmd-shift-o", CloneRepository, None),
+                KeyBinding::new("cmd-k", TogglePalette, None),
+                KeyBinding::new("cmd-1", ShowChanges, None),
+                KeyBinding::new("cmd-2", ShowHistory, None),
+                KeyBinding::new("cmd-3", ShowStashes, None),
+                KeyBinding::new("cmd-backspace", DiscardSelected, Some("Workspace")),
+                KeyBinding::new("down", SelectNextFile, Some("ChangesList")),
+                KeyBinding::new("up", SelectPreviousFile, Some("ChangesList")),
+                KeyBinding::new("space", ToggleSelectedFile, Some("ChangesList")),
+            ]);
 
-        let repo_state = cx.new(|_| RepoState::persistent());
-        if let Some(path) = repository_argument(std::env::args_os().skip(1)) {
-            repo_state.update(cx, |state, cx| state.open(path, cx));
-        }
+            let repo_state = cx.new(|_| RepoState::persistent());
+            if let Some(path) = repository_argument(std::env::args_os().skip(1)) {
+                repo_state.update(cx, |state, cx| state.open(path, cx));
+            }
 
-        let bounds = Bounds::centered(None, size(px(1440.), px(900.)), cx);
-        cx.open_window(
-            WindowOptions {
-                window_bounds: Some(WindowBounds::Windowed(bounds)),
-                ..Default::default()
-            },
-            |window, cx| {
-                let accounts = cx.new(|_| {
-                    AccountsState::new(
-                        std::sync::Arc::new(Keychain::github()),
-                        Endpoints::default(),
-                        crate::github::client_id(),
-                    )
-                });
-                let workspace = cx.new(|cx| Workspace::new(repo_state, accounts, window, cx));
-                cx.new(|cx| gpui_component::Root::new(workspace, window, cx))
-            },
-        )
-        .expect("failed to open window");
-        cx.activate(true);
-    });
+            let bounds = Bounds::centered(None, size(px(1440.), px(900.)), cx);
+            cx.open_window(
+                WindowOptions {
+                    window_bounds: Some(WindowBounds::Windowed(bounds)),
+                    ..Default::default()
+                },
+                |window, cx| {
+                    let accounts = cx.new(|_| {
+                        AccountsState::new(
+                            std::sync::Arc::new(Keychain::github()),
+                            Endpoints::default(),
+                            crate::github::client_id(),
+                        )
+                    });
+                    let workspace = cx.new(|cx| Workspace::new(repo_state, accounts, window, cx));
+                    cx.new(|cx| gpui_component::Root::new(workspace, window, cx))
+                },
+            )
+            .expect("failed to open window");
+            cx.activate(true);
+        });
 }
 
 #[cfg(test)]

@@ -1,12 +1,13 @@
 use gpui::{
     AppContext, Context, DismissEvent, Entity, EventEmitter, FocusHandle, Focusable,
-    InteractiveElement, IntoElement, MouseButton, ParentElement, Render, SharedString,
-    StatefulInteractiveElement, Styled, Subscription, Window, div, prelude::FluentBuilder, px,
+    InteractiveElement, IntoElement, MouseButton, ParentElement, Render, ScrollHandle,
+    SharedString, StatefulInteractiveElement, Styled, Subscription, Window, div,
+    prelude::FluentBuilder, px,
 };
 use gpui_component::input::{Input, InputEvent, InputState};
 
 use crate::{
-    palette::{Entry, Situation, Target, entries, move_selection},
+    palette::{Entry, Situation, Target, entries, move_selection, row_positions},
     repo_state::RepoState,
     theme::{MONO_FONT, Theme},
     title_bar::primary_sync,
@@ -20,6 +21,10 @@ pub struct PaletteView {
     repo_state: Entity<RepoState>,
     query: Entity<InputState>,
     selected: usize,
+    /// The list scrolls when there are more rows than room.
+    list_scroll: ScrollHandle,
+    /// The highlighted row moved, so bring it into view on the next render.
+    scroll_to_selection: bool,
     focus_handle: FocusHandle,
     _subscriptions: Vec<Subscription>,
 }
@@ -50,6 +55,7 @@ impl PaletteView {
                     InputEvent::Change => {
                         // A new query makes the old position meaningless.
                         this.selected = 0;
+                        this.scroll_to_selection = true;
                         cx.notify();
                     }
                     InputEvent::PressEnter { .. } => this.run_selected(cx),
@@ -62,6 +68,8 @@ impl PaletteView {
             repo_state,
             query,
             selected: 0,
+            list_scroll: ScrollHandle::new(),
+            scroll_to_selection: false,
             focus_handle: cx.focus_handle(),
             _subscriptions,
         }
@@ -99,6 +107,7 @@ impl PaletteView {
     fn move_by(&mut self, delta: isize, cx: &mut Context<Self>) {
         let len = self.current_entries(cx).len();
         self.selected = move_selection(self.selected, delta, len);
+        self.scroll_to_selection = true;
         cx.notify();
     }
 }
@@ -120,7 +129,27 @@ impl Render for PaletteView {
         let found = self.current_entries(cx);
         let selected = self.selected.min(found.len().saturating_sub(1));
 
-        let mut list = div().flex_1().min_h_0().py(px(6.)).flex().flex_col();
+        // Scroll the highlighted entry into view; the first entry also shows its title.
+        if std::mem::take(&mut self.scroll_to_selection) {
+            let rows = row_positions(&found);
+            let row = if selected == 0 {
+                0
+            } else {
+                rows.get(selected).copied().unwrap_or(0)
+            };
+            self.list_scroll.scroll_to_item(row);
+        }
+
+        let mut list = div()
+            .id("palette-list")
+            .flex_1()
+            .min_h_0()
+            .py(px(6.))
+            .flex()
+            .flex_col()
+            // Clip and scroll: more rows than room must not spill over the footer.
+            .overflow_y_scroll()
+            .track_scroll(&self.list_scroll);
         if found.is_empty() {
             list = list.child(
                 div()

@@ -8,6 +8,7 @@ use crate::{
     actions::{AddRemote, NewBranchHere, OpenRepository, ToggleBranches, TogglePalette},
     repo_state::{RepoState, SyncKind},
     theme::{MONO_FONT, Theme},
+    ui::icon,
 };
 
 /// The views the window can show.
@@ -157,6 +158,7 @@ impl Render for TitleBar {
                     .on_click(cx.listener(|_, _, window, cx| {
                         window.dispatch_action(Box::new(OpenRepository), cx)
                     }))
+                    .child(icon("folder", 16., theme.text_muted))
                     .child(
                         div()
                             .flex_1()
@@ -191,6 +193,7 @@ impl Render for TitleBar {
                 } else {
                     pill
                 }
+                .child(icon("branch", 16., theme.text_muted))
                 .child(div().flex_1().child(label))
             }))
             .children(operation.map(|label| {
@@ -310,6 +313,7 @@ impl Render for TitleBar {
                     .on_click(cx.listener(|_, _, window, cx| {
                         window.dispatch_action(Box::new(TogglePalette), cx)
                     }))
+                    .child(icon("search", 14., theme.text_muted))
                     .child("Search")
                     .child(div().font_family(MONO_FONT).text_size(px(11.)).child("⌘ K")),
             )

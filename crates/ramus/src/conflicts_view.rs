@@ -12,6 +12,7 @@ use crate::{
     diff_view::message,
     repo_state::RepoState,
     theme::{MONO_FONT, Theme},
+    ui::panel,
 };
 
 /// The file being resolved, as read from disk.
@@ -527,17 +528,6 @@ impl Render for ConflictsView {
         let total = self.known.len();
         let resolved = total - self.known.iter().filter(|path| open.contains(path)).count();
         let can_continue = in_progress.is_some() && open.is_empty();
-
-        let panel = |theme: &Theme| {
-            div()
-                .flex()
-                .flex_col()
-                .bg(theme.surface)
-                .border_1()
-                .border_color(theme.border)
-                .rounded(px(12.))
-                .overflow_hidden()
-        };
 
         let rows: Vec<AnyElement> = self
             .known

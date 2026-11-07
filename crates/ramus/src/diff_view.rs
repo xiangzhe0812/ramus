@@ -5,13 +5,14 @@ use std::{collections::HashSet, ops::Range, rc::Rc};
 
 use git_core::{DiffLineKind, FileDiffs};
 use gpui::{
-    AnyElement, App, ElementId, InteractiveElement, IntoElement, ListHorizontalSizingBehavior,
-    ParentElement, SharedString, StatefulInteractiveElement, Styled, div, prelude::FluentBuilder,
-    px, uniform_list,
+    AnyElement, App, ElementId, HighlightStyle, InteractiveElement, IntoElement,
+    ListHorizontalSizingBehavior, ParentElement, SharedString, StatefulInteractiveElement, Styled,
+    StyledText, div, prelude::FluentBuilder, px, uniform_list,
 };
 
 use crate::{
     diff_rows::{DiffRow, HunkAction, HunkControls, LineRef, flatten, longest_row},
+    syntax::{self, Language, Token},
     theme::{MONO_FONT, Theme, UI_FONT},
 };
 
@@ -44,7 +45,13 @@ impl DiffInteraction {
     }
 }
 
-fn diff_row(ix: usize, row: &DiffRow, theme: &Theme, interaction: &DiffInteraction) -> AnyElement {
+fn diff_row(
+    ix: usize,
+    row: &DiffRow,
+    theme: &Theme,
+    interaction: &DiffInteraction,
+    language: Language,
+) -> AnyElement {
     let number = |value: Option<u32>| {
         div()
             .w(px(LINE_NUMBER_WIDTH))
@@ -173,11 +180,37 @@ fn diff_row(ix: usize, row: &DiffRow, theme: &Theme, interaction: &DiffInteracti
                         .pr(px(24.))
                         .whitespace_nowrap()
                         .text_color(text_color)
-                        .child(text.clone()),
+                        .child(code_text(text, language, theme)),
                 )
                 .into_any_element()
         }
     }
+}
+
+/// A source line with its syntax coloured. Lines of a file with no known language stay plain.
+fn code_text(text: &SharedString, language: Language, theme: &Theme) -> AnyElement {
+    let tokens = syntax::highlight(text, language);
+    if tokens.is_empty() {
+        return text.clone().into_any_element();
+    }
+    let color = |token| match token {
+        Token::Keyword => theme.syntax_keyword,
+        Token::String => theme.syntax_string,
+        Token::Type => theme.syntax_type,
+        Token::Function => theme.syntax_function,
+        Token::Comment => theme.syntax_comment,
+    };
+    StyledText::new(text.clone())
+        .with_highlights(tokens.into_iter().map(|(range, token)| {
+            (
+                range,
+                HighlightStyle {
+                    color: Some(color(token).into()),
+                    ..Default::default()
+                },
+            )
+        }))
+        .into_any_element()
 }
 
 /// A scrolling list of diff rows that can also scroll sideways to show long lines.
@@ -186,6 +219,7 @@ pub fn diff_list(
     id: impl Into<ElementId>,
     rows: Rc<Vec<DiffRow>>,
     longest: Option<usize>,
+    language: Language,
     theme: &Theme,
     interaction: DiffInteraction,
 ) -> AnyElement {
@@ -194,7 +228,7 @@ pub fn diff_list(
         let rows = rows.clone();
         move |range: Range<usize>, _window, _cx| {
             range
-                .filter_map(|ix| Some(diff_row(ix, rows.get(ix)?, &theme, &interaction)))
+                .filter_map(|ix| Some(diff_row(ix, rows.get(ix)?, &theme, &interaction, language)))
                 .collect::<Vec<_>>()
         }
     })
@@ -211,6 +245,8 @@ pub enum DiffContent {
         rows: Rc<Vec<DiffRow>>,
         /// The row with the longest line, which sizes the list so it can scroll sideways.
         longest: Option<usize>,
+        /// How to colour the lines, from the file's extension.
+        language: Language,
         additions: usize,
         deletions: usize,
     },
@@ -221,7 +257,7 @@ pub enum DiffContent {
 }
 
 impl DiffContent {
-    pub fn from_diffs(diffs: &FileDiffs, controls: HunkControls) -> Self {
+    pub fn from_diffs(diffs: &FileDiffs, controls: HunkControls, path: &str) -> Self {
         if diffs.binary() {
             Self::Binary
         } else if diffs.is_empty() {
@@ -230,6 +266,7 @@ impl DiffContent {
             let rows = flatten(diffs, controls);
             Self::Rows {
                 longest: longest_row(&rows),
+                language: Language::for_path(path),
                 rows: Rc::new(rows),
                 additions: diffs.additions(),
                 deletions: diffs.deletions(),
@@ -272,8 +309,11 @@ pub fn diff_body(
             },
         ),
         Some(DiffContent::Failed(text)) => message(theme, text.clone()),
-        Some(DiffContent::Rows { rows, longest, .. }) => {
-            diff_list(id, rows.clone(), *longest, theme, interaction)
-        }
+        Some(DiffContent::Rows {
+            rows,
+            longest,
+            language,
+            ..
+        }) => diff_list(id, rows.clone(), *longest, *language, theme, interaction),
     }
 }

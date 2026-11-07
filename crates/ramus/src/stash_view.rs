@@ -12,6 +12,7 @@ use crate::{
     history_view::now,
     repo_state::RepoState,
     theme::{MONO_FONT, Theme},
+    ui::panel,
 };
 
 /// The Stashes tab: work set aside, and what is in each stash.
@@ -169,6 +170,7 @@ impl StashView {
             ignore_whitespace: self.hide_whitespace,
         };
         let generation = self.diff_generation;
+        let path = file.file.path.clone();
         self.tasks.push(cx.spawn(async move |this, cx| {
             let result = cx
                 .background_executor()
@@ -185,6 +187,7 @@ impl StashView {
                             unstaged: diff,
                         },
                         HunkControls::default(),
+                        &path,
                     ),
                     Err(error) => DiffContent::Failed(error.to_string().into()),
                 });
@@ -521,16 +524,6 @@ impl Render for StashView {
                 .into_any_element()
         };
 
-        let panel = |theme: &Theme| {
-            div()
-                .flex()
-                .flex_col()
-                .bg(theme.surface)
-                .border_1()
-                .border_color(theme.border)
-                .rounded(px(12.))
-                .overflow_hidden()
-        };
         let detail = self.detail(&theme, cx);
 
         div()

@@ -322,6 +322,8 @@ impl Render for BranchPopover {
                     .border_t_1()
                     .border_color(theme.border)
                     .flex()
+                    // The name box and the button share one height and one centre line.
+                    .items_center()
                     .gap(px(8.))
                     .when(!self.creating, |footer| {
                         footer.child(
@@ -347,7 +349,9 @@ impl Render for BranchPopover {
                         footer
                             .child(
                                 div().flex_1().child(
-                                    Input::new(&self.new_name).aria_label("New branch name"),
+                                    Input::new(&self.new_name)
+                                        .h(px(40.))
+                                        .aria_label("New branch name"),
                                 ),
                             )
                             .child(

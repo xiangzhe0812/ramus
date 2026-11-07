@@ -13,6 +13,7 @@ use crate::{
     diff_view::{DiffContent, DiffInteraction, diff_body, message},
     repo_state::RepoState,
     theme::{MONO_FONT, Theme},
+    ui::panel,
 };
 
 /// How many commits are read at a time.
@@ -278,6 +279,7 @@ impl HistoryView {
             ignore_whitespace: self.hide_whitespace,
         };
         let generation = self.diff_generation;
+        let path = file.path.clone();
         self.tasks.push(cx.spawn(async move |this, cx| {
             let result = cx
                 .background_executor()
@@ -295,6 +297,7 @@ impl HistoryView {
                         },
                         // History is read-only: no stage or unstage buttons.
                         HunkControls::default(),
+                        &path,
                     ),
                     Err(error) => DiffContent::Failed(error.to_string().into()),
                 });
@@ -681,17 +684,6 @@ impl Render for HistoryView {
             )
             .flex_1()
             .into_any_element()
-        };
-
-        let panel = |theme: &Theme| {
-            div()
-                .flex()
-                .flex_col()
-                .bg(theme.surface)
-                .border_1()
-                .border_color(theme.border)
-                .rounded(px(12.))
-                .overflow_hidden()
         };
 
         div()

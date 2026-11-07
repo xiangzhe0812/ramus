@@ -20,6 +20,7 @@ use crate::{
     repo_state::{RepoEvent, RepoState, SyncKind},
     theme::{Badge, MONO_FONT, Theme},
     title_bar::{SyncAction, primary_sync},
+    ui::panel,
 };
 
 /// How much of a file (or of all files) is staged for the next commit.
@@ -55,12 +56,13 @@ impl LoadedDiff {
         result: Result<FileDiffs, git_core::Error>,
         stageable: bool,
         controls: HunkControls,
+        path: &str,
     ) -> Self {
         let diffs = match result {
             Ok(diffs) => diffs,
             Err(error) => return Self::failed(error.to_string()),
         };
-        let content = DiffContent::from_diffs(&diffs, controls);
+        let content = DiffContent::from_diffs(&diffs, controls, path);
         Self {
             source: Some(diffs),
             stageable,
@@ -418,6 +420,7 @@ impl ChangesView {
             unstage: change.can_unstage_hunks() && !self.hide_whitespace,
         };
         let generation = self.diff_generation;
+        let path = change.path.clone();
         self.diff_task = Some(cx.spawn(async move |this, cx| {
             let result = cx
                 .background_executor()
@@ -440,7 +443,7 @@ impl ChangesView {
                 if !unchanged {
                     // Picked lines belong to the diff they were picked in.
                     this.line_selection.clear();
-                    this.diff = Some(LoadedDiff::from_result(result, stageable, controls));
+                    this.diff = Some(LoadedDiff::from_result(result, stageable, controls, &path));
                     cx.notify();
                 }
             })
@@ -809,17 +812,6 @@ impl Render for ChangesView {
             .read(cx)
             .repo()
             .map(|repo| repo.root().to_owned());
-
-        let panel = |theme: &Theme| {
-            div()
-                .flex()
-                .flex_col()
-                .bg(theme.surface)
-                .border_1()
-                .border_color(theme.border)
-                .rounded(px(12.))
-                .overflow_hidden()
-        };
 
         let list_body = if count == 0 {
             message(&theme, "No changed files")

@@ -172,6 +172,27 @@ pub fn entries(situation: &Situation, query: &str) -> Vec<Entry> {
     commands
 }
 
+/// The position of each entry among the list's rows, counting the section titles
+/// ("COMMANDS" before the first command, "BRANCHES" before the first branch) as rows too.
+/// Scrolling the highlighted entry into view needs this, because the titles are rows.
+pub fn row_positions(entries: &[Entry]) -> Vec<usize> {
+    let mut positions = Vec::with_capacity(entries.len());
+    let mut rows = 0;
+    let mut in_branches = false;
+    for (ix, entry) in entries.iter().enumerate() {
+        if ix == 0 && !entry.is_branch() {
+            rows += 1; // the COMMANDS title
+        }
+        if entry.is_branch() && !in_branches {
+            in_branches = true;
+            rows += 1; // the BRANCHES title
+        }
+        positions.push(rows);
+        rows += 1;
+    }
+    positions
+}
+
 /// Where the selection goes after moving by `delta`, wrapping around the ends.
 pub fn move_selection(selected: usize, delta: isize, len: usize) -> usize {
     if len == 0 {
@@ -292,6 +313,22 @@ mod tests {
         let mut busy = situation(&[], &[]);
         busy.busy = true;
         assert!(entries(&busy, "origin").is_empty());
+    }
+
+    #[test]
+    fn titles_count_as_rows_when_finding_where_an_entry_sits() {
+        let command = |label: &str| Entry::command(label, None, Command::StageAll);
+        let branch = |name: &str| Entry {
+            label: name.into(),
+            shortcut: None,
+            target: Target::SwitchTo(branch(name, false, BranchKind::Local)),
+        };
+        // COMMANDS, a, b, BRANCHES, x, y
+        let entries = [command("a"), command("b"), branch("x"), branch("y")];
+        assert_eq!(row_positions(&entries), [1, 2, 4, 5]);
+        // Only branches: just the BRANCHES title in front.
+        assert_eq!(row_positions(&[branch("x"), branch("y")]), [1, 2]);
+        assert!(row_positions(&[]).is_empty());
     }
 
     #[test]

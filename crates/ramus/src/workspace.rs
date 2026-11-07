@@ -753,13 +753,10 @@ impl Workspace {
             };
             (sync, changes)
         });
-        let path = state.repo().map(|repo| {
-            let path = repo.root().display().to_string();
-            match std::env::var("HOME") {
-                Ok(home) if path.starts_with(&home) => path.replacen(&home, "~", 1),
-                _ => path,
-            }
-        });
+        let home = std::env::var_os("HOME").map(std::path::PathBuf::from);
+        let path = state
+            .repo()
+            .map(|repo| crate::ui::abbreviate_home(repo.root(), home.as_deref()));
 
         div()
             .h(px(28.))

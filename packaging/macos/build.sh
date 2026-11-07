@@ -22,7 +22,7 @@ cargo build --release --locked -p ramus
 rm -rf dist
 app=dist/Ramus.app
 mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
-cp target/release/ramus "$app/Contents/MacOS/Ramus"
+cp "${CARGO_TARGET_DIR:-target}/release/ramus" "$app/Contents/MacOS/Ramus"
 cp assets/icon/Ramus.icns "$app/Contents/Resources/Ramus.icns"
 sed "s/__VERSION__/$version/g" packaging/macos/Info.plist.in > "$app/Contents/Info.plist"
 plutil -lint "$app/Contents/Info.plist" >/dev/null
@@ -39,7 +39,18 @@ staging=$(mktemp -d)
 cp -R "$app" "$staging/"
 ln -s /Applications "$staging/Applications"
 dmg="dist/Ramus-$version-$arch.dmg"
-hdiutil create -quiet -volname "Ramus $version" -srcfolder "$staging" -ov -format UDZO "$dmg"
+# `hdiutil create` sometimes fails with "Resource busy" on a freshly started machine, and
+# works a moment later, so it is tried a few times before giving up.
+attempt=1
+until hdiutil create -quiet -volname "Ramus $version" -srcfolder "$staging" -ov -format UDZO "$dmg"; do
+  if [ "$attempt" -ge 5 ]; then
+    echo "hdiutil create failed $attempt times" >&2
+    exit 1
+  fi
+  echo "hdiutil create failed (attempt $attempt); retrying…" >&2
+  attempt=$((attempt + 1))
+  sleep $((attempt * 3))
+done
 rm -rf "$staging"
 if [ "$identity" != "-" ]; then
   codesign --force --timestamp --sign "$identity" "$dmg"
