@@ -12,7 +12,7 @@ repository is allowed to run on your machine.
 
 ## What it does
 
-- **Changes:** stage and unstage per file, per hunk or per line; commit and amend; discard with undo.
+- **Changes:** stage and unstage per file, per hunk or per line, with syntax-coloured diffs; commit and amend; discard with undo.
 - **History:** browse commits and their diffs; revert, cherry-pick and merge.
 - **Branches:** switch, create and merge from a searchable popover.
 - **Sync:** fetch, pull and push with progress you can cancel; failures show a clear message with
@@ -24,7 +24,7 @@ repository is allowed to run on your machine.
 - **Clone** any Git address, and a **command palette** (⌘K) for everything above.
 - **GitHub sign-in** (OAuth device flow, token kept in the macOS keychain).
 
-Not built yet: the commit graph, a light theme, rebase, per-host repository lists for Clone.
+Ramus deliberately has no commit-graph view. Not built yet: a light theme (dark only for now), rebase, per-host repository lists for Clone.
 
 ## Keyboard
 
