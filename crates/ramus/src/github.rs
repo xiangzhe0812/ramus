@@ -83,12 +83,17 @@ pub enum Poll {
 }
 
 fn agent() -> ureq::Agent {
-    ureq::Agent::config_builder()
+    let builder = ureq::Agent::config_builder()
         .timeout_global(Some(Duration::from_secs(20)))
         // GitHub reports device-flow problems in a 200 body, and some as 4xx; read both.
         .http_status_as_error(false)
-        .build()
-        .into()
+        // None of these endpoints redirects. Following one would send the bearer token
+        // wherever a response pointed, so a redirect is just a failure.
+        .max_redirects(0);
+    // Tests talk to a local fake over plain http; the real app never leaves https.
+    #[cfg(not(test))]
+    let builder = builder.https_only(true);
+    builder.build().into()
 }
 
 fn describe(error: ureq::Error) -> String {
@@ -254,6 +259,13 @@ pub mod fake {
                                 None => "{}".to_owned(),
                             }
                         };
+                        if let Some(target) = body.strip_prefix("REDIRECT ") {
+                            let _ = write!(
+                                stream,
+                                "HTTP/1.1 302 Found\r\nLocation: {target}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                            );
+                            return;
+                        }
                         let _ = write!(
                             stream,
                             "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
@@ -374,6 +386,27 @@ mod tests {
         assert_eq!(login, "octocat");
         let sent = fake.requests.lock().unwrap()[0].1.to_lowercase();
         assert!(sent.contains("authorization: bearer gho_abc"), "{sent}");
+    }
+
+    #[test]
+    fn a_redirect_never_carries_the_token_to_another_server() {
+        let elsewhere = Fake::default().reply("/stolen", &[r#"{"login":"mallory"}"#]);
+        let elsewhere_address = elsewhere.serve();
+        let github =
+            Fake::default().reply("/user", &[&format!("REDIRECT {elsewhere_address}/stolen")]);
+        let result = fetch_login(&endpoints(&github), &Secret("gho_abc".into()));
+
+        assert!(
+            result.is_err(),
+            "a redirect must not be followed: {result:?}"
+        );
+        assert_eq!(
+            elsewhere.count("/stolen"),
+            0,
+            "the redirect target was contacted"
+        );
+        let seen = elsewhere.requests.lock().unwrap().len();
+        assert_eq!(seen, 0);
     }
 
     #[test]

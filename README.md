@@ -52,6 +52,8 @@ didn't write should not run its programs.
   hooks disabled.
 - Writes outside the usual git calls (discarding, resolving conflicts) refuse to follow symbolic links.
 
+Don't paste addresses with a token or password in them (`https://user:token@host/…`): git would keep it in the repository's config. Use a credential helper or ssh keys.
+
 Credentials are never stored by Ramus except the GitHub token, which lives in the keychain. Git
 itself uses your normal credential helpers and `ssh-agent`.
 
@@ -68,7 +70,7 @@ cargo test --workspace
 cargo clippy --workspace --all-targets
 ```
 
-`git` must be on your `PATH`; Ramus shells out to it for everything that changes a repository.
+`git` must be on your `PATH`; Ramus shells out to it for everything that changes a repository. Use a current release: git itself ships fixes for hostile-repository bugs (symlink and `.git` tricks on clone) that Ramus relies on.
 
 ### GitHub sign-in
 

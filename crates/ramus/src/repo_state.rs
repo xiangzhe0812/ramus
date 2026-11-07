@@ -234,7 +234,9 @@ impl RepoState {
                 SyncKind::Push => repo.push(cancel, report),
                 SyncKind::Publish => repo.publish(cancel, report),
                 SyncKind::PullMerge => repo.pull_merge(cancel, report),
-                SyncKind::Clone => unreachable!("cloning has its own entry point"),
+                SyncKind::Clone => Err(git_core::Error::Parse(
+                    "cloning is started from the Clone dialog".into(),
+                )),
             },
             move |this, result, cx| {
                 let succeeded = result.is_ok();

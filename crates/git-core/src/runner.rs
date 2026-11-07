@@ -267,8 +267,28 @@ fn command(dir: &Path, overrides: &[ConfigOverride], args: &[&str]) -> Command {
         .env("GIT_OPTIONAL_LOCKS", "0")
         // A file named `a[1].txt` must mean that file, not a glob.
         .env("GIT_LITERAL_PATHSPECS", "1");
+    remove_repository_redirects(&mut command);
     apply_overrides(&mut command, overrides);
     command
+}
+
+/// Variables that point git at a different repository than the folder it was given. If
+/// Ramus is started from a shell (or a git hook or alias) that has one set, every action
+/// would quietly land in that other repository.
+pub(crate) const REPOSITORY_REDIRECTS: [&str; 7] = [
+    "GIT_DIR",
+    "GIT_WORK_TREE",
+    "GIT_INDEX_FILE",
+    "GIT_OBJECT_DIRECTORY",
+    "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+    "GIT_COMMON_DIR",
+    "GIT_NAMESPACE",
+];
+
+pub(crate) fn remove_repository_redirects(command: &mut Command) {
+    for variable in REPOSITORY_REDIRECTS {
+        command.env_remove(variable);
+    }
 }
 
 fn exec(
@@ -354,6 +374,19 @@ mod tests {
             .filter(|(_, value)| value.is_empty())
             .map(|(key, _)| key.as_bytes().to_vec())
             .collect()
+    }
+
+    #[test]
+    fn variables_that_redirect_git_to_another_repository_are_removed() {
+        let built = command(Path::new("/tmp"), &[], &["status"]);
+        let removed: Vec<_> = built
+            .get_envs()
+            .filter(|(_, value)| value.is_none())
+            .map(|(key, _)| key.to_string_lossy().into_owned())
+            .collect();
+        for variable in REPOSITORY_REDIRECTS {
+            assert!(removed.iter().any(|name| name == variable), "{variable}");
+        }
     }
 
     #[test]

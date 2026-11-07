@@ -373,6 +373,7 @@ impl Repo {
             .args(["clone", "--progress", "--", url])
             .arg(destination)
             .env("GIT_TERMINAL_PROMPT", "0");
+        crate::runner::remove_repository_redirects(&mut command);
         let result = run_command(command, "clone", cancel, on_progress);
         if result.is_err() && !existed {
             // Git cleans up after itself on an error, but not when it is killed.

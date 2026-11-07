@@ -2581,6 +2581,45 @@ mod history {
     }
 
     #[test]
+    fn a_commit_message_full_of_separator_bytes_cannot_break_the_log() {
+        let dir = new_repo();
+        commit_file(dir.path(), "a.txt", "a\n");
+        // Record and unit separators are legal in a commit message.
+        let message = dir.path().join("msg");
+        fs::write(
+            &message,
+            "sneaky subject\n\nbody\x1e with \x1f and \x1e\x1e more\n",
+        )
+        .unwrap();
+        git(
+            dir.path(),
+            &[
+                "commit",
+                "-q",
+                "--allow-empty",
+                "-F",
+                message.to_str().unwrap(),
+            ],
+        );
+        commit_file(dir.path(), "b.txt", "b\n");
+        let repo = Repo::open(dir.path()).unwrap();
+
+        let commits = repo.log(0, 50).expect("the log must still be readable");
+
+        assert_eq!(commits.len(), 3);
+        let sneaky = commits
+            .iter()
+            .find(|c| c.subject == "sneaky subject")
+            .unwrap();
+        assert!(sneaky.body.contains("\x1e with \x1f"), "{:?}", sneaky.body);
+        assert!(
+            commits
+                .iter()
+                .all(|c| c.id.len() >= 40 && c.id.chars().all(|ch| ch.is_ascii_hexdigit()))
+        );
+    }
+
+    #[test]
     fn merge_refuses_a_name_that_looks_like_an_option() {
         let dir = new_repo();
         commit_file(dir.path(), "a.txt", "a\n");

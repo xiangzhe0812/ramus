@@ -37,22 +37,30 @@ pub struct CommitFile {
 }
 
 const FIELD: char = '\0';
-const RECORD: char = '\x1e';
 
-pub(crate) const LOG_FORMAT: &str = "--format=%H%x00%h%x00%an%x00%ae%x00%ct%x00%P%x00%s%x00%b%x1e";
+pub(crate) const LOG_FORMAT: &str = "--format=%H%x00%h%x00%an%x00%ae%x00%ct%x00%P%x00%s%x00%b%x00";
 
 pub(crate) fn parse_log(output: &[u8]) -> Result<Vec<CommitInfo>, Error> {
+    // Every field ends in NUL, the body included: NUL is the one byte a commit message
+    // cannot contain, so a hostile message can't forge or split a record. (Record and unit
+    // separators, by contrast, are legal in messages.) `git log` also puts a newline between
+    // commits, which lands at the start of the next id.
     let text = String::from_utf8_lossy(output);
+    let fields: Vec<&str> = text.split(FIELD).collect();
     let mut commits = Vec::new();
-    for record in text.split(RECORD) {
-        let record = record.trim_start_matches('\n');
-        if record.is_empty() {
-            continue;
-        }
-        let fields: Vec<&str> = record.split(FIELD).collect();
-        let [id, short_id, author, email, time, parents, subject, body] = fields[..] else {
-            return Err(Error::Parse(format!("bad log record {record:?}")));
+    for chunk in fields.chunks(8) {
+        let [id, short_id, author, email, time, parents, subject, body] = chunk[..] else {
+            // What follows the last NUL: nothing, or the log's trailing newline.
+            if chunk.iter().all(|field| field.trim().is_empty()) {
+                break;
+            }
+            return Err(Error::Parse(format!("bad log record {chunk:?}")));
         };
+        let id = id.trim_start_matches('\n');
+        // The id ends up as a command-line argument later, so it must be a plain hash.
+        if id.is_empty() || !id.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+            return Err(Error::Parse(format!("bad commit id {id:?}")));
+        }
         commits.push(CommitInfo {
             id: id.to_owned(),
             short_id: short_id.to_owned(),
@@ -258,9 +266,18 @@ mod tests {
 
     fn record(id: &str, parents: &str, subject: &str, body: &str) -> String {
         format!(
-            "{id}\0{}\0Alex\0a@x.io\0100\0{parents}\0{subject}\0{body}\x1e\n",
-            &id[..7]
+            "{id}\0{}\0Alex\0a@x.io\0100\0{parents}\0{subject}\0{body}\0\n",
+            id.get(..7).unwrap_or(id)
         )
+    }
+
+    #[test]
+    fn an_id_that_is_not_a_plain_hash_is_rejected() {
+        // It would be passed to git as an argument; `--output=…` must never get that far.
+        for id in ["--output=/tmp/x", "-1", "HEAD", "zz", "abc def"] {
+            let output = record(id, "", "s", "");
+            assert!(parse_log(output.as_bytes()).is_err(), "{id}");
+        }
     }
 
     #[test]
