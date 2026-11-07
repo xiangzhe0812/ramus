@@ -119,7 +119,7 @@ impl BranchPopover {
         cx.emit(DismissEvent);
     }
 
-    fn start_creating(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    pub fn start_creating(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.creating = true;
         self.new_name
             .update(cx, |input, cx| input.focus(window, cx));

@@ -17,8 +17,9 @@ use crate::{
     actions::{SelectNextFile, SelectPreviousFile, ToggleSelectedFile},
     diff_rows::{HunkAction, HunkControls, LineRef},
     diff_view::{DiffContent, DiffInteraction, diff_body, message},
-    repo_state::{RepoEvent, RepoState},
+    repo_state::{RepoEvent, RepoState, SyncKind},
     theme::{Badge, MONO_FONT, Theme},
+    title_bar::{SyncAction, primary_sync},
 };
 
 /// How much of a file (or of all files) is staged for the next commit.
@@ -448,6 +449,22 @@ impl ChangesView {
     }
 }
 
+/// What the clean-tree pane suggests doing about the remote, as a headline and the kind of
+/// sync it runs. Fetching isn't suggested: with nothing to send or receive it has no news.
+fn clean_tree_next_step(action: &SyncAction) -> Option<(SyncKind, String)> {
+    let plural = |n: u32| if n == 1 { "commit" } else { "commits" };
+    let count = action.count.unwrap_or(0);
+    let headline = match action.kind {
+        SyncKind::Push => format!("Push {count} {} to {}", plural(count), action.remote),
+        SyncKind::Pull | SyncKind::PullMerge => {
+            format!("Pull {count} {} from {}", plural(count), action.remote)
+        }
+        SyncKind::Publish => format!("Publish this branch to {}", action.remote),
+        SyncKind::Fetch | SyncKind::Clone => return None,
+    };
+    Some((action.kind, headline))
+}
+
 /// The line under "No local changes".
 fn clean_tree_summary(ahead: u32) -> String {
     let base = "Your working tree matches the last commit.";
@@ -779,6 +796,19 @@ impl Render for ChangesView {
             .read(cx)
             .status()
             .map_or(0, |status| status.branch.ahead);
+        let next_step = {
+            let state = self.repo_state.read(cx);
+            state
+                .status()
+                .and_then(primary_sync)
+                .filter(|_| state.has_remote() && state.operation().is_none())
+                .and_then(|action| clean_tree_next_step(&action))
+        };
+        let root = self
+            .repo_state
+            .read(cx)
+            .repo()
+            .map(|repo| repo.root().to_owned());
 
         let panel = |theme: &Theme| {
             div()
@@ -851,6 +881,48 @@ impl Render for ChangesView {
                             div()
                                 .text_color(theme.text_muted)
                                 .child(clean_tree_summary(ahead)),
+                        )
+                        .child(
+                            div()
+                                .mt(px(14.))
+                                .flex()
+                                .flex_col()
+                                .gap(px(8.))
+                                .children(next_step.map(|(kind, headline)| {
+                                    let repo_state = self.repo_state.clone();
+                                    div()
+                                        .id("clean-next-step")
+                                        .h(px(56.))
+                                        .px(px(16.))
+                                        .flex()
+                                        .items_center()
+                                        .rounded(px(10.))
+                                        .bg(theme.accent)
+                                        .text_color(theme.accent_text)
+                                        .font_weight(gpui::FontWeight::SEMIBOLD)
+                                        .cursor_pointer()
+                                        .on_click(move |_, _, cx| {
+                                            repo_state.update(cx, |state, cx| state.sync(kind, cx))
+                                        })
+                                        .child(headline)
+                                }))
+                                .children(root.map(|root| {
+                                    div()
+                                        .id("show-in-finder")
+                                        .h(px(56.))
+                                        .px(px(16.))
+                                        .flex()
+                                        .items_center()
+                                        .rounded(px(10.))
+                                        .border_1()
+                                        .border_color(theme.border)
+                                        .bg(theme.background)
+                                        .font_weight(gpui::FontWeight::MEDIUM)
+                                        .cursor_pointer()
+                                        .hover(|b| b.bg(theme.surface_selected))
+                                        .on_click(move |_, _, cx| cx.reveal_path(&root))
+                                        .child("Show in Finder")
+                                })),
                         ),
                 )
                 .into_any_element()
@@ -1009,7 +1081,35 @@ impl Render for ChangesView {
 
 #[cfg(test)]
 mod tests {
-    use super::{clean_tree_summary, split_path};
+    use super::{SyncAction, SyncKind, clean_tree_next_step, clean_tree_summary, split_path};
+
+    #[test]
+    fn the_clean_tree_suggests_the_sync_that_is_waiting() {
+        let action = |kind, count: Option<u32>| SyncAction {
+            kind,
+            label: String::new(),
+            count,
+            remote: "origin".into(),
+        };
+        let step = |a: SyncAction| clean_tree_next_step(&a).map(|(_, text)| text);
+        assert_eq!(
+            step(action(SyncKind::Push, Some(2))).as_deref(),
+            Some("Push 2 commits to origin")
+        );
+        assert_eq!(
+            step(action(SyncKind::Push, Some(1))).as_deref(),
+            Some("Push 1 commit to origin")
+        );
+        assert_eq!(
+            step(action(SyncKind::Pull, Some(3))).as_deref(),
+            Some("Pull 3 commits from origin")
+        );
+        assert_eq!(
+            step(action(SyncKind::Publish, None)).as_deref(),
+            Some("Publish this branch to origin")
+        );
+        assert_eq!(step(action(SyncKind::Fetch, None)), None);
+    }
 
     #[test]
     fn the_clean_tree_summary_agrees_with_the_number_of_commits() {

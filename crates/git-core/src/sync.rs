@@ -141,7 +141,10 @@ fn run_command(
     command
         .stdin(Stdio::null())
         .stdout(Stdio::null())
-        .stderr(Stdio::piped());
+        .stderr(Stdio::piped())
+        // The `ext::` transport runs a command, and a remote's address can be set by a
+        // repository's own config, so every network command is limited to real protocols.
+        .env("GIT_ALLOW_PROTOCOL", "file:git:http:https:ssh");
     // SAFETY: `setsid` is async-signal-safe, which is all `pre_exec` allows.
     unsafe {
         command.pre_exec(|| {
@@ -201,6 +204,22 @@ impl Repo {
             .map(str::to_owned)
             .filter(|name| !name.is_empty())
             .collect())
+    }
+
+    /// Gives a repository with no remote one called `origin`. Refuses if it has any, so it
+    /// can't silently redirect where an existing remote points.
+    pub fn add_origin(&self, url: &str) -> Result<(), Error> {
+        let url = url.trim();
+        if url.is_empty() || url.starts_with('-') {
+            return Err(Error::InvalidUrl(url.to_owned()));
+        }
+        if !self.remotes()?.is_empty() {
+            return Err(Error::Git {
+                command: "remote".into(),
+                stderr: "this repository already has a remote".into(),
+            });
+        }
+        run_git(self.root(), &["remote", "add", "--", "origin", url]).map(|_| ())
     }
 
     /// Downloads new commits and removes remote branches that were deleted upstream.
@@ -340,8 +359,7 @@ impl Repo {
             .args(["-c", "protocol.ext.allow=never"])
             .args(["clone", "--progress", "--", url])
             .arg(destination)
-            .env("GIT_TERMINAL_PROMPT", "0")
-            .env("GIT_ALLOW_PROTOCOL", "file:git:http:https:ssh");
+            .env("GIT_TERMINAL_PROMPT", "0");
         let result = run_command(command, "clone", cancel, on_progress);
         if result.is_err() && !existed {
             // Git cleans up after itself on an error, but not when it is killed.

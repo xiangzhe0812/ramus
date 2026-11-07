@@ -77,6 +77,7 @@ impl PaletteView {
             primary_sync: state
                 .status()
                 .and_then(primary_sync)
+                .filter(|_| state.has_remote())
                 .map(|action| (action.kind, action.label)),
             local: branches.map_or(&[], |list| list.local.as_slice()),
             remote_only: branches.map_or(&[], |list| list.remote_only.as_slice()),

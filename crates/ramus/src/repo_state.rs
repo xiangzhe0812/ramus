@@ -62,6 +62,8 @@ pub enum RepoEvent {
 pub struct RepoState {
     repo: Option<Repo>,
     status: Option<RepoStatus>,
+    /// Names of the open repository's remotes; empty means it is local only.
+    remotes: Vec<String>,
     error: Option<SharedString>,
     /// Bumped on every load so a slow, older load can't overwrite a newer one.
     generation: u64,
@@ -111,6 +113,7 @@ impl RepoState {
         Self {
             repo: None,
             status: None,
+            remotes: Vec::new(),
             error: None,
             generation: 0,
             load: None,
@@ -391,6 +394,16 @@ impl RepoState {
         self.trusted
     }
 
+    /// Whether the open repository has anywhere to fetch from or push to.
+    pub fn has_remote(&self) -> bool {
+        !self.remotes.is_empty()
+    }
+
+    /// Gives a local-only repository an `origin`.
+    pub fn add_origin(&mut self, url: String, cx: &mut Context<Self>) {
+        self.write(cx, None, move |repo| repo.add_origin(&url));
+    }
+
     pub fn switch_branch(&mut self, branch: Branch, cx: &mut Context<Self>) {
         if self.require_trust("switch branches", cx) {
             self.branches = None;
@@ -488,7 +501,8 @@ impl RepoState {
                         None => Repo::open(&path)?,
                     };
                     let status = repo.status()?;
-                    Ok::<_, git_core::Error>((repo, status))
+                    let remotes = repo.remotes().unwrap_or_default();
+                    Ok::<_, git_core::Error>((repo, status, remotes))
                 })
                 .await;
 
@@ -497,7 +511,8 @@ impl RepoState {
                     return;
                 }
                 match result {
-                    Ok((repo, status)) => {
+                    Ok((repo, status, remotes)) => {
+                        this.remotes = remotes;
                         this.trusted = this.settings.is_trusted(repo.root());
                         this.repo = Some(repo);
                         // Restoring discarded files into a different commit's tree would be

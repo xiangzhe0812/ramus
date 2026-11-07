@@ -5,7 +5,7 @@ use gpui::{
 };
 
 use crate::{
-    actions::{OpenRepository, ToggleBranches},
+    actions::{AddRemote, NewBranchHere, OpenRepository, ToggleBranches},
     repo_state::{RepoState, SyncKind},
     theme::{MONO_FONT, Theme},
 };
@@ -50,6 +50,8 @@ pub struct SyncAction {
     pub kind: SyncKind,
     pub label: String,
     pub count: Option<u32>,
+    /// The remote it talks to, for sentences like "Push 2 commits to origin".
+    pub remote: String,
 }
 
 /// The one thing most worth doing next: publish a branch that has no upstream, pull what
@@ -67,6 +69,7 @@ pub fn primary_sync(status: &RepoStatus) -> Option<SyncAction> {
         kind,
         label: format!("{verb} {remote}"),
         count,
+        remote: remote.to_owned(),
     };
     Some(
         if branch.upstream.is_none() && matches!(branch.head, Head::Branch(_)) {
@@ -74,6 +77,7 @@ pub fn primary_sync(status: &RepoStatus) -> Option<SyncAction> {
                 kind: SyncKind::Publish,
                 label: "Publish branch".into(),
                 count: None,
+                remote: remote.to_owned(),
             }
         } else if branch.behind > 0 {
             action(SyncKind::Pull, "Pull", Some(branch.behind))
@@ -115,9 +119,14 @@ impl Render for TitleBar {
             Head::Branch(name) => name.clone(),
             Head::Detached(sha) => format!("detached at {sha}"),
         });
+        let local_only = state.repo().is_some() && !state.has_remote();
+        let has_commits = branch.is_some_and(|branch| branch.oid.is_some());
         let detached = branch.is_some_and(|branch| matches!(branch.head, Head::Detached(_)));
         let running = state.operation().is_some();
-        let sync = state.status().and_then(primary_sync);
+        let sync = state
+            .status()
+            .and_then(primary_sync)
+            .filter(|_| state.has_remote());
         let operation = state.operation().map(|operation| {
             let verb = if operation.cancelling {
                 "Cancelling".to_owned()
@@ -152,7 +161,19 @@ impl Render for TitleBar {
                             .flex_1()
                             .font_weight(gpui::FontWeight::MEDIUM)
                             .child(repo_name),
-                    ),
+                    )
+                    .when(local_only, |pill| {
+                        pill.child(
+                            div()
+                                .px(px(8.))
+                                .py(px(2.))
+                                .rounded(px(10.))
+                                .bg(theme.pill_active)
+                                .text_size(px(11.))
+                                .text_color(theme.text_muted)
+                                .child("Local only"),
+                        )
+                    }),
             )
             .children(branch_label.map(|label| {
                 let pill = pill(&theme)
@@ -201,7 +222,7 @@ impl Render for TitleBar {
                             .child("Cancel"),
                     )
             }))
-            .children(sync.filter(|_| !running).map(|action| {
+            .children(sync.filter(|_| !running && !detached).map(|action| {
                 let kind = action.kind;
                 div()
                     .id("sync")
@@ -228,6 +249,47 @@ impl Render for TitleBar {
                             .child(count.to_string())
                     }))
             }))
+            .when(detached && !running, |bar| {
+                // New commits here would be unreachable once HEAD moves on.
+                bar.child(
+                    div()
+                        .id("branch-here")
+                        .h(px(40.))
+                        .px(px(16.))
+                        .flex()
+                        .items_center()
+                        .rounded(px(20.))
+                        .bg(theme.accent)
+                        .text_color(theme.accent_text)
+                        .font_weight(gpui::FontWeight::SEMIBOLD)
+                        .cursor_pointer()
+                        .on_click(cx.listener(|_, _, window, cx| {
+                            window.dispatch_action(Box::new(NewBranchHere), cx)
+                        }))
+                        .child("Create branch here…"),
+                )
+            })
+            .when(local_only && has_commits && !running, |bar| {
+                bar.child(
+                    div()
+                        .id("add-remote")
+                        .h(px(40.))
+                        .px(px(16.))
+                        .flex()
+                        .items_center()
+                        .rounded(px(20.))
+                        .border_1()
+                        .border_color(theme.accent)
+                        .text_color(theme.accent_soft)
+                        .font_weight(gpui::FontWeight::SEMIBOLD)
+                        .cursor_pointer()
+                        .hover(|b| b.bg(theme.surface_selected))
+                        .on_click(cx.listener(|_, _, window, cx| {
+                            window.dispatch_action(Box::new(AddRemote), cx)
+                        }))
+                        .child("Add remote…"),
+                )
+            })
             .child(div().flex_1())
             .child(
                 div()

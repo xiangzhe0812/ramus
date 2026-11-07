@@ -13,6 +13,8 @@ actions!(
         ShowHistory,
         TogglePalette,
         CloneRepository,
-        ShowAccounts
+        ShowAccounts,
+        AddRemote,
+        NewBranchHere
     ]
 );

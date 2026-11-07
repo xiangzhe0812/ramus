@@ -10,9 +10,10 @@ use crate::{
     accounts::AccountsState,
     accounts_view::AccountsView,
     actions::{
-        CloneRepository, DiscardSelected, OpenRepository, ShowAccounts, ShowChanges, ShowHistory,
-        ToggleBranches, TogglePalette,
+        AddRemote, CloneRepository, DiscardSelected, NewBranchHere, OpenRepository, ShowAccounts,
+        ShowChanges, ShowHistory, ToggleBranches, TogglePalette,
     },
+    add_remote_dialog::AddRemoteDialog,
     branch_popover::BranchPopover,
     changes_view::{ChangesEvent, ChangesView},
     clone_dialog::CloneDialog,
@@ -40,6 +41,7 @@ pub struct Workspace {
     clone_dialog: Option<Entity<CloneDialog>>,
     accounts: Entity<AccountsState>,
     error_details_open: bool,
+    add_remote: Option<Entity<AddRemoteDialog>>,
     accounts_view: Option<Entity<AccountsView>>,
     /// Files the user asked to discard, waiting for them to confirm.
     pending_discard: Option<Vec<git_core::FileChange>>,
@@ -99,6 +101,7 @@ impl Workspace {
             }),
             accounts_view: None,
             error_details_open: false,
+            add_remote: None,
             pending_discard: None,
             repo_state,
             focus_handle,
@@ -263,6 +266,39 @@ impl Workspace {
             // Keyboard shortcuts work from the workspace, so hand focus back to it.
             window.focus(&self.focus_handle, cx);
             cx.notify();
+        }
+    }
+
+    fn close_add_remote(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.add_remote.take().is_some() {
+            window.focus(&self.focus_handle, cx);
+            cx.notify();
+        }
+    }
+
+    fn open_add_remote(&mut self, _: &AddRemote, window: &mut Window, cx: &mut Context<Self>) {
+        if self.add_remote.is_some() || self.repo_state.read(cx).repo().is_none() {
+            return;
+        }
+        self.close_branches(window, cx);
+        self.close_palette(window, cx);
+        let dialog = cx.new(|cx| AddRemoteDialog::new(self.repo_state.clone(), window, cx));
+        cx.subscribe_in(
+            &dialog,
+            window,
+            |this, _, _: &gpui::DismissEvent, window, cx| this.close_add_remote(window, cx),
+        )
+        .detach();
+        self.add_remote = Some(dialog);
+        cx.notify();
+    }
+
+    /// Opens the branch popover already asking for a new branch's name.
+    fn new_branch_here(&mut self, _: &NewBranchHere, window: &mut Window, cx: &mut Context<Self>) {
+        self.close_branches(window, cx);
+        self.toggle_branches(&ToggleBranches, window, cx);
+        if let Some(popover) = &self.branch_popover {
+            popover.update(cx, |popover, cx| popover.start_creating(window, cx));
         }
     }
 
@@ -686,6 +722,19 @@ impl Render for Workspace {
                 .child(dialog)
         });
 
+        let add_remote = self.add_remote.clone().map(|dialog| {
+            div()
+                .id("add-remote-backdrop")
+                .absolute()
+                .inset_0()
+                .flex()
+                .justify_center()
+                .pt(px(120.))
+                .bg(gpui::rgba(0x00000066))
+                .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                .child(dialog)
+        });
+
         let accounts = self.accounts_view.clone().map(|view| {
             div()
                 .id("accounts-backdrop")
@@ -729,6 +778,8 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::toggle_palette))
             .on_action(cx.listener(Self::open_clone))
             .on_action(cx.listener(Self::open_accounts))
+            .on_action(cx.listener(Self::open_add_remote))
+            .on_action(cx.listener(Self::new_branch_here))
             .on_action(cx.listener(Self::discard_selected))
             .on_action(cx.listener(|this, _: &ShowChanges, _, cx| this.show(Tab::Changes, cx)))
             .on_action(cx.listener(|this, _: &ShowHistory, _, cx| this.show(Tab::History, cx)))
@@ -758,6 +809,7 @@ impl Render for Workspace {
             .children(palette)
             .children(clone)
             .children(accounts)
+            .children(add_remote)
             .children(self.discard_dialog(&theme, cx))
     }
 }

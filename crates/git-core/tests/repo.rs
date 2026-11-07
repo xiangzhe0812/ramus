@@ -3338,3 +3338,86 @@ mod failure_kinds {
         }
     }
 }
+
+mod remotes {
+    use git_core::{CancelToken, Progress};
+
+    use super::*;
+
+    fn no_progress(_: Progress) {}
+
+    #[test]
+    fn a_repo_with_no_remote_can_be_given_origin() {
+        let repo_dir = new_repo();
+        let repo = Repo::open(repo_dir.path()).unwrap();
+        assert!(repo.remotes().unwrap().is_empty());
+
+        repo.add_origin("https://example.com/acme/thing.git")
+            .unwrap();
+
+        assert_eq!(repo.remotes().unwrap(), ["origin"]);
+        let url = Command::new("git")
+            .arg("-C")
+            .arg(repo_dir.path())
+            .args(["remote", "get-url", "origin"])
+            .output()
+            .unwrap();
+        assert_eq!(
+            String::from_utf8_lossy(&url.stdout).trim(),
+            "https://example.com/acme/thing.git"
+        );
+    }
+
+    #[test]
+    fn it_refuses_when_a_remote_already_exists_and_changes_nothing() {
+        let repo_dir = new_repo();
+        let repo = Repo::open(repo_dir.path()).unwrap();
+        repo.add_origin("https://example.com/first.git").unwrap();
+        assert!(repo.add_origin("https://example.com/second.git").is_err());
+        let url = Command::new("git")
+            .arg("-C")
+            .arg(repo_dir.path())
+            .args(["remote", "get-url", "origin"])
+            .output()
+            .unwrap();
+        assert_eq!(
+            String::from_utf8_lossy(&url.stdout).trim(),
+            "https://example.com/first.git"
+        );
+    }
+
+    #[test]
+    fn blank_and_option_shaped_addresses_are_rejected() {
+        let repo_dir = new_repo();
+        let repo = Repo::open(repo_dir.path()).unwrap();
+        for bad in ["", "   ", "--mirror=push", "-f"] {
+            assert!(
+                matches!(repo.add_origin(bad), Err(Error::InvalidUrl(_))),
+                "{bad:?}"
+            );
+        }
+        assert!(repo.remotes().unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_remote_that_names_the_ext_transport_cannot_run_a_command_on_fetch() {
+        let repo_dir = new_repo();
+        commit_file(repo_dir.path(), "a.txt", "a\n");
+        let marker = repo_dir.path().join("ran");
+        git(
+            repo_dir.path(),
+            &[
+                "remote",
+                "add",
+                "origin",
+                &format!("ext::sh -c touch% {}", marker.display()),
+            ],
+        );
+        // The repository's own config switching the transport on must not be enough.
+        git(repo_dir.path(), &["config", "protocol.ext.allow", "always"]);
+        let repo = Repo::open(repo_dir.path()).unwrap();
+        let result = repo.fetch(&CancelToken::new(), &mut no_progress);
+        assert!(result.is_err());
+        assert!(!marker.exists(), "fetch ran the ext transport");
+    }
+}

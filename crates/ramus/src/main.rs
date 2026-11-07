@@ -1,6 +1,7 @@
 mod accounts;
 mod accounts_view;
 mod actions;
+mod add_remote_dialog;
 mod branch_popover;
 mod changes_view;
 mod clone_dialog;
