@@ -5,10 +5,14 @@ use gpui::{
 };
 
 use crate::{
-    actions::{DiscardSelected, OpenRepository, ShowChanges, ShowHistory, ToggleBranches},
+    actions::{
+        DiscardSelected, OpenRepository, ShowChanges, ShowHistory, ToggleBranches, TogglePalette,
+    },
     branch_popover::BranchPopover,
     changes_view::{ChangesEvent, ChangesView},
     history_view::HistoryView,
+    palette::{Command, Target},
+    palette_view::{PaletteView, RunEntry},
     repo_state::RepoState,
     theme::{MONO_FONT, Theme},
     title_bar::{Tab, TabRequested, TitleBar},
@@ -23,6 +27,7 @@ pub struct Workspace {
     tab: Tab,
     welcome: Entity<Welcome>,
     branch_popover: Option<Entity<BranchPopover>>,
+    palette: Option<Entity<PaletteView>>,
     /// Files the user asked to discard, waiting for them to confirm.
     pending_discard: Option<Vec<git_core::FileChange>>,
     focus_handle: FocusHandle,
@@ -70,6 +75,7 @@ impl Workspace {
             tab: Tab::Changes,
             welcome: cx.new(|_| Welcome),
             branch_popover: None,
+            palette: None,
             pending_discard: None,
             repo_state,
             focus_handle,
@@ -234,6 +240,59 @@ impl Workspace {
             // Keyboard shortcuts work from the workspace, so hand focus back to it.
             window.focus(&self.focus_handle, cx);
             cx.notify();
+        }
+    }
+
+    fn close_palette(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.palette.take().is_some() {
+            window.focus(&self.focus_handle, cx);
+            cx.notify();
+        }
+    }
+
+    fn toggle_palette(&mut self, _: &TogglePalette, window: &mut Window, cx: &mut Context<Self>) {
+        if self.palette.is_some() {
+            self.close_palette(window, cx);
+            return;
+        }
+        self.close_branches(window, cx);
+        let palette = cx.new(|cx| PaletteView::new(self.repo_state.clone(), window, cx));
+        cx.subscribe_in(
+            &palette,
+            window,
+            |this, _, _: &gpui::DismissEvent, window, cx| this.close_palette(window, cx),
+        )
+        .detach();
+        cx.subscribe_in(&palette, window, |this, _, event: &RunEntry, window, cx| {
+            // Close first: the commands below expect the workspace to hold focus.
+            this.close_palette(window, cx);
+            this.run(event.0.clone(), window, cx);
+        })
+        .detach();
+        self.palette = Some(palette);
+        cx.notify();
+    }
+
+    fn run(&mut self, target: Target, window: &mut Window, cx: &mut Context<Self>) {
+        let command = match target {
+            Target::SwitchTo(branch) => {
+                self.repo_state
+                    .update(cx, |state, cx| state.switch_branch(branch, cx));
+                return;
+            }
+            Target::Command(command) => command,
+        };
+        match command {
+            Command::OpenRepository => window.dispatch_action(Box::new(OpenRepository), cx),
+            Command::SwitchBranch => window.dispatch_action(Box::new(ToggleBranches), cx),
+            Command::ShowChanges => self.show(Tab::Changes, cx),
+            Command::ShowHistory => self.show(Tab::History, cx),
+            Command::DiscardSelected => window.dispatch_action(Box::new(DiscardSelected), cx),
+            Command::Sync(kind) => self.repo_state.update(cx, |state, cx| state.sync(kind, cx)),
+            Command::StageAll => self.repo_state.update(cx, |state, cx| state.stage_all(cx)),
+            Command::UnstageAll => self
+                .repo_state
+                .update(cx, |state, cx| state.unstage_all(cx)),
         }
     }
 
@@ -463,11 +522,28 @@ impl Render for Workspace {
                 .child(div().absolute().top(px(64.)).left(px(246.)).child(popover))
         });
 
+        let palette = self.palette.clone().map(|palette| {
+            div()
+                .id("palette-backdrop")
+                .absolute()
+                .inset_0()
+                .flex()
+                .justify_center()
+                .pt(px(80.))
+                .bg(gpui::rgba(0x00000066))
+                .on_mouse_down(
+                    gpui::MouseButton::Left,
+                    cx.listener(|this, _, window, cx| this.close_palette(window, cx)),
+                )
+                .child(palette)
+        });
+
         div()
             .key_context("Workspace")
             .track_focus(&self.focus_handle)
             .on_action(cx.listener(Self::open_repository))
             .on_action(cx.listener(Self::toggle_branches))
+            .on_action(cx.listener(Self::toggle_palette))
             .on_action(cx.listener(Self::discard_selected))
             .on_action(cx.listener(|this, _: &ShowChanges, _, cx| this.show(Tab::Changes, cx)))
             .on_action(cx.listener(|this, _: &ShowHistory, _, cx| this.show(Tab::History, cx)))
@@ -494,6 +570,7 @@ impl Render for Workspace {
             .child(body)
             .child(self.status_bar(&theme, cx))
             .children(popover)
+            .children(palette)
             .children(self.discard_dialog(&theme, cx))
     }
 }

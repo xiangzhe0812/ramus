@@ -10,6 +10,7 @@ actions!(
         SelectPreviousFile,
         ToggleSelectedFile,
         ShowChanges,
-        ShowHistory
+        ShowHistory,
+        TogglePalette
     ]
 );
