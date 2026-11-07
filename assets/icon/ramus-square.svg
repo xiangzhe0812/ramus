@@ -1,0 +1,29 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <title>Ramus</title>
+  <defs>
+    <linearGradient id="trunk" gradientUnits="userSpaceOnUse" x1="512" y1="770" x2="512" y2="282">
+      <stop offset="0" stop-color="#3b7be0"/><stop offset="1" stop-color="#6aa5ff"/>
+    </linearGradient>
+    <linearGradient id="plate" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#1c2434"/><stop offset="1" stop-color="#0d1118"/>
+    </linearGradient>
+    <linearGradient id="sheen" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#ffffff" stop-opacity="0.10"/><stop offset="0.5" stop-color="#ffffff" stop-opacity="0"/>
+    </linearGradient>
+  </defs>
+  <rect width="1024" height="1024" fill="url(#plate)"/>
+  <rect width="1024" height="1024" fill="url(#sheen)"/>
+  <g transform="translate(512 516) scale(1.12) translate(-512 -516)">
+  <g fill="none" stroke-width="52" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M512 575 C512 470 352 490 352 336" stroke="#86e0b4"/>
+    <path d="M512 575 C512 470 672 490 672 336" stroke="#c9a9f7"/>
+    <path d="M512 770 V282" stroke="url(#trunk)"/>
+  </g>
+  <g>
+    <circle cx="512" cy="770" r="66" fill="#3b7be0"/><circle cx="512" cy="770" r="25" fill="#121824"/>
+    <circle cx="512" cy="282" r="66" fill="#6aa5ff"/><circle cx="512" cy="282" r="25" fill="#121824"/>
+    <circle cx="352" cy="324" r="66" fill="#86e0b4"/><circle cx="352" cy="324" r="25" fill="#121824"/>
+    <circle cx="672" cy="324" r="66" fill="#c9a9f7"/><circle cx="672" cy="324" r="25" fill="#121824"/>
+  </g>
+  </g>
+</svg>

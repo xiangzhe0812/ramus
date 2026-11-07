@@ -1,5 +1,7 @@
 # Ramus
 
+<p align="center"><img src="assets/icon/ramus-1024.png" width="160" alt="Ramus icon: a trunk branching into three"></p>
+
 A Git desktop client for macOS, written in Rust with [GPUI](https://www.gpui.rs). It aims to
 replace GitHub Desktop for daily work: fast, keyboard-friendly, and careful about what a
 repository is allowed to run on your machine.
@@ -92,6 +94,10 @@ client ID is not a secret; no client secret is used.
 
 GPUI is pinned to the `gpui-pre` snapshot that `gpui-component` requires; upgrade `gpui`,
 `gpui_platform` and `gpui-component` together.
+
+## Icon
+
+The artwork lives in `assets/icon/` as SVG; `assets/icon/build.sh` regenerates the PNGs, the macOS `Ramus.icns` and the GitHub social-preview card (needs `rsvg-convert` from `brew install librsvg`).
 
 ## License
 
