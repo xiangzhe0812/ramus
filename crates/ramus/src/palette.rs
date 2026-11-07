@@ -10,6 +10,7 @@ use crate::repo_state::SyncKind;
 pub enum Command {
     OpenRepository,
     CloneRepository,
+    ShowAccounts,
     SwitchBranch,
     ShowChanges,
     ShowHistory,
@@ -88,6 +89,7 @@ fn all_commands(situation: &Situation) -> Vec<Entry> {
         Some("⇧⌘O"),
         Command::CloneRepository,
     ));
+    entries.push(Entry::command("Accounts…", None, Command::ShowAccounts));
     if !situation.has_repo {
         return entries;
     }
@@ -200,12 +202,12 @@ mod tests {
     }
 
     #[test]
-    fn without_a_repository_only_opening_or_cloning_one_is_offered() {
+    fn without_a_repository_only_repository_and_account_commands_are_offered() {
         let mut s = situation(&[], &[]);
         s.has_repo = false;
         assert_eq!(
             labels(&entries(&s, "")),
-            ["Open repository…", "Clone repository…"]
+            ["Open repository…", "Clone repository…", "Accounts…"]
         );
     }
 

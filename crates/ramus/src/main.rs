@@ -1,3 +1,5 @@
+mod accounts;
+mod accounts_view;
 mod actions;
 mod branch_popover;
 mod changes_view;
@@ -5,10 +7,12 @@ mod clone_dialog;
 mod component_theme;
 mod diff_rows;
 mod diff_view;
+mod github;
 mod history_view;
 mod palette;
 mod palette_view;
 mod repo_state;
+mod secrets;
 mod settings;
 mod theme;
 mod title_bar;

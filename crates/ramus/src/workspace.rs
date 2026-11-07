@@ -5,17 +5,21 @@ use gpui::{
 };
 
 use crate::{
+    accounts::AccountsState,
+    accounts_view::AccountsView,
     actions::{
-        CloneRepository, DiscardSelected, OpenRepository, ShowChanges, ShowHistory, ToggleBranches,
-        TogglePalette,
+        CloneRepository, DiscardSelected, OpenRepository, ShowAccounts, ShowChanges, ShowHistory,
+        ToggleBranches, TogglePalette,
     },
     branch_popover::BranchPopover,
     changes_view::{ChangesEvent, ChangesView},
     clone_dialog::CloneDialog,
+    github::{self, Endpoints},
     history_view::HistoryView,
     palette::{Command, Target},
     palette_view::{PaletteView, RunEntry},
     repo_state::RepoState,
+    secrets::Keychain,
     theme::{MONO_FONT, Theme},
     title_bar::{Tab, TabRequested, TitleBar},
     welcome::Welcome,
@@ -31,6 +35,8 @@ pub struct Workspace {
     branch_popover: Option<Entity<BranchPopover>>,
     palette: Option<Entity<PaletteView>>,
     clone_dialog: Option<Entity<CloneDialog>>,
+    accounts: Entity<AccountsState>,
+    accounts_view: Option<Entity<AccountsView>>,
     /// Files the user asked to discard, waiting for them to confirm.
     pending_discard: Option<Vec<git_core::FileChange>>,
     focus_handle: FocusHandle,
@@ -80,6 +86,14 @@ impl Workspace {
             branch_popover: None,
             palette: None,
             clone_dialog: None,
+            accounts: cx.new(|_| {
+                AccountsState::new(
+                    std::sync::Arc::new(Keychain::github()),
+                    Endpoints::default(),
+                    github::client_id(),
+                )
+            }),
+            accounts_view: None,
             pending_discard: None,
             repo_state,
             focus_handle,
@@ -247,6 +261,30 @@ impl Workspace {
         }
     }
 
+    fn close_accounts(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.accounts_view.take().is_some() {
+            window.focus(&self.focus_handle, cx);
+            cx.notify();
+        }
+    }
+
+    fn open_accounts(&mut self, _: &ShowAccounts, window: &mut Window, cx: &mut Context<Self>) {
+        if self.accounts_view.is_some() {
+            return;
+        }
+        self.close_branches(window, cx);
+        self.close_palette(window, cx);
+        let view = cx.new(|cx| AccountsView::new(self.accounts.clone(), window, cx));
+        cx.subscribe_in(
+            &view,
+            window,
+            |this, _, _: &gpui::DismissEvent, window, cx| this.close_accounts(window, cx),
+        )
+        .detach();
+        self.accounts_view = Some(view);
+        cx.notify();
+    }
+
     fn close_clone(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.clone_dialog.take().is_some() {
             window.focus(&self.focus_handle, cx);
@@ -313,6 +351,7 @@ impl Workspace {
         match command {
             Command::OpenRepository => window.dispatch_action(Box::new(OpenRepository), cx),
             Command::CloneRepository => window.dispatch_action(Box::new(CloneRepository), cx),
+            Command::ShowAccounts => window.dispatch_action(Box::new(ShowAccounts), cx),
             Command::SwitchBranch => window.dispatch_action(Box::new(ToggleBranches), cx),
             Command::ShowChanges => self.show(Tab::Changes, cx),
             Command::ShowHistory => self.show(Tab::History, cx),
@@ -565,6 +604,25 @@ impl Render for Workspace {
                 .child(dialog)
         });
 
+        let accounts = self.accounts_view.clone().map(|view| {
+            div()
+                .id("accounts-backdrop")
+                .absolute()
+                .inset_0()
+                .flex()
+                .justify_center()
+                .pt(px(120.))
+                .bg(gpui::rgba(0x00000066))
+                .on_mouse_down(
+                    gpui::MouseButton::Left,
+                    cx.listener(|this, _, window, cx| {
+                        this.accounts.update(cx, |a, cx| a.cancel(cx));
+                        this.close_accounts(window, cx)
+                    }),
+                )
+                .child(view)
+        });
+
         let palette = self.palette.clone().map(|palette| {
             div()
                 .id("palette-backdrop")
@@ -588,6 +646,7 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::toggle_branches))
             .on_action(cx.listener(Self::toggle_palette))
             .on_action(cx.listener(Self::open_clone))
+            .on_action(cx.listener(Self::open_accounts))
             .on_action(cx.listener(Self::discard_selected))
             .on_action(cx.listener(|this, _: &ShowChanges, _, cx| this.show(Tab::Changes, cx)))
             .on_action(cx.listener(|this, _: &ShowHistory, _, cx| this.show(Tab::History, cx)))
@@ -616,6 +675,7 @@ impl Render for Workspace {
             .children(popover)
             .children(palette)
             .children(clone)
+            .children(accounts)
             .children(self.discard_dialog(&theme, cx))
     }
 }

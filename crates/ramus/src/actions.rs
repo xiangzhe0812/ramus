@@ -12,6 +12,7 @@ actions!(
         ShowChanges,
         ShowHistory,
         TogglePalette,
-        CloneRepository
+        CloneRepository,
+        ShowAccounts
     ]
 );
