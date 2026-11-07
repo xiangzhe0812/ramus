@@ -29,6 +29,9 @@ use crate::{
     welcome::Welcome,
 };
 
+/// How often the open repository is fetched in the background.
+const AUTO_FETCH_EVERY: std::time::Duration = std::time::Duration::from_secs(300);
+
 pub struct Workspace {
     repo_state: Entity<RepoState>,
     title_bar: Entity<TitleBar>,
@@ -56,6 +59,20 @@ impl Workspace {
         cx.observe_window_activation(window, |this, window, cx| {
             if window.is_window_active() {
                 this.repo_state.update(cx, |state, cx| state.refresh(cx));
+            }
+        })
+        .detach();
+
+        // Look for news on the remote now and then, so "behind" stays honest.
+        cx.spawn(async move |this, cx| {
+            loop {
+                cx.background_executor().timer(AUTO_FETCH_EVERY).await;
+                let alive = this.update(cx, |this, cx| {
+                    this.repo_state.update(cx, |state, cx| state.auto_fetch(cx));
+                });
+                if alive.is_err() {
+                    break;
+                }
             }
         })
         .detach();

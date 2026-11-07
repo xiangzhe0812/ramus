@@ -5,7 +5,7 @@ use gpui::{
 };
 
 use crate::{
-    actions::{AddRemote, NewBranchHere, OpenRepository, ToggleBranches},
+    actions::{AddRemote, NewBranchHere, OpenRepository, ToggleBranches, TogglePalette},
     repo_state::{RepoState, SyncKind},
     theme::{MONO_FONT, Theme},
 };
@@ -291,6 +291,27 @@ impl Render for TitleBar {
                 )
             })
             .child(div().flex_1())
+            .child(
+                div()
+                    .id("palette-button")
+                    .h(px(40.))
+                    .px(px(14.))
+                    .flex()
+                    .items_center()
+                    .gap(px(8.))
+                    .rounded(px(20.))
+                    .border_1()
+                    .border_color(theme.border)
+                    .bg(theme.surface)
+                    .text_color(theme.text_muted)
+                    .cursor_pointer()
+                    .hover(|b| b.bg(theme.surface_selected))
+                    .on_click(cx.listener(|_, _, window, cx| {
+                        window.dispatch_action(Box::new(TogglePalette), cx)
+                    }))
+                    .child("Search")
+                    .child(div().font_family(MONO_FONT).text_size(px(11.)).child("⌘ K")),
+            )
             .child(
                 div()
                     .flex()

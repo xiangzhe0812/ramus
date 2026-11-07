@@ -195,13 +195,29 @@ impl RepoState {
     /// Refused in an untrusted repository (hooks and credential helpers would run) and
     /// while another write is running.
     pub fn sync(&mut self, kind: SyncKind, cx: &mut Context<Self>) {
+        self.start_sync(kind, false, cx);
+    }
+
+    /// A background fetch for the periodic refresh. Does nothing unless it is safe and
+    /// useful (trusted, has a remote, nothing else running), and a failure is swallowed:
+    /// nobody asked, so a flaky network shouldn't raise a banner every few minutes.
+    pub fn auto_fetch(&mut self, cx: &mut Context<Self>) {
+        if self.repo.is_none() || !self.trusted || !self.has_remote() || self.action.is_some() {
+            return;
+        }
+        self.start_sync(SyncKind::Fetch, true, cx);
+    }
+
+    fn start_sync(&mut self, kind: SyncKind, quiet: bool, cx: &mut Context<Self>) {
         let Some(repo) = self.repo.clone() else {
             return;
         };
         if self.action.is_some() || !self.require_trust("fetch, push or pull", cx) {
             return;
         }
-        self.last_sync = Some(kind);
+        if !quiet {
+            self.last_sync = Some(kind);
+        }
         self.run_cancellable(
             kind,
             move |cancel, report| match kind {
@@ -212,12 +228,15 @@ impl RepoState {
                 SyncKind::PullMerge => repo.pull_merge(cancel, report),
                 SyncKind::Clone => unreachable!("cloning has its own entry point"),
             },
-            |this, result, cx| {
+            move |this, result, cx| {
                 let succeeded = result.is_ok();
                 match result {
+                    // A silent fetch must not wipe an error the user hasn't seen yet.
+                    Ok(()) if quiet => {}
                     Ok(()) => this.error = None,
                     // The user asked for this, so it isn't an error to report.
                     Err(git_core::Error::Cancelled) => {}
+                    Err(_) if quiet => {}
                     Err(error) => this.error = Some(error.to_string().into()),
                 }
                 // New remote branches and counts: the lists and status are stale.
@@ -1264,6 +1283,88 @@ mod tests {
         );
         assert!(state.read_with(cx, |s, _| s.error().is_none()));
         settle(cx, &state);
+    }
+
+    #[gpui::test]
+    async fn auto_fetch_brings_in_news_without_an_error_or_a_retry_slot(cx: &mut TestAppContext) {
+        let (_remote, a, b) = remote_and_two_clones();
+        fs::write(b.path().join("news.txt"), "n\n").unwrap();
+        git(b.path(), &["add", "."]);
+        git(b.path(), &["commit", "-q", "-m", "news"]);
+        git(b.path(), &["push", "-q", "origin", "main"]);
+        let state = open_trusted(cx, a.path());
+
+        state.update(cx, |state, cx| state.auto_fetch(cx));
+        settle(cx, &state);
+
+        state.read_with(cx, |s, _| {
+            assert_eq!(s.status().unwrap().branch.behind, 1);
+            assert!(s.error().is_none());
+            assert!(!s.can_retry(), "a silent fetch is not something to retry");
+        });
+    }
+
+    #[gpui::test]
+    async fn auto_fetch_stays_quiet_when_it_fails_and_keeps_an_earlier_error(
+        cx: &mut TestAppContext,
+    ) {
+        let (remote, a, _b) = remote_and_two_clones();
+        let state = open_trusted(cx, a.path());
+        state.update(cx, |state, cx| state.report("earlier problem".into(), cx));
+        // Break the remote so the fetch fails.
+        fs::remove_dir_all(remote.path().join("objects")).unwrap();
+        fs::remove_dir_all(remote.path().join("refs")).unwrap();
+
+        state.update(cx, |state, cx| state.auto_fetch(cx));
+        settle(cx, &state);
+
+        state.read_with(cx, |s, _| {
+            assert_eq!(s.error().map(|e| e.as_ref()), Some("earlier problem"))
+        });
+    }
+
+    #[gpui::test]
+    async fn a_successful_auto_fetch_does_not_wipe_an_error_the_user_has_not_seen(
+        cx: &mut TestAppContext,
+    ) {
+        let (_remote, a, _b) = remote_and_two_clones();
+        let state = open_trusted(cx, a.path());
+        state.update(cx, |state, cx| {
+            state.report("commit failed: lint".into(), cx)
+        });
+
+        state.update(cx, |state, cx| state.auto_fetch(cx));
+        settle(cx, &state);
+
+        state.read_with(cx, |s, _| {
+            assert_eq!(s.error().map(|e| e.as_ref()), Some("commit failed: lint"))
+        });
+    }
+
+    #[gpui::test]
+    async fn auto_fetch_does_nothing_in_an_untrusted_repository(cx: &mut TestAppContext) {
+        let (_remote, a, _b) = remote_and_two_clones();
+        let state = cx.new(|_| RepoState::default());
+        state.update(cx, |state, cx| state.open(a.path().to_owned(), cx));
+        cx.executor().run_until_parked();
+
+        state.update(cx, |state, cx| state.auto_fetch(cx));
+
+        state.read_with(cx, |s, _| {
+            assert!(s.operation().is_none());
+            assert!(
+                s.error().is_none(),
+                "no trust prompt for a background fetch"
+            );
+        });
+    }
+
+    #[gpui::test]
+    async fn auto_fetch_does_nothing_without_a_remote(cx: &mut TestAppContext) {
+        let dir = repo_without_hooks();
+        let state = open_trusted(cx, dir.path());
+        state.update(cx, |state, cx| state.auto_fetch(cx));
+        state.read_with(cx, |s, _| assert!(s.operation().is_none()));
     }
 
     #[gpui::test]
