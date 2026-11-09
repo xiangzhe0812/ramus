@@ -12,7 +12,6 @@ A Git desktop client in Rust and GPUI. Scope, stack and milestone order are sett
 ## Conventions
 
 - `git-core` holds all Git logic and must not depend on `gpui`. The UI crate only renders state.
-- Reads use `gix`; writes and network operations shell out to the `git` binary.
 - Never hard-code colors in views; read them from the `Theme` global.
 - GPUI is pinned to the `gpui-pre` snapshot that `gpui-component` requires (root `Cargo.toml`). Upgrade `gpui`, `gpui_platform` and `gpui-component` together, never separately.
 - Text inputs come from `gpui-component`; `component_theme.rs` maps our `Theme` onto its theme. Don't write a text editor.
