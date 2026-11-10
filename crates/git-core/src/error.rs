@@ -32,6 +32,10 @@ pub enum Error {
     FolderExists(PathBuf),
     #[error("a branch called \"{0}\" already exists")]
     BranchExists(String),
+    #[error("{} has uncommitted changes", .0.display())]
+    UncommittedChanges(PathBuf),
+    #[error("created {}, but a hook failed: {stderr}", .path.display())]
+    WorktreeHookFailed { path: PathBuf, stderr: String },
     #[error("the main worktree can't be removed")]
     MainWorktree,
     #[error("found no main branch to start from (origin/HEAD, main or master)")]

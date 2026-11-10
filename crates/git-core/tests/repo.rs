@@ -4479,19 +4479,6 @@ fn remove_worktree_deletes_the_folder_and_keeps_the_branch() {
 }
 
 #[test]
-fn remove_worktree_without_force_refuses_uncommitted_changes() {
-    let (_parent, root) = new_repo_in_parent();
-    let repo = Repo::open(&root).unwrap();
-    let path = repo.add_worktree("b", "b").unwrap();
-    fs::write(path.join("u.txt"), "untracked").unwrap();
-
-    let result = repo.remove_worktree(&worktree_at(&repo, &path), false);
-
-    assert!(matches!(result, Err(Error::Git { .. })));
-    assert!(path.join("u.txt").exists());
-}
-
-#[test]
 fn remove_worktree_with_force_discards_uncommitted_changes() {
     let (_parent, root) = new_repo_in_parent();
     let repo = Repo::open(&root).unwrap();
@@ -4596,4 +4583,94 @@ fn delete_branch_rejects_an_option_like_name() {
     let result = repo.delete_branch("-D");
 
     assert!(matches!(result, Err(Error::InvalidBranchName(_))));
+}
+
+#[test]
+fn remove_worktree_does_not_run_a_filter_set_in_the_linked_worktree_config() {
+    let (parent, root) = new_repo_in_parent();
+    commit_file(&root, ".gitattributes", "f.txt filter=evil\n");
+    commit_file(&root, "f.txt", "f");
+    git(&root, &["config", "extensions.worktreeConfig", "true"]);
+    let repo = Repo::open(&root).unwrap();
+    let path = repo.add_worktree("b", "lw").unwrap();
+    let marker = parent.path().join("ran");
+    let filter = format!("sh -c 'touch \"{}\"; cat'", marker.display());
+    git(
+        &path,
+        &["config", "--worktree", "filter.evil.clean", &filter],
+    );
+    // A changed modification time makes git re-read the file through its clean filter.
+    let file = fs::File::options()
+        .write(true)
+        .open(path.join("f.txt"))
+        .unwrap();
+    file.set_modified(std::time::SystemTime::now() + std::time::Duration::from_secs(5))
+        .unwrap();
+
+    let _ = repo.remove_worktree(&worktree_at(&repo, &path), false);
+
+    assert!(!marker.exists());
+}
+
+#[test]
+fn remove_worktree_without_force_names_the_uncommitted_changes() {
+    let (_parent, root) = new_repo_in_parent();
+    let repo = Repo::open(&root).unwrap();
+    let path = repo.add_worktree("b", "b").unwrap();
+    fs::write(path.join("u.txt"), "untracked").unwrap();
+
+    let result = repo.remove_worktree(&worktree_at(&repo, &path), false);
+
+    assert!(matches!(result, Err(Error::UncommittedChanges(_))));
+    assert!(path.join("u.txt").exists());
+}
+
+#[test]
+fn removal_check_counts_a_rename_of_an_intent_to_add_file_once() {
+    let (_parent, root) = new_repo_in_parent();
+    let repo = Repo::open(&root).unwrap();
+    let path = repo.add_worktree("b", "b").unwrap();
+    fs::rename(path.join("a.txt"), path.join("moved.txt")).unwrap();
+    git(&path, &["add", "-N", "moved.txt"]);
+    fs::write(path.join("zzz.txt"), "untracked").unwrap();
+
+    let check = repo.removal_check(&worktree_at(&repo, &path)).unwrap();
+
+    assert_eq!(check.uncommitted_files, 2);
+}
+
+#[test]
+fn add_worktree_reports_a_failed_hook_with_the_worktree_it_still_made() {
+    let (parent, root) = new_repo_in_parent();
+    let script = root.join(".git/hooks/post-checkout");
+    fs::write(&script, "#!/bin/sh\nexit 1\n").unwrap();
+    fs::set_permissions(&script, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+    let repo = Repo::open(&root).unwrap();
+
+    let result = repo.add_worktree("b", "b");
+
+    let Err(Error::WorktreeHookFailed { path, .. }) = result else {
+        panic!("expected WorktreeHookFailed, got {result:?}");
+    };
+    assert_eq!(
+        path.canonicalize().unwrap(),
+        parent.path().join("b").canonicalize().unwrap()
+    );
+}
+
+#[test]
+fn remove_worktree_clears_only_the_missing_one_asked_for() {
+    let (_parent, root) = new_repo_in_parent();
+    let repo = Repo::open(&root).unwrap();
+    let first = repo.add_worktree("one", "one").unwrap();
+    let second = repo.add_worktree("two", "two").unwrap();
+    fs::remove_dir_all(&first).unwrap();
+    fs::remove_dir_all(&second).unwrap();
+
+    repo.remove_worktree(&worktree_at(&repo, &first), false)
+        .unwrap();
+
+    let left = repo.worktrees().unwrap();
+    assert_eq!(left.len(), 2);
+    assert!(left.iter().any(|w| w.path.ends_with("two")));
 }

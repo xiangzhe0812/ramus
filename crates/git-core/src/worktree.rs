@@ -97,7 +97,7 @@ impl Repo {
         let base = self.default_base()?;
         // Relative to the main worktree, where git runs, so the path is always text.
         let relative = format!("../{folder}");
-        run_git(
+        let added = run_git(
             &main,
             &[
                 "worktree",
@@ -108,8 +108,29 @@ impl Repo {
                 &relative,
                 &base,
             ],
-        )?;
-        Ok(destination)
+        );
+        match added {
+            Ok(_) => Ok(destination),
+            // A failing post-checkout hook makes git exit non-zero after the worktree is
+            // made. Say so, with its path, rather than claim nothing happened.
+            Err(Error::Git { stderr, .. }) if self.is_registered(&destination)? => {
+                Err(Error::WorktreeHookFailed {
+                    path: destination,
+                    stderr,
+                })
+            }
+            Err(error) => Err(error),
+        }
+    }
+
+    fn is_registered(&self, path: &std::path::Path) -> Result<bool, Error> {
+        let Ok(wanted) = path.canonicalize() else {
+            return Ok(false);
+        };
+        Ok(self
+            .worktrees()?
+            .iter()
+            .any(|worktree| worktree.path.canonicalize().ok().as_ref() == Some(&wanted)))
     }
 
     /// What removing `worktree` would lose. The same answer from any worktree.
@@ -117,11 +138,7 @@ impl Repo {
         let uncommitted_files = if worktree.missing {
             0
         } else {
-            let output = run_git(
-                &worktree.path,
-                &["status", "--porcelain=v1", "-z", "--untracked-files=all"],
-            )?;
-            count_status_entries(&output)
+            uncommitted_files(worktree)?
         };
         Ok(RemovalCheck {
             uncommitted_files,
@@ -161,28 +178,26 @@ impl Repo {
     }
 
     /// Removes a linked worktree's folder and git's record of it; `force` throws away
-    /// uncommitted changes. A missing worktree only has its record cleared (with every
-    /// other missing one). Runs from the main worktree, so the open worktree can be
-    /// removed, and with hooks off, so it is safe in an untrusted repository. A locked
-    /// worktree is refused by git.
+    /// uncommitted changes. A missing worktree only has its record cleared. Runs from the
+    /// main worktree, so the open worktree can be removed, and with hooks off, so it is
+    /// safe in an untrusted repository. A locked worktree is refused by git.
     pub fn remove_worktree(&self, worktree: &Worktree, force: bool) -> Result<(), Error> {
         if worktree.is_main {
             return Err(Error::MainWorktree);
         }
-        let main = self.main_worktree_path()?;
-        if worktree.missing {
-            return run_git_hookless(&main, &["worktree", "prune", "--expire=now"]).map(drop);
+        // git's own cleanliness check runs `git status` inside the worktree, where the
+        // runner can't blank filters set in that worktree's own config. So the check is
+        // done here, from the worktree's folder through the runner, and git is told to
+        // skip it with `--force`. That `--force` doesn't unlock a locked worktree.
+        if !force && !worktree.missing && uncommitted_files(worktree)? > 0 {
+            return Err(Error::UncommittedChanges(worktree.path.clone()));
         }
+        let main = self.main_worktree_path()?;
         let path = worktree
             .path
             .to_str()
             .ok_or_else(|| Error::InvalidFolderName(worktree.path.display().to_string()))?;
-        let mut args = vec!["worktree", "remove"];
-        if force {
-            args.push("--force");
-        }
-        args.push(path);
-        run_git_hookless(&main, &args).map(drop)
+        run_git_hookless(&main, &["worktree", "remove", "--force", path]).map(drop)
     }
 
     /// Deletes a local branch even if it has unmerged commits. Hooks are off, as for
@@ -221,6 +236,16 @@ const BASE_FALLBACKS: [&str; 4] = [
     "refs/heads/master",
 ];
 
+/// Changed, staged and untracked files in `worktree`. Run from its own folder, so the
+/// runner sees, and blanks, filters set in that worktree's config.
+fn uncommitted_files(worktree: &Worktree) -> Result<usize, Error> {
+    let output = run_git(
+        &worktree.path,
+        &["status", "--porcelain=v1", "-z", "--untracked-files=all"],
+    )?;
+    Ok(count_status_entries(&output))
+}
+
 /// Counts entries in `git status --porcelain=v1 -z`. A rename or copy entry is followed
 /// by an extra NUL-terminated source path, which is not an entry of its own.
 fn count_status_entries(output: &[u8]) -> usize {
@@ -230,7 +255,13 @@ fn count_status_entries(output: &[u8]) -> usize {
     let mut count = 0;
     while let Some(field) = fields.next() {
         count += 1;
-        if matches!(field.first(), Some(b'R' | b'C')) {
+        // Either column can say renamed or copied: the index side (`R `) or, for an
+        // intent-to-add file, the worktree side (` R`).
+        if field
+            .iter()
+            .take(2)
+            .any(|status| matches!(status, b'R' | b'C'))
+        {
             fields.next();
         }
     }
