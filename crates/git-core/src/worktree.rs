@@ -3,7 +3,11 @@
 
 use std::{ffi::OsString, os::unix::ffi::OsStringExt, path::PathBuf};
 
-use crate::{Error, Head, Repo, branch::is_safe_branch_name, runner::run_git};
+use crate::{
+    Error, Head, Repo,
+    branch::is_safe_branch_name,
+    runner::{run_git, run_git_hookless},
+};
 
 /// Length of the abbreviated commit shown for a detached worktree.
 const SHORT_SHA_LEN: usize = 7;
@@ -138,6 +142,40 @@ impl Repo {
             .trim()
             .parse()
             .map_err(|_| Error::Parse(format!("rev-list count: {}", String::from_utf8_lossy(&output))))
+    }
+
+    /// Removes a linked worktree's folder and git's record of it; `force` throws away
+    /// uncommitted changes. A missing worktree only has its record cleared (with every
+    /// other missing one). Runs from the main worktree, so the open worktree can be
+    /// removed, and with hooks off, so it is safe in an untrusted repository. A locked
+    /// worktree is refused by git.
+    pub fn remove_worktree(&self, worktree: &Worktree, force: bool) -> Result<(), Error> {
+        if worktree.is_main {
+            return Err(Error::MainWorktree);
+        }
+        let main = self.main_worktree_path()?;
+        if worktree.missing {
+            return run_git_hookless(&main, &["worktree", "prune", "--expire=now"]).map(drop);
+        }
+        let path = worktree
+            .path
+            .to_str()
+            .ok_or_else(|| Error::InvalidFolderName(worktree.path.display().to_string()))?;
+        let mut args = vec!["worktree", "remove"];
+        if force {
+            args.push("--force");
+        }
+        args.push(path);
+        run_git_hookless(&main, &args).map(drop)
+    }
+
+    /// Deletes a local branch even if it has unmerged commits. Hooks are off, as for
+    /// other ref writes allowed in an untrusted repository.
+    pub fn delete_branch(&self, name: &str) -> Result<(), Error> {
+        if !is_safe_branch_name(name) {
+            return Err(Error::InvalidBranchName(name.to_owned()));
+        }
+        run_git_hookless(self.root(), &["branch", "-D", name]).map(drop)
     }
 
     fn main_worktree_path(&self) -> Result<PathBuf, Error> {

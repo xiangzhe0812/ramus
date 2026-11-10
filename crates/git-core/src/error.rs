@@ -32,6 +32,8 @@ pub enum Error {
     FolderExists(PathBuf),
     #[error("a branch called \"{0}\" already exists")]
     BranchExists(String),
+    #[error("the main worktree can't be removed")]
+    MainWorktree,
     #[error("found no main branch to start from (origin/HEAD, main or master)")]
     NoDefaultBranch,
     #[error("unexpected git output: {0}")]
