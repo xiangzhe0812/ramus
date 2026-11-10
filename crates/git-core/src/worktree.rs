@@ -56,9 +56,7 @@ impl Repo {
         }
         BASE_FALLBACKS
             .iter()
-            .find(|full| {
-                run_git(self.root(), &["rev-parse", "--verify", "--quiet", full]).is_ok()
-            })
+            .find(|full| run_git(self.root(), &["rev-parse", "--verify", "--quiet", full]).is_ok())
             .map(|full| short_ref_name(full))
             .ok_or(Error::NoDefaultBranch)
     }
@@ -88,7 +86,12 @@ impl Repo {
             return Err(Error::FolderExists(destination));
         }
         let full_ref = format!("refs/heads/{branch}");
-        if run_git(self.root(), &["rev-parse", "--verify", "--quiet", &full_ref]).is_ok() {
+        if run_git(
+            self.root(),
+            &["rev-parse", "--verify", "--quiet", &full_ref],
+        )
+        .is_ok()
+        {
             return Err(Error::BranchExists(branch.to_owned()));
         }
         let base = self.default_base()?;
@@ -96,7 +99,15 @@ impl Repo {
         let relative = format!("../{folder}");
         run_git(
             &main,
-            &["worktree", "add", "--no-track", "-b", branch, &relative, &base],
+            &[
+                "worktree",
+                "add",
+                "--no-track",
+                "-b",
+                branch,
+                &relative,
+                &base,
+            ],
         )?;
         Ok(destination)
     }
@@ -141,7 +152,12 @@ impl Repo {
         String::from_utf8_lossy(&output)
             .trim()
             .parse()
-            .map_err(|_| Error::Parse(format!("rev-list count: {}", String::from_utf8_lossy(&output))))
+            .map_err(|_| {
+                Error::Parse(format!(
+                    "rev-list count: {}",
+                    String::from_utf8_lossy(&output)
+                ))
+            })
     }
 
     /// Removes a linked worktree's folder and git's record of it; `force` throws away
@@ -208,7 +224,9 @@ const BASE_FALLBACKS: [&str; 4] = [
 /// Counts entries in `git status --porcelain=v1 -z`. A rename or copy entry is followed
 /// by an extra NUL-terminated source path, which is not an entry of its own.
 fn count_status_entries(output: &[u8]) -> usize {
-    let mut fields = output.split(|&byte| byte == 0).filter(|field| !field.is_empty());
+    let mut fields = output
+        .split(|&byte| byte == 0)
+        .filter(|field| !field.is_empty());
     let mut count = 0;
     while let Some(field) = fields.next() {
         count += 1;

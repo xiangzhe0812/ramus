@@ -4083,7 +4083,10 @@ fn worktrees_lists_linked_ones_with_branch_detached_locked_and_missing() {
     add_linked(&root, &["-b", "feat/x"], &p.join("feat"));
     add_linked(&root, &["--detach"], &p.join("det"));
     add_linked(&root, &["-b", "l"], &p.join("locked"));
-    git(&root, &["worktree", "lock", p.join("locked").to_str().unwrap()]);
+    git(
+        &root,
+        &["worktree", "lock", p.join("locked").to_str().unwrap()],
+    );
     add_linked(&root, &["-b", "gone"], &p.join("gone"));
     fs::remove_dir_all(p.join("gone")).unwrap();
 
@@ -4128,7 +4131,12 @@ fn clone_into(parent: &Path, root: &Path) -> PathBuf {
     let clone = parent.join("clone");
     git(
         parent,
-        &["clone", "-q", root.to_str().unwrap(), clone.to_str().unwrap()],
+        &[
+            "clone",
+            "-q",
+            root.to_str().unwrap(),
+            clone.to_str().unwrap(),
+        ],
     );
     clone
 }
@@ -4200,13 +4208,22 @@ fn common_dir_is_the_same_from_main_and_linked_worktrees() {
 
 fn git_out(dir: &Path, args: &[&str]) -> String {
     isolate_from_host_git_config();
-    let output = Command::new("git").arg("-C").arg(dir).args(args).output().unwrap();
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(dir)
+        .args(args)
+        .output()
+        .unwrap();
     assert!(output.status.success(), "git {args:?} failed");
     String::from_utf8(output.stdout).unwrap().trim().to_owned()
 }
 
 fn has_local_branch(repo: &Repo, name: &str) -> bool {
-    repo.branches().unwrap().local.iter().any(|b| b.name == name)
+    repo.branches()
+        .unwrap()
+        .local
+        .iter()
+        .any(|b| b.name == name)
 }
 
 #[test]
@@ -4453,7 +4470,8 @@ fn remove_worktree_deletes_the_folder_and_keeps_the_branch() {
     let repo = Repo::open(&root).unwrap();
     let path = repo.add_worktree("b", "b").unwrap();
 
-    repo.remove_worktree(&worktree_at(&repo, &path), false).unwrap();
+    repo.remove_worktree(&worktree_at(&repo, &path), false)
+        .unwrap();
 
     assert!(!path.exists());
     assert_eq!(repo.worktrees().unwrap().len(), 1);
@@ -4480,7 +4498,8 @@ fn remove_worktree_with_force_discards_uncommitted_changes() {
     let path = repo.add_worktree("b", "b").unwrap();
     fs::write(path.join("u.txt"), "untracked").unwrap();
 
-    repo.remove_worktree(&worktree_at(&repo, &path), true).unwrap();
+    repo.remove_worktree(&worktree_at(&repo, &path), true)
+        .unwrap();
 
     assert!(!path.exists());
 }
@@ -4491,7 +4510,9 @@ fn remove_worktree_works_when_opened_from_that_worktree() {
     let path = Repo::open(&root).unwrap().add_worktree("b", "b").unwrap();
     let inside = Repo::open(&path).unwrap();
 
-    inside.remove_worktree(&worktree_at(&inside, &path), false).unwrap();
+    inside
+        .remove_worktree(&worktree_at(&inside, &path), false)
+        .unwrap();
 
     assert!(!path.exists());
 }
@@ -4528,7 +4549,8 @@ fn remove_worktree_clears_a_missing_one() {
     let path = repo.add_worktree("b", "b").unwrap();
     fs::remove_dir_all(&path).unwrap();
 
-    repo.remove_worktree(&worktree_at(&repo, &path), false).unwrap();
+    repo.remove_worktree(&worktree_at(&repo, &path), false)
+        .unwrap();
 
     assert_eq!(repo.worktrees().unwrap().len(), 1);
 }
@@ -4542,11 +4564,11 @@ fn remove_worktree_and_delete_branch_do_not_run_hooks() {
     for hook in ["reference-transaction", "post-checkout"] {
         let script = root.join(".git/hooks").join(hook);
         fs::write(&script, format!("#!/bin/sh\ntouch '{}'\n", ran.display())).unwrap();
-        fs::set_permissions(&script, std::os::unix::fs::PermissionsExt::from_mode(0o755))
-            .unwrap();
+        fs::set_permissions(&script, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
     }
 
-    repo.remove_worktree(&worktree_at(&repo, &path), false).unwrap();
+    repo.remove_worktree(&worktree_at(&repo, &path), false)
+        .unwrap();
     repo.delete_branch("b").unwrap();
 
     assert!(!ran.exists());
@@ -4558,7 +4580,8 @@ fn delete_branch_removes_an_unmerged_branch() {
     let repo = Repo::open(&root).unwrap();
     let path = repo.add_worktree("b", "b").unwrap();
     commit_file(&path, "one.txt", "1");
-    repo.remove_worktree(&worktree_at(&repo, &path), false).unwrap();
+    repo.remove_worktree(&worktree_at(&repo, &path), false)
+        .unwrap();
 
     repo.delete_branch("b").unwrap();
 
