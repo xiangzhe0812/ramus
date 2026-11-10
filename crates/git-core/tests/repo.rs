@@ -4607,8 +4607,10 @@ fn remove_worktree_does_not_run_a_filter_set_in_the_linked_worktree_config() {
     file.set_modified(std::time::SystemTime::now() + std::time::Duration::from_secs(5))
         .unwrap();
 
-    let _ = repo.remove_worktree(&worktree_at(&repo, &path), false);
+    repo.remove_worktree(&worktree_at(&repo, &path), false)
+        .unwrap();
 
+    assert!(!path.exists());
     assert!(!marker.exists());
 }
 
@@ -4649,8 +4651,8 @@ fn add_worktree_reports_a_failed_hook_with_the_worktree_it_still_made() {
 
     let result = repo.add_worktree("b", "b");
 
-    let Err(Error::WorktreeHookFailed { path, .. }) = result else {
-        panic!("expected WorktreeHookFailed, got {result:?}");
+    let Err(Error::WorktreeCreatedWithError { path, .. }) = result else {
+        panic!("expected WorktreeCreatedWithError, got {result:?}");
     };
     assert_eq!(
         path.canonicalize().unwrap(),
@@ -4673,4 +4675,125 @@ fn remove_worktree_clears_only_the_missing_one_asked_for() {
     let left = repo.worktrees().unwrap();
     assert_eq!(left.len(), 2);
     assert!(left.iter().any(|w| w.path.ends_with("two")));
+}
+
+#[test]
+fn remove_worktree_refuses_a_worktree_with_an_initialised_submodule() {
+    let (parent, root) = new_repo_in_parent();
+    let library = parent.path().join("library");
+    fs::create_dir(&library).unwrap();
+    git(&library, &["init", "-q", "-b", "main"]);
+    commit_file(&library, "lib.txt", "lib");
+    let repo = Repo::open(&root).unwrap();
+    let path = repo.add_worktree("b", "b").unwrap();
+    git(
+        &path,
+        &[
+            "-c",
+            "protocol.file.allow=always",
+            "submodule",
+            "add",
+            "-q",
+            library.to_str().unwrap(),
+            "sub",
+        ],
+    );
+    git(&path, &["commit", "-q", "-m", "add submodule"]);
+    fs::write(path.join("sub/work.txt"), "only copy").unwrap();
+    let worktree = worktree_at(&repo, &path);
+
+    let plain = repo.remove_worktree(&worktree, false);
+    let forced = repo.remove_worktree(&worktree, true);
+
+    assert!(matches!(plain, Err(Error::HasSubmodules(_))));
+    assert!(matches!(forced, Err(Error::HasSubmodules(_))));
+    assert!(path.join("sub/work.txt").exists());
+}
+
+#[test]
+fn add_worktree_rejects_a_name_git_would_expand_to_another_branch() {
+    let (parent, root) = new_repo_in_parent();
+    git(&root, &["switch", "-q", "-c", "previous"]);
+    git(&root, &["switch", "-q", "main"]);
+    let repo = Repo::open(&root).unwrap();
+
+    let result = repo.add_worktree("@{-1}", "f");
+
+    assert!(matches!(result, Err(Error::InvalidBranchName(_))));
+    assert!(!parent.path().join("f").exists());
+}
+
+#[test]
+fn delete_branch_rejects_a_name_git_would_expand_to_another_branch() {
+    let (_parent, root) = new_repo_in_parent();
+    git(&root, &["switch", "-q", "-c", "previous"]);
+    git(&root, &["switch", "-q", "main"]);
+    let repo = Repo::open(&root).unwrap();
+
+    let result = repo.delete_branch("@{-1}");
+
+    assert!(matches!(result, Err(Error::InvalidBranchName(_))));
+    assert!(has_local_branch(&repo, "previous"));
+}
+
+#[test]
+fn removing_the_open_worktree_returns_a_repo_that_can_still_delete_its_branch() {
+    let (_parent, root) = new_repo_in_parent();
+    let path = Repo::open(&root).unwrap().add_worktree("b", "b").unwrap();
+    let inside = Repo::open(&path).unwrap();
+
+    let main = inside
+        .remove_worktree(&worktree_at(&inside, &path), false)
+        .unwrap();
+    main.delete_branch("b").unwrap();
+
+    assert_eq!(
+        main.root().canonicalize().unwrap(),
+        root.canonicalize().unwrap()
+    );
+    assert!(!has_local_branch(&main, "b"));
+}
+
+#[test]
+fn add_worktree_refuses_a_folder_git_still_has_on_record_and_creates_no_branch() {
+    let (_parent, root) = new_repo_in_parent();
+    let repo = Repo::open(&root).unwrap();
+    let first = repo.add_worktree("one", "one").unwrap();
+    fs::remove_dir_all(&first).unwrap();
+
+    let result = repo.add_worktree("two", "one");
+
+    assert!(matches!(result, Err(Error::WorktreeOnRecord(_))));
+    assert!(!has_local_branch(&repo, "two"));
+}
+
+#[test]
+fn a_locked_worktree_whose_folder_is_gone_counts_as_missing() {
+    let (_parent, root) = new_repo_in_parent();
+    let repo = Repo::open(&root).unwrap();
+    let path = repo.add_worktree("b", "b").unwrap();
+    git(&root, &["worktree", "lock", path.to_str().unwrap()]);
+    fs::remove_dir_all(&path).unwrap();
+
+    let worktree = worktree_at(&repo, &path);
+    let check = repo.removal_check(&worktree).unwrap();
+
+    assert!(worktree.missing);
+    assert_eq!(check.uncommitted_files, 0);
+}
+
+#[test]
+fn add_worktree_starts_from_the_main_branch_even_when_a_tag_shares_its_name() {
+    let (_parent, root) = new_repo_in_parent();
+    git(&root, &["tag", "main"]);
+    commit_file(&root, "later.txt", "later");
+    let repo = Repo::open(&root).unwrap();
+
+    let path = repo.add_worktree("b", "b").unwrap();
+
+    assert_eq!(
+        git_out(&path, &["rev-parse", "HEAD"]),
+        git_out(&root, &["rev-parse", "refs/heads/main"])
+    );
+    assert_eq!(repo.default_base().unwrap(), "main");
 }

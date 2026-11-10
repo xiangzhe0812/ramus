@@ -34,8 +34,12 @@ pub enum Error {
     BranchExists(String),
     #[error("{} has uncommitted changes", .0.display())]
     UncommittedChanges(PathBuf),
-    #[error("created {}, but a hook failed: {stderr}", .path.display())]
-    WorktreeHookFailed { path: PathBuf, stderr: String },
+    #[error("created {}, but git reported a failure: {stderr}", .path.display())]
+    WorktreeCreatedWithError { path: PathBuf, stderr: String },
+    #[error("git still has a worktree on record at {}; remove that worktree first", .0.display())]
+    WorktreeOnRecord(PathBuf),
+    #[error("{} contains submodules, whose changes can't be checked here; remove it with git in a terminal", .0.display())]
+    HasSubmodules(PathBuf),
     #[error("the main worktree can't be removed")]
     MainWorktree,
     #[error("found no main branch to start from (origin/HEAD, main or master)")]

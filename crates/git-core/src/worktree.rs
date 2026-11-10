@@ -1,7 +1,11 @@
 //! Worktrees: extra checkouts of the same repository, each in its own folder and
 //! sharing one `.git`.
 
-use std::{ffi::OsString, os::unix::ffi::OsStringExt, path::PathBuf};
+use std::{
+    ffi::OsString,
+    os::unix::ffi::OsStringExt,
+    path::{Path, PathBuf},
+};
 
 use crate::{
     Error, Head, Repo,
@@ -20,7 +24,7 @@ pub struct Worktree {
     /// The repository's main checkout, as opposed to a linked worktree.
     pub is_main: bool,
     pub locked: bool,
-    /// git reports it prunable: its folder is gone.
+    /// Its folder is gone.
     pub missing: bool,
     /// Full hash of the checked-out commit, kept for detached worktrees.
     oid: String,
@@ -39,44 +43,67 @@ pub struct RemovalCheck {
 impl Repo {
     /// Every worktree of this repository, the main one first.
     pub fn worktrees(&self) -> Result<Vec<Worktree>, Error> {
-        parse_worktrees(&run_git(
+        let mut worktrees = parse_worktrees(&run_git(
             self.root(),
             &["worktree", "list", "--porcelain", "-z"],
-        )?)
+        )?)?;
+        // git only calls a worktree prunable when it isn't locked, but a locked one on an
+        // unplugged drive is just as absent.
+        for worktree in &mut worktrees {
+            worktree.missing |= worktree.path.symlink_metadata().is_err();
+        }
+        Ok(worktrees)
     }
 
     /// Short name of the branch new worktrees start from, e.g. "origin/main" or "main":
     /// origin's default branch as of the last fetch, else a local main branch.
     pub fn default_base(&self) -> Result<String, Error> {
-        if let Ok(output) = run_git(self.root(), &["rev-parse", "--abbrev-ref", "origin/HEAD"]) {
-            let name = String::from_utf8_lossy(&output).trim().to_owned();
-            if !name.is_empty() && name != "origin/HEAD" {
-                return Ok(name);
+        Ok(short_ref_name(&self.default_base_ref()?))
+    }
+
+    /// The full name of [`Repo::default_base`]. git is given this, never the short name,
+    /// which a tag or branch of the same name could shadow.
+    fn default_base_ref(&self) -> Result<String, Error> {
+        let exists =
+            |full: &str| run_git(self.root(), &["rev-parse", "--verify", "--quiet", full]).is_ok();
+        if let Ok(output) = run_git(self.root(), &["symbolic-ref", "-q", ORIGIN_HEAD]) {
+            let target = String::from_utf8_lossy(&output).trim().to_owned();
+            if target.starts_with("refs/") && exists(&target) {
+                return Ok(target);
             }
         }
         BASE_FALLBACKS
             .iter()
-            .find(|full| run_git(self.root(), &["rev-parse", "--verify", "--quiet", full]).is_ok())
-            .map(|full| short_ref_name(full))
+            .find(|full| exists(full))
+            .map(|full| (*full).to_owned())
             .ok_or(Error::NoDefaultBranch)
+    }
+
+    /// A name git takes literally as a branch: `check-ref-format --branch` accepts
+    /// `@{-1}` and prints the branch it expands to, which is a different branch.
+    fn is_plain_branch_name(&self, name: &str) -> bool {
+        is_safe_branch_name(name)
+            && run_git(self.root(), &["check-ref-format", "--branch", name])
+                .is_ok_and(|output| String::from_utf8_lossy(&output).trim() == name)
     }
 
     /// Creates `branch`, with no upstream, off [`Repo::default_base`] and checks it out in
     /// a new folder called `folder` next to the main worktree. Returns the new worktree's
     /// path. Runs the repository's hooks, so callers must check trust first.
     ///
-    /// Everything is checked before git runs, so a refusal creates nothing.
+    /// Everything is checked before git runs, so a refusal creates nothing. If git itself
+    /// fails after making the worktree (a failing `post-checkout` hook does this), the
+    /// error is [`Error::WorktreeCreatedWithError`], which carries the new path.
     pub fn add_worktree(&self, branch: &str, folder: &str) -> Result<PathBuf, Error> {
         let branch = branch.trim();
-        if !is_safe_branch_name(branch)
-            || run_git(self.root(), &["check-ref-format", "--branch", branch]).is_err()
-        {
+        if !self.is_plain_branch_name(branch) {
             return Err(Error::InvalidBranchName(branch.to_owned()));
         }
         if !is_plain_folder_name(folder) {
             return Err(Error::InvalidFolderName(folder.to_owned()));
         }
-        let main = self.main_worktree_path()?;
+        let worktrees = self.worktrees()?;
+        let main = main_path(&worktrees)?;
         let destination = main
             .parent()
             .ok_or_else(|| Error::InvalidFolderName(folder.to_owned()))?
@@ -84,6 +111,14 @@ impl Repo {
         // `symlink_metadata`, so a dangling symbolic link counts as taken too.
         if destination.symlink_metadata().is_ok() {
             return Err(Error::FolderExists(destination));
+        }
+        // A worktree whose folder was deleted by hand is still on record: git would make
+        // the branch and only then refuse the folder.
+        if worktrees
+            .iter()
+            .any(|worktree| same_location(&worktree.path, &destination))
+        {
+            return Err(Error::WorktreeOnRecord(destination));
         }
         let full_ref = format!("refs/heads/{branch}");
         if run_git(
@@ -94,7 +129,7 @@ impl Repo {
         {
             return Err(Error::BranchExists(branch.to_owned()));
         }
-        let base = self.default_base()?;
+        let base = self.default_base_ref()?;
         // Relative to the main worktree, where git runs, so the path is always text.
         let relative = format!("../{folder}");
         let added = run_git(
@@ -111,10 +146,10 @@ impl Repo {
         );
         match added {
             Ok(_) => Ok(destination),
-            // A failing post-checkout hook makes git exit non-zero after the worktree is
-            // made. Say so, with its path, rather than claim nothing happened.
-            Err(Error::Git { stderr, .. }) if self.is_registered(&destination)? => {
-                Err(Error::WorktreeHookFailed {
+            // A failing post-checkout hook, for one, makes git exit non-zero after the
+            // worktree is made. Say so, with its path, rather than claim nothing happened.
+            Err(Error::Git { stderr, .. }) if self.is_registered(&destination) => {
+                Err(Error::WorktreeCreatedWithError {
                     path: destination,
                     stderr,
                 })
@@ -123,14 +158,15 @@ impl Repo {
         }
     }
 
-    fn is_registered(&self, path: &std::path::Path) -> Result<bool, Error> {
-        let Ok(wanted) = path.canonicalize() else {
-            return Ok(false);
-        };
-        Ok(self
-            .worktrees()?
-            .iter()
-            .any(|worktree| worktree.path.canonicalize().ok().as_ref() == Some(&wanted)))
+    /// Whether git lists an existing worktree at `path`. A listing that fails counts as
+    /// no, so it never replaces the error being reported.
+    fn is_registered(&self, path: &Path) -> bool {
+        path.exists()
+            && self.worktrees().is_ok_and(|worktrees| {
+                worktrees
+                    .iter()
+                    .any(|worktree| same_location(&worktree.path, path))
+            })
     }
 
     /// What removing `worktree` would lose. The same answer from any worktree.
@@ -180,41 +216,46 @@ impl Repo {
     /// Removes a linked worktree's folder and git's record of it; `force` throws away
     /// uncommitted changes. A missing worktree only has its record cleared. Runs from the
     /// main worktree, so the open worktree can be removed, and with hooks off, so it is
-    /// safe in an untrusted repository. A locked worktree is refused by git.
-    pub fn remove_worktree(&self, worktree: &Worktree, force: bool) -> Result<(), Error> {
+    /// safe in an untrusted repository. A locked worktree is refused by git, and one with
+    /// submodules is refused here.
+    ///
+    /// Returns the main worktree. Keep working through that: if `self` was opened from
+    /// the worktree just removed, its folder no longer exists.
+    pub fn remove_worktree(&self, worktree: &Worktree, force: bool) -> Result<Repo, Error> {
         if worktree.is_main {
             return Err(Error::MainWorktree);
         }
-        // git's own cleanliness check runs `git status` inside the worktree, where the
-        // runner can't blank filters set in that worktree's own config. So the check is
-        // done here, from the worktree's folder through the runner, and git is told to
-        // skip it with `--force`. That `--force` doesn't unlock a locked worktree.
-        if !force && !worktree.missing && uncommitted_files(worktree)? > 0 {
-            return Err(Error::UncommittedChanges(worktree.path.clone()));
+        if !worktree.missing {
+            // The status check below can't see inside submodules (the runner keeps git
+            // from running in them, under their own config), so their uncommitted work
+            // would go unnoticed. git refuses such a worktree too, unless forced.
+            if has_initialised_submodules(worktree)? {
+                return Err(Error::HasSubmodules(worktree.path.clone()));
+            }
+            // git's own cleanliness check runs `git status` inside the worktree, where
+            // the runner can't blank filters set in that worktree's own config. So the
+            // check is done here, from the worktree's folder through the runner, and git
+            // is told to skip it with `--force`. That doesn't unlock a locked worktree.
+            if !force && uncommitted_files(worktree)? > 0 {
+                return Err(Error::UncommittedChanges(worktree.path.clone()));
+            }
         }
-        let main = self.main_worktree_path()?;
+        let main = main_path(&self.worktrees()?)?;
         let path = worktree
             .path
             .to_str()
             .ok_or_else(|| Error::InvalidFolderName(worktree.path.display().to_string()))?;
-        run_git_hookless(&main, &["worktree", "remove", "--force", path]).map(drop)
+        run_git_hookless(&main, &["worktree", "remove", "--force", path])?;
+        Repo::open(&main)
     }
 
     /// Deletes a local branch even if it has unmerged commits. Hooks are off, as for
     /// other ref writes allowed in an untrusted repository.
     pub fn delete_branch(&self, name: &str) -> Result<(), Error> {
-        if !is_safe_branch_name(name) {
+        if !self.is_plain_branch_name(name) {
             return Err(Error::InvalidBranchName(name.to_owned()));
         }
         run_git_hookless(self.root(), &["branch", "-D", name]).map(drop)
-    }
-
-    fn main_worktree_path(&self) -> Result<PathBuf, Error> {
-        self.worktrees()?
-            .into_iter()
-            .find(|worktree| worktree.is_main)
-            .map(|worktree| worktree.path)
-            .ok_or_else(|| Error::Parse("worktree list has no main worktree".into()))
     }
 
     /// The git folder every worktree of this repository shares, absolute and canonical.
@@ -228,6 +269,11 @@ impl Repo {
     }
 }
 
+const ORIGIN_HEAD: &str = "refs/remotes/origin/HEAD";
+
+/// File mode of a submodule entry in the index.
+const SUBMODULE_MODE: &[u8] = b"160000 ";
+
 /// Where new worktrees start when origin has no `HEAD`, in order of preference.
 const BASE_FALLBACKS: [&str; 4] = [
     "refs/remotes/origin/main",
@@ -235,6 +281,44 @@ const BASE_FALLBACKS: [&str; 4] = [
     "refs/heads/main",
     "refs/heads/master",
 ];
+
+fn main_path(worktrees: &[Worktree]) -> Result<PathBuf, Error> {
+    worktrees
+        .iter()
+        .find(|worktree| worktree.is_main)
+        .map(|worktree| worktree.path.clone())
+        .ok_or_else(|| Error::Parse("worktree list has no main worktree".into()))
+}
+
+/// Whether two paths name the same folder, even when the folder itself is gone: the
+/// same name inside the same parent folder.
+fn same_location(a: &Path, b: &Path) -> bool {
+    let parent = |path: &Path| path.parent().and_then(|parent| parent.canonicalize().ok());
+    a.file_name() == b.file_name() && parent(a).is_some() && parent(a) == parent(b)
+}
+
+/// Whether `worktree` has a submodule that is checked out. Reads the index and looks for
+/// each submodule's `.git`; never runs git inside a submodule.
+fn has_initialised_submodules(worktree: &Worktree) -> Result<bool, Error> {
+    let output = run_git(&worktree.path, &["ls-files", "--stage", "-z"])?;
+    Ok(output
+        .split(|&byte| byte == 0)
+        .filter(|entry| entry.starts_with(SUBMODULE_MODE))
+        .filter_map(|entry| {
+            entry
+                .iter()
+                .position(|&byte| byte == b'\t')
+                .map(|tab| &entry[tab + 1..])
+        })
+        .any(|path| {
+            worktree
+                .path
+                .join(PathBuf::from(OsString::from_vec(path.to_vec())))
+                .join(".git")
+                .symlink_metadata()
+                .is_ok()
+        }))
+}
 
 /// Changed, staged and untracked files in `worktree`. Run from its own folder, so the
 /// runner sees, and blanks, filters set in that worktree's config.
