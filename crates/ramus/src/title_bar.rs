@@ -93,12 +93,22 @@ pub fn primary_sync(status: &RepoStatus) -> Option<SyncAction> {
     )
 }
 
-const PILL_MIN_WIDTH: f32 = 220.;
+/// Space between the window's edge and the first pill.
+const BAR_PADDING: f32 = 16.;
+const PILL_GAP: f32 = 10.;
+/// The repository and worktree pills are exactly this wide, so the pills after them, and
+/// the lists that hang under those, stay put however long a name is. The branch pill is
+/// at least this wide.
+const PILL_WIDTH: f32 = 220.;
+/// Where the worktree pill starts, for the list that hangs under it.
+pub const WORKTREE_PILL_LEFT: f32 = BAR_PADDING + PILL_WIDTH + PILL_GAP;
+/// Where the branch pill starts, for the list that hangs under it.
+pub const BRANCH_PILL_LEFT: f32 = WORKTREE_PILL_LEFT + PILL_WIDTH + PILL_GAP;
 
 fn pill(theme: &Theme) -> gpui::Div {
     div()
         .h(px(40.))
-        .min_w(px(PILL_MIN_WIDTH))
+        .min_w(px(PILL_WIDTH))
         .px(px(14.))
         .flex()
         .items_center()
@@ -118,10 +128,7 @@ impl Render for TitleBar {
             .repository_name()
             .unwrap_or_else(|| "No repository".into());
         // The open worktree's folder name. The pill shows whenever a repository is open.
-        let worktree_name = state
-            .repo()
-            .map(|repo| repo.root().file_name().unwrap_or(repo.root().as_os_str()))
-            .map(|name| name.to_string_lossy().into_owned());
+        let worktree_name = state.repo().map(|repo| repo.name());
         let branch = state.status().map(|status| &status.branch);
 
         let branch_label = branch.map(|branch| match &branch.head {
@@ -156,11 +163,12 @@ impl Render for TitleBar {
             .flex_none()
             .flex()
             .items_center()
-            .gap(px(10.))
-            .px(px(16.))
+            .gap(px(PILL_GAP))
+            .px(px(BAR_PADDING))
             .child(
                 pill(&theme)
                     .id("repo-pill")
+                    .max_w(px(PILL_WIDTH))
                     .cursor_pointer()
                     .hover(|style| style.bg(theme.surface_selected))
                     .on_click(cx.listener(|_, _, window, cx| {
@@ -170,12 +178,15 @@ impl Render for TitleBar {
                     .child(
                         div()
                             .flex_1()
+                            .min_w_0()
+                            .truncate()
                             .font_weight(gpui::FontWeight::MEDIUM)
                             .child(repo_name),
                     )
                     .when(local_only, |pill| {
                         pill.child(
                             div()
+                                .flex_none()
                                 .px(px(8.))
                                 .py(px(2.))
                                 .rounded(px(10.))
@@ -189,9 +200,7 @@ impl Render for TitleBar {
             .children(worktree_name.map(|name| {
                 pill(&theme)
                     .id("worktree-pill")
-                    // Fixed width, so the branch pill (and the list under it) stays put
-                    // however long the folder's name is.
-                    .max_w(px(PILL_MIN_WIDTH))
+                    .max_w(px(PILL_WIDTH))
                     .cursor_pointer()
                     .hover(|style| style.bg(theme.surface_selected))
                     .on_click(cx.listener(|_, _, window, cx| {

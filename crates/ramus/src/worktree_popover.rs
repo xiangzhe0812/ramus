@@ -93,6 +93,8 @@ fn rows_for(worktrees: &[Worktree], filter: &str) -> (Vec<Worktree>, Vec<Row>) {
 
 impl WorktreePopover {
     pub fn new(repo_state: Entity<RepoState>, window: &mut Window, cx: &mut Context<Self>) -> Self {
+        repo_state.update(cx, |state, cx| state.load_worktrees(cx));
+
         let filter = cx.new(|cx| InputState::new(window, cx).placeholder("Filter"));
         filter.update(cx, |input, cx| input.focus(window, cx));
 
@@ -114,12 +116,20 @@ impl WorktreePopover {
     }
 
     fn pick(&mut self, worktree: Worktree, cx: &mut Context<Self>) {
-        self.repo_state.update(cx, |state, cx| {
+        let busy = self.repo_state.update(cx, |state, cx| {
+            if state.is_busy() {
+                return true;
+            }
             if !state.is_open_worktree(&worktree) {
                 state.switch_worktree(&worktree, cx);
             }
+            false
         });
-        cx.emit(DismissEvent);
+        // A switch can't start while git is busy, so the list stays up rather than
+        // closing as if it had worked.
+        if !busy {
+            cx.emit(DismissEvent);
+        }
     }
 
     fn worktree_row(
@@ -129,7 +139,11 @@ impl WorktreePopover {
         theme: &Theme,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let is_open = self.repo_state.read(cx).is_open_worktree(worktree);
+        let state = self.repo_state.read(cx);
+        let is_open = state.is_open_worktree(worktree);
+        // A worktree whose folder is gone can't be opened, and none can while git is
+        // busy; such rows are dimmed and not clickable.
+        let can_pick = !worktree.missing && !state.is_busy();
         let note = |text: &'static str| {
             div()
                 .flex_none()
@@ -152,9 +166,8 @@ impl WorktreePopover {
             .items_center()
             .gap(px(10.))
             .when(is_open, |row| row.bg(theme.surface_selected))
-            // A worktree whose folder is gone can't be opened, so it isn't clickable.
-            .when(worktree.missing, |row| row.text_color(theme.text_muted))
-            .when(!worktree.missing, |row| {
+            .when(!can_pick, |row| row.text_color(theme.text_muted))
+            .when(can_pick, |row| {
                 let view = cx.entity();
                 let picked = worktree.clone();
                 row.cursor_pointer()

@@ -25,19 +25,13 @@ use crate::{
     repo_state::RepoState,
     stash_view::StashView,
     theme::{MONO_FONT, Theme},
-    title_bar::{Tab, TabRequested, TitleBar},
+    title_bar::{BRANCH_PILL_LEFT, Tab, TabRequested, TitleBar, WORKTREE_PILL_LEFT},
     welcome::Welcome,
     worktree_popover::WorktreePopover,
 };
 
 /// How often the open repository is fetched in the background.
 const AUTO_FETCH_EVERY: std::time::Duration = std::time::Duration::from_secs(300);
-
-/// Where the worktree list hangs: under the title bar's second pill.
-const WORKTREE_POPOVER_LEFT: f32 = 246.;
-/// Where the branch list hangs: under the third pill, one pill width (220) and one gap
-/// (10) further along.
-const BRANCH_POPOVER_LEFT: f32 = 476.;
 
 /// An overlay drawn over the window. Only one can be open at a time, so opening any of
 /// them closes whichever was showing.
@@ -493,8 +487,8 @@ impl Workspace {
                 .into_any_element()
         };
         match modal {
-            Modal::Branches(popover) => under_pill(BRANCH_POPOVER_LEFT, popover.clone().into()),
-            Modal::Worktrees(popover) => under_pill(WORKTREE_POPOVER_LEFT, popover.clone().into()),
+            Modal::Branches(popover) => under_pill(BRANCH_PILL_LEFT, popover.clone().into()),
+            Modal::Worktrees(popover) => under_pill(WORKTREE_PILL_LEFT, popover.clone().into()),
             Modal::Palette(palette) => scrim(
                 "palette-backdrop",
                 80.,
@@ -1006,7 +1000,7 @@ mod tests {
     }
 
     #[gpui::test]
-    fn the_worktree_shortcut_opens_the_list_and_closes_it_again(cx: &mut TestAppContext) {
+    fn the_worktree_action_opens_the_list_and_closes_it_again(cx: &mut TestAppContext) {
         let dir = tempfile::TempDir::new().unwrap();
         let (workspace, cx) = open(cx, dir.path());
 

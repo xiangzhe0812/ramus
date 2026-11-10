@@ -70,6 +70,9 @@ pub struct RepoState {
     /// Bumped on every load so a slow, older load can't overwrite a newer one.
     generation: u64,
     load: Option<Task<()>>,
+    /// A folder is being opened. Until it lands nothing else may start: a refresh would
+    /// cancel it, and a write would run in the folder the window is leaving.
+    opening: bool,
     /// A write (stage, unstage, commit) is running. Writes are never cancelled
     /// by a refresh, and only one runs at a time.
     action: Option<Task<()>>,
@@ -80,7 +83,8 @@ pub struct RepoState {
     /// helpers). Until it is trusted, commit and network operations are refused.
     trusted: bool,
     /// Every worktree of the open repository, main first. `None` when git couldn't list
-    /// them (a worktree of a bare repository).
+    /// them (a worktree of a bare repository), or doesn't list the open folder among them
+    /// (a submodule, or a folder that only points at another repository's git folder).
     worktrees: Option<Vec<Worktree>>,
     /// Which of `worktrees` is open in the window.
     open_worktree: Option<usize>,
@@ -88,6 +92,7 @@ pub struct RepoState {
     /// Only set when the open folder is one of `worktrees`: a folder that merely points
     /// at another repository's git folder must not borrow that repository's trust.
     common_dir: Option<PathBuf>,
+    worktrees_task: Option<Task<()>>,
     /// Branches for the branch switcher, loaded when it opens.
     branches: Option<BranchList>,
     branches_task: Option<Task<()>>,
@@ -132,6 +137,7 @@ impl RepoState {
             error: None,
             generation: 0,
             load: None,
+            opening: false,
             action: None,
             settings,
             settings_path,
@@ -139,6 +145,7 @@ impl RepoState {
             worktrees: None,
             open_worktree: None,
             common_dir: None,
+            worktrees_task: None,
             branches: None,
             branches_task: None,
             stashes: None,
@@ -223,7 +230,7 @@ impl RepoState {
     /// useful (trusted, has a remote, nothing else running), and a failure is swallowed:
     /// nobody asked, so a flaky network shouldn't raise a banner every few minutes.
     pub fn auto_fetch(&mut self, cx: &mut Context<Self>) {
-        if self.repo.is_none() || !self.trusted || !self.has_remote() || self.action.is_some() {
+        if self.repo.is_none() || !self.trusted || !self.has_remote() || self.occupied() {
             return;
         }
         self.start_sync(SyncKind::Fetch, true, cx);
@@ -233,7 +240,7 @@ impl RepoState {
         let Some(repo) = self.repo.clone() else {
             return;
         };
-        if self.action.is_some() || !self.require_trust("fetch, push or pull", cx) {
+        if self.occupied() || !self.require_trust("fetch, push or pull", cx) {
             return;
         }
         if !quiet {
@@ -299,20 +306,23 @@ impl RepoState {
     /// Clones `url` into `destination` and opens it. A repository the user chose to
     /// clone is trusted from the start: they asked for it, and its config is not cloned.
     pub fn clone_repository(&mut self, url: String, destination: PathBuf, cx: &mut Context<Self>) {
-        if self.action.is_some() {
+        if self.occupied() {
             return;
         }
         self.run_cancellable(
             SyncKind::Clone,
             move |cancel, report| {
                 let repo = Repo::clone_from(&url, &destination, cancel, report)?;
-                let common_dir = repo.common_dir()?;
+                // The clone itself worked; without its git folder it just opens untrusted.
+                let common_dir = repo.common_dir().ok();
                 Ok((repo, common_dir))
             },
             |this, result, cx| match result {
                 Ok((repo, common_dir)) => {
                     let root = repo.root().to_owned();
-                    this.settings.trust(&common_dir);
+                    if let Some(common_dir) = &common_dir {
+                        this.settings.trust(common_dir);
+                    }
                     if let Some(path) = &this.settings_path
                         && let Err(error) = this.settings.save(path)
                     {
@@ -625,6 +635,11 @@ impl RepoState {
         self.action.is_some()
     }
 
+    /// Whether new work must wait: a write is running, or a folder is still opening.
+    fn occupied(&self) -> bool {
+        self.action.is_some() || self.opening
+    }
+
     /// Shows `message` in the error banner, for a failure outside the state's own work.
     pub fn report(&mut self, message: String, cx: &mut Context<Self>) {
         self.error = Some(message.into());
@@ -653,6 +668,32 @@ impl RepoState {
         Some(folder.file_name()?.to_string_lossy().into_owned())
     }
 
+    /// Re-reads the worktree list in the background, for when the list is about to be shown.
+    pub fn load_worktrees(&mut self, cx: &mut Context<Self>) {
+        let Some(repo) = self.repo.clone() else {
+            return;
+        };
+        self.worktrees_task = Some(cx.spawn(async move |this, cx| {
+            let (repo, listed) = cx
+                .background_executor()
+                .spawn(async move {
+                    let listed = listed_worktrees(&repo);
+                    (repo, listed)
+                })
+                .await;
+            this.update(cx, |this, cx| {
+                let still_open = this.repo.as_ref().map(Repo::root) == Some(repo.root());
+                // A list that couldn't be read leaves the last good one showing.
+                if let (true, Some((worktrees, open))) = (still_open, listed) {
+                    this.worktrees = Some(worktrees);
+                    this.open_worktree = Some(open);
+                    cx.notify();
+                }
+            })
+            .ok();
+        }));
+    }
+
     /// Whether `worktree` is the one open in the window.
     pub fn is_open_worktree(&self, worktree: &Worktree) -> bool {
         let open = self
@@ -661,11 +702,11 @@ impl RepoState {
         open.is_some_and(|open| open.path == worktree.path)
     }
 
-    /// Opens `worktree` in this window. Ignored while a write or sync is running, so the
-    /// running work never reloads a different folder, and for a worktree whose folder is
-    /// gone.
+    /// Opens `worktree` in this window. Ignored while a write, a sync or another open is
+    /// running, so the running work never reloads a different folder, and for a worktree
+    /// whose folder is gone.
     pub fn switch_worktree(&mut self, worktree: &Worktree, cx: &mut Context<Self>) {
-        if self.action.is_some() || self.operation.is_some() || worktree.missing {
+        if self.occupied() || worktree.missing {
             return;
         }
         self.open(worktree.path.clone(), cx);
@@ -676,8 +717,12 @@ impl RepoState {
         self.load(None, path, true, cx);
     }
 
-    /// Re-reads status for the open repository, if any.
+    /// Re-reads status for the open repository, if any. Skipped while a folder is
+    /// opening: that load is about to bring everything up to date.
     pub fn refresh(&mut self, cx: &mut Context<Self>) {
+        if self.opening {
+            return;
+        }
         if let Some(repo) = self.repo.clone() {
             let root = repo.root().to_owned();
             self.load(Some(repo), root, false, cx);
@@ -695,6 +740,11 @@ impl RepoState {
     ) {
         self.generation += 1;
         let generation = self.generation;
+        // Where a folder sits among its repository's worktrees, and so whether it is
+        // trusted, is settled when it is opened. Refreshes leave it alone, so one failed
+        // read can't drop a trusted repository back to Restricted mode.
+        let opening = known.is_none();
+        self.opening |= opening;
 
         self.load = Some(cx.spawn(async move |this, cx| {
             let result = cx
@@ -707,18 +757,12 @@ impl RepoState {
                     let status = repo.status()?;
                     let remotes = repo.remotes().unwrap_or_default();
                     let in_progress = repo.in_progress().ok().flatten();
-                    // A worktree of a bare repository can't be listed; it still opens.
-                    let worktrees = repo.worktrees().ok();
-                    let open_worktree = worktrees.as_ref().and_then(|worktrees| {
-                        worktrees
-                            .iter()
-                            .position(|worktree| same_folder(&worktree.path, repo.root()))
+                    let place = opening.then(|| match listed_worktrees(&repo) {
+                        Some((worktrees, open)) => {
+                            (Some(worktrees), Some(open), repo.common_dir().ok())
+                        }
+                        None => (None, None, None),
                     });
-                    let common_dir = match open_worktree {
-                        Some(_) => repo.common_dir().ok(),
-                        None => None,
-                    };
-                    let place = (worktrees, open_worktree, common_dir);
                     Ok::<_, git_core::Error>((repo, status, remotes, in_progress, place))
                 })
                 .await;
@@ -727,20 +771,26 @@ impl RepoState {
                 if this.generation != generation {
                     return;
                 }
+                if opening {
+                    this.opening = false;
+                }
                 match result {
                     Ok((repo, status, remotes, in_progress, place)) => {
                         this.remotes = remotes;
                         this.in_progress = in_progress;
                         if this.repo.as_ref().map(Repo::root) != Some(repo.root()) {
                             this.stashes = None;
+                            this.branches = None;
                             // The files an undo would restore belong to the other folder.
                             this.last_discard = None;
                         }
-                        (this.worktrees, this.open_worktree, this.common_dir) = place;
-                        this.trusted = this.settings.is_trusted(
-                            repo.root(),
-                            this.common_dir.as_deref().unwrap_or(repo.root()),
-                        );
+                        if let Some(place) = place {
+                            (this.worktrees, this.open_worktree, this.common_dir) = place;
+                            this.trusted = this.settings.is_trusted(
+                                repo.root(),
+                                this.common_dir.as_deref().unwrap_or(repo.root()),
+                            );
+                        }
                         this.repo = Some(repo);
                         // Restoring discarded files into a different commit's tree would be
                         // wrong, so the undo lapses when HEAD moves.
@@ -863,7 +913,7 @@ impl RepoState {
         let Some(repo) = self.repo.clone() else {
             return;
         };
-        if self.action.is_some() {
+        if self.occupied() {
             return;
         }
 
@@ -892,6 +942,16 @@ impl RepoState {
         }));
         cx.notify();
     }
+}
+
+/// The repository's worktrees and which of them `repo` is. `None` when git can't list
+/// them (a worktree of a bare repository) or doesn't list `repo`'s folder among them.
+fn listed_worktrees(repo: &Repo) -> Option<(Vec<Worktree>, usize)> {
+    let worktrees = repo.worktrees().ok()?;
+    let open = worktrees
+        .iter()
+        .position(|worktree| same_folder(&worktree.path, repo.root()))?;
+    Some((worktrees, open))
 }
 
 /// Whether two paths are the same folder once symlinks are resolved.
@@ -1380,7 +1440,7 @@ mod tests {
     }
 
     #[gpui::test]
-    async fn a_cloned_repository_is_trusted_for_all_its_worktrees(cx: &mut TestAppContext) {
+    async fn a_clone_is_remembered_by_its_shared_git_folder(cx: &mut TestAppContext) {
         let (remote, _a, _b) = remote_and_two_clones();
         let parent = TempDir::new().unwrap();
         let destination = parent.path().join("copy");
@@ -1525,6 +1585,126 @@ mod tests {
 
         assert_eq!(open_root(cx, &state), impostor.canonicalize().unwrap());
         assert!(!state.read_with(cx, |state, _| state.is_trusted()));
+    }
+
+    #[gpui::test]
+    async fn a_folder_git_does_not_list_as_a_worktree_goes_by_its_own_name(
+        cx: &mut TestAppContext,
+    ) {
+        // Asking to trust it under the real repository's name would mislead.
+        let (parent, main, _linked) = repo_with_linked_worktree();
+        let impostor = parent.path().join("impostor");
+        fs::create_dir(&impostor).unwrap();
+        git(&impostor, &["init", "-q", "-b", "main"]);
+        fs::write(
+            impostor.join(".git/commondir"),
+            format!("{}\n", main.join(".git").display()),
+        )
+        .unwrap();
+        let state = cx.new(|_| RepoState::default());
+
+        state.update(cx, |state, cx| state.open(impostor, cx));
+        cx.executor().run_until_parked();
+
+        state.read_with(cx, |state, _| {
+            assert_eq!(state.repository_name(), Some("impostor".to_owned()));
+            assert!(state.worktrees().is_none());
+        });
+    }
+
+    #[gpui::test]
+    async fn a_refresh_during_a_switch_does_not_cancel_it(cx: &mut TestAppContext) {
+        let (_parent, main, linked) = repo_with_linked_worktree();
+        let state = cx.new(|_| RepoState::default());
+        state.update(cx, |state, cx| state.open(main, cx));
+        cx.executor().run_until_parked();
+        let target = worktree_at(cx, &state, 1);
+
+        state.update(cx, |state, cx| {
+            state.switch_worktree(&target, cx);
+            state.refresh(cx);
+        });
+        cx.executor().run_until_parked();
+
+        assert_eq!(open_root(cx, &state), linked.canonicalize().unwrap());
+    }
+
+    #[gpui::test]
+    async fn a_write_cannot_start_while_another_worktree_is_opening(cx: &mut TestAppContext) {
+        let (_parent, main, linked) = repo_with_linked_worktree();
+        fs::write(main.join("b.txt"), "b\n").unwrap();
+        let state = cx.new(|_| RepoState::default());
+        state.update(cx, |state, cx| state.open(main.clone(), cx));
+        cx.executor().run_until_parked();
+        let target = worktree_at(cx, &state, 1);
+
+        state.update(cx, |state, cx| {
+            state.switch_worktree(&target, cx);
+            // Would stage a file in the worktree the window is leaving.
+            state.stage(vec!["b.txt".into()], cx);
+        });
+        cx.executor().run_until_parked();
+
+        assert_eq!(open_root(cx, &state), linked.canonicalize().unwrap());
+        let staged_in_main = Repo::open(&main).unwrap().status().unwrap();
+        assert!(!staged_in_main.files.iter().any(|f| f.is_fully_staged()));
+    }
+
+    #[gpui::test]
+    async fn a_trusted_repository_stays_trusted_when_a_refresh_cannot_list_worktrees(
+        cx: &mut TestAppContext,
+    ) {
+        let (_parent, main, linked) = repo_with_linked_worktree();
+        let state = cx.new(|_| RepoState::default());
+        state.update(cx, |state, cx| state.open(main, cx));
+        cx.executor().run_until_parked();
+        state.update(cx, |state, cx| state.trust(cx));
+        // A worktree on a ref that isn't a branch is one the list can't be read with.
+        git(&linked, &["symbolic-ref", "HEAD", "refs/elsewhere/x"]);
+
+        state.update(cx, |state, cx| state.refresh(cx));
+        cx.executor().run_until_parked();
+
+        assert!(state.read_with(cx, |state, _| state.is_trusted()));
+    }
+
+    #[gpui::test]
+    async fn reloading_the_worktree_list_picks_up_a_worktree_made_elsewhere(
+        cx: &mut TestAppContext,
+    ) {
+        let (_parent, main, _linked) = repo_with_linked_worktree();
+        let state = cx.new(|_| RepoState::default());
+        state.update(cx, |state, cx| state.open(main.clone(), cx));
+        cx.executor().run_until_parked();
+        git(&main, &["worktree", "add", "-q", "-b", "later", "../later"]);
+
+        state.update(cx, |state, cx| state.load_worktrees(cx));
+        cx.executor().run_until_parked();
+
+        state.read_with(cx, |state, _| {
+            let worktrees = state.worktrees().unwrap();
+            assert_eq!(worktrees.len(), 3);
+            assert!(state.is_open_worktree(&worktrees[0]));
+        });
+    }
+
+    #[gpui::test]
+    async fn the_branch_list_of_the_previous_worktree_is_not_kept_after_switching(
+        cx: &mut TestAppContext,
+    ) {
+        let (_parent, main, _linked) = repo_with_linked_worktree();
+        let state = cx.new(|_| RepoState::default());
+        state.update(cx, |state, cx| state.open(main, cx));
+        cx.executor().run_until_parked();
+        state.update(cx, |state, cx| state.load_branches(cx));
+        cx.executor().run_until_parked();
+        assert!(state.read_with(cx, |state, _| state.branches().is_some()));
+        let target = worktree_at(cx, &state, 1);
+
+        state.update(cx, |state, cx| state.switch_worktree(&target, cx));
+        cx.executor().run_until_parked();
+
+        assert!(state.read_with(cx, |state, _| state.branches().is_none()));
     }
 
     #[gpui::test]
