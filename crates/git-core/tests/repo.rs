@@ -1,4 +1,9 @@
-use std::{fs, path::Path, process::Command, sync::Once};
+use std::{
+    fs,
+    path::{Path, PathBuf},
+    process::Command,
+    sync::Once,
+};
 
 use git_core::{ChangeKind, Error, Head, Repo};
 use tempfile::TempDir;
@@ -4035,4 +4040,86 @@ mod hostile_remote_output {
         let lines = read_lines_for_test(b"one\ntwo\rthree\n\n");
         assert_eq!(lines, ["one", "two", "three"]);
     }
+}
+
+/// A repository at `<tempdir>/repo`, so worktrees made next to it stay inside the tempdir.
+fn new_repo_in_parent() -> (TempDir, PathBuf) {
+    isolate_from_host_git_config();
+    let parent = TempDir::new().unwrap();
+    let root = parent.path().join("repo");
+    fs::create_dir(&root).unwrap();
+    git(&root, &["init", "-q", "-b", "main"]);
+    commit_file(&root, "a.txt", "a");
+    (parent, root)
+}
+
+fn add_linked(root: &Path, args: &[&str], path: &Path) {
+    let mut all = vec!["worktree", "add", "-q"];
+    all.extend_from_slice(args);
+    all.push(path.to_str().unwrap());
+    git(root, &all);
+}
+
+#[test]
+fn worktrees_lists_only_the_main_checkout_in_a_plain_repo() {
+    let (_parent, root) = new_repo_in_parent();
+    let repo = Repo::open(&root).unwrap();
+
+    let worktrees = repo.worktrees().unwrap();
+
+    assert_eq!(worktrees.len(), 1);
+    assert!(worktrees[0].is_main);
+    assert_eq!(
+        worktrees[0].path.canonicalize().unwrap(),
+        root.canonicalize().unwrap()
+    );
+    assert_eq!(worktrees[0].head, Head::Branch("main".into()));
+}
+
+#[test]
+fn worktrees_lists_linked_ones_with_branch_detached_locked_and_missing() {
+    let (parent, root) = new_repo_in_parent();
+    let p = parent.path();
+    add_linked(&root, &["-b", "feat/x"], &p.join("feat"));
+    add_linked(&root, &["--detach"], &p.join("det"));
+    add_linked(&root, &["-b", "l"], &p.join("locked"));
+    git(&root, &["worktree", "lock", p.join("locked").to_str().unwrap()]);
+    add_linked(&root, &["-b", "gone"], &p.join("gone"));
+    fs::remove_dir_all(p.join("gone")).unwrap();
+
+    let worktrees = Repo::open(&root).unwrap().worktrees().unwrap();
+
+    assert!(worktrees[0].is_main);
+    let by_name = |n: &str| worktrees.iter().find(|w| w.path.ends_with(n)).unwrap();
+    assert_eq!(by_name("feat").head, Head::Branch("feat/x".into()));
+    assert!(matches!(&by_name("det").head, Head::Detached(sha) if sha.len() == 7));
+    assert!(by_name("locked").locked);
+    assert!(by_name("gone").missing);
+    let feat = by_name("feat");
+    assert!(!feat.is_main && !feat.locked && !feat.missing);
+}
+
+#[test]
+fn worktrees_lists_a_folder_whose_name_has_spaces() {
+    let (parent, root) = new_repo_in_parent();
+    add_linked(&root, &["-b", "s"], &parent.path().join("my worktree ü"));
+
+    let worktrees = Repo::open(&root).unwrap().worktrees().unwrap();
+
+    assert!(worktrees.iter().any(|w| w.path.ends_with("my worktree ü")));
+}
+
+#[test]
+fn worktrees_from_a_linked_worktree_still_put_the_main_one_first() {
+    let (parent, root) = new_repo_in_parent();
+    let linked = parent.path().join("linked");
+    add_linked(&root, &["-b", "b"], &linked);
+
+    let worktrees = Repo::open(&linked).unwrap().worktrees().unwrap();
+
+    assert!(worktrees[0].is_main);
+    assert_eq!(
+        worktrees[0].path.canonicalize().unwrap(),
+        root.canonicalize().unwrap()
+    );
 }
