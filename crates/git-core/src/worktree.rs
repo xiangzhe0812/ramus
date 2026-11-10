@@ -28,6 +28,56 @@ impl Repo {
             &["worktree", "list", "--porcelain", "-z"],
         )?)
     }
+
+    /// Short name of the branch new worktrees start from, e.g. "origin/main" or "main":
+    /// origin's default branch as of the last fetch, else a local main branch.
+    pub fn default_base(&self) -> Result<String, Error> {
+        if let Ok(output) = run_git(self.root(), &["rev-parse", "--abbrev-ref", "origin/HEAD"]) {
+            let name = String::from_utf8_lossy(&output).trim().to_owned();
+            if !name.is_empty() && name != "origin/HEAD" {
+                return Ok(name);
+            }
+        }
+        BASE_FALLBACKS
+            .iter()
+            .find(|full| {
+                run_git(self.root(), &["rev-parse", "--verify", "--quiet", full]).is_ok()
+            })
+            .map(|full| short_ref_name(full))
+            .ok_or(Error::NoDefaultBranch)
+    }
+
+    /// The git folder every worktree of this repository shares, absolute and canonical.
+    pub fn common_dir(&self) -> Result<PathBuf, Error> {
+        let output = run_git(
+            self.root(),
+            &["rev-parse", "--path-format=absolute", "--git-common-dir"],
+        )?;
+        let dir = PathBuf::from(OsString::from_vec(trim_newline(output)));
+        Ok(dir.canonicalize()?)
+    }
+}
+
+/// Where new worktrees start when origin has no `HEAD`, in order of preference.
+const BASE_FALLBACKS: [&str; 4] = [
+    "refs/remotes/origin/main",
+    "refs/remotes/origin/master",
+    "refs/heads/main",
+    "refs/heads/master",
+];
+
+fn short_ref_name(full: &str) -> String {
+    full.strip_prefix("refs/remotes/")
+        .or_else(|| full.strip_prefix("refs/heads/"))
+        .unwrap_or(full)
+        .to_owned()
+}
+
+fn trim_newline(mut output: Vec<u8>) -> Vec<u8> {
+    while output.last() == Some(&b'\n') {
+        output.pop();
+    }
+    output
 }
 
 /// Parses `git worktree list --porcelain -z`: NUL-terminated attributes, with an empty

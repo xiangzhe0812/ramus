@@ -26,6 +26,8 @@ pub enum Error {
     InvalidUrl(String),
     #[error("stopped with conflicts in {}", .0.join(", "))]
     Conflicts(Vec<String>),
+    #[error("found no main branch to start from (origin/HEAD, main or master)")]
+    NoDefaultBranch,
     #[error("unexpected git output: {0}")]
     Parse(String),
 }

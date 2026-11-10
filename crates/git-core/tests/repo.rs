@@ -4123,3 +4123,77 @@ fn worktrees_from_a_linked_worktree_still_put_the_main_one_first() {
         root.canonicalize().unwrap()
     );
 }
+
+fn clone_into(parent: &Path, root: &Path) -> PathBuf {
+    let clone = parent.join("clone");
+    git(
+        parent,
+        &["clone", "-q", root.to_str().unwrap(), clone.to_str().unwrap()],
+    );
+    clone
+}
+
+#[test]
+fn default_base_follows_origin_head() {
+    let (parent, root) = new_repo_in_parent();
+    git(&root, &["branch", "develop"]);
+    git(&root, &["symbolic-ref", "HEAD", "refs/heads/develop"]);
+    let clone = clone_into(parent.path(), &root);
+
+    let base = Repo::open(&clone).unwrap().default_base().unwrap();
+
+    assert_eq!(base, "origin/develop");
+}
+
+#[test]
+fn default_base_falls_back_to_origin_main_without_origin_head() {
+    let (parent, root) = new_repo_in_parent();
+    let clone = clone_into(parent.path(), &root);
+    git(&clone, &["remote", "set-head", "origin", "-d"]);
+
+    let base = Repo::open(&clone).unwrap().default_base().unwrap();
+
+    assert_eq!(base, "origin/main");
+}
+
+#[test]
+fn default_base_is_local_main_without_a_remote() {
+    let (_parent, root) = new_repo_in_parent();
+
+    let base = Repo::open(&root).unwrap().default_base().unwrap();
+
+    assert_eq!(base, "main");
+}
+
+#[test]
+fn default_base_is_local_master_when_there_is_no_main() {
+    let (_parent, root) = new_repo_in_parent();
+    git(&root, &["branch", "-m", "main", "master"]);
+
+    let base = Repo::open(&root).unwrap().default_base().unwrap();
+
+    assert_eq!(base, "master");
+}
+
+#[test]
+fn default_base_errors_when_no_main_branch_exists() {
+    let (_parent, root) = new_repo_in_parent();
+    git(&root, &["branch", "-m", "main", "trunk"]);
+
+    let result = Repo::open(&root).unwrap().default_base();
+
+    assert!(matches!(result, Err(Error::NoDefaultBranch)));
+}
+
+#[test]
+fn common_dir_is_the_same_from_main_and_linked_worktrees() {
+    let (parent, root) = new_repo_in_parent();
+    let linked = parent.path().join("linked");
+    add_linked(&root, &["-b", "b"], &linked);
+
+    let main_dir = Repo::open(&root).unwrap().common_dir().unwrap();
+    let linked_dir = Repo::open(&linked).unwrap().common_dir().unwrap();
+
+    assert_eq!(main_dir, linked_dir);
+    assert_eq!(main_dir, root.join(".git").canonicalize().unwrap());
+}
