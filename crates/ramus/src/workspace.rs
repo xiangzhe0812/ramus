@@ -11,7 +11,7 @@ use crate::{
     accounts_view::AccountsView,
     actions::{
         AddRemote, CloneRepository, DiscardSelected, NewBranchHere, OpenRepository, ShowAccounts,
-        ShowChanges, ShowHistory, ShowStashes, ToggleBranches, TogglePalette,
+        ShowChanges, ShowHistory, ShowStashes, ToggleBranches, TogglePalette, ToggleWorktrees,
     },
     add_remote_dialog::AddRemoteDialog,
     branch_popover::BranchPopover,
@@ -27,15 +27,23 @@ use crate::{
     theme::{MONO_FONT, Theme},
     title_bar::{Tab, TabRequested, TitleBar},
     welcome::Welcome,
+    worktree_popover::WorktreePopover,
 };
 
 /// How often the open repository is fetched in the background.
 const AUTO_FETCH_EVERY: std::time::Duration = std::time::Duration::from_secs(300);
 
+/// Where the worktree list hangs: under the title bar's second pill.
+const WORKTREE_POPOVER_LEFT: f32 = 246.;
+/// Where the branch list hangs: under the third pill, one pill width (220) and one gap
+/// (10) further along.
+const BRANCH_POPOVER_LEFT: f32 = 476.;
+
 /// An overlay drawn over the window. Only one can be open at a time, so opening any of
 /// them closes whichever was showing.
 enum Modal {
     Branches(Entity<BranchPopover>),
+    Worktrees(Entity<WorktreePopover>),
     Palette(Entity<PaletteView>),
     Clone(Entity<CloneDialog>),
     Accounts(Entity<AccountsView>),
@@ -394,6 +402,7 @@ impl Workspace {
             Command::CloneRepository => window.dispatch_action(Box::new(CloneRepository), cx),
             Command::ShowAccounts => window.dispatch_action(Box::new(ShowAccounts), cx),
             Command::SwitchBranch => window.dispatch_action(Box::new(ToggleBranches), cx),
+            Command::SwitchWorktree => window.dispatch_action(Box::new(ToggleWorktrees), cx),
             Command::ShowChanges => self.show(Tab::Changes, cx),
             Command::ShowHistory => self.show(Tab::History, cx),
             Command::ShowStashes => self.show(Tab::Stashes, cx),
@@ -423,6 +432,25 @@ impl Workspace {
         self.show_modal(Modal::Branches(popover), cx);
     }
 
+    fn toggle_worktrees(
+        &mut self,
+        _: &ToggleWorktrees,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if matches!(self.modal, Some(Modal::Worktrees(_))) {
+            self.close_modal(window, cx);
+            return;
+        }
+        if self.repo_state.read(cx).repo().is_none() {
+            return;
+        }
+        self.close_modal(window, cx);
+        let popover = cx.new(|cx| WorktreePopover::new(self.repo_state.clone(), window, cx));
+        self.close_on_dismiss(&popover, window, cx);
+        self.show_modal(Modal::Worktrees(popover), cx);
+    }
+
     /// The layer drawn over everything for the open overlay.
     fn modal_layer(&self, modal: &Modal, theme: &Theme, cx: &mut Context<Self>) -> AnyElement {
         // Centered dialogs sit on a dimmed scrim. `dismiss_on_outside_click` is off where
@@ -450,10 +478,10 @@ impl Workspace {
                     .child(child)
                     .into_any_element()
             };
-        match modal {
-            // The branch popover hangs under the branch button on a clear layer: a click
-            // anywhere else closes it.
-            Modal::Branches(popover) => div()
+        // A popover hangs under its title-bar button on a clear layer: a click anywhere
+        // else closes it.
+        let under_pill = |left: f32, popover: gpui::AnyView| {
+            div()
                 .id("popover-backdrop")
                 .absolute()
                 .inset_0()
@@ -461,14 +489,12 @@ impl Workspace {
                     gpui::MouseButton::Left,
                     cx.listener(|this, _, window, cx| this.close_modal(window, cx)),
                 )
-                .child(
-                    div()
-                        .absolute()
-                        .top(px(64.))
-                        .left(px(246.))
-                        .child(popover.clone()),
-                )
-                .into_any_element(),
+                .child(div().absolute().top(px(64.)).left(px(left)).child(popover))
+                .into_any_element()
+        };
+        match modal {
+            Modal::Branches(popover) => under_pill(BRANCH_POPOVER_LEFT, popover.clone().into()),
+            Modal::Worktrees(popover) => under_pill(WORKTREE_POPOVER_LEFT, popover.clone().into()),
             Modal::Palette(palette) => scrim(
                 "palette-backdrop",
                 80.,
@@ -829,6 +855,7 @@ impl Render for Workspace {
             .track_focus(&self.focus_handle)
             .on_action(cx.listener(Self::open_repository))
             .on_action(cx.listener(Self::toggle_branches))
+            .on_action(cx.listener(Self::toggle_worktrees))
             .on_action(cx.listener(Self::toggle_palette))
             .on_action(cx.listener(Self::open_clone))
             .on_action(cx.listener(Self::open_accounts))
@@ -873,6 +900,7 @@ impl Workspace {
         match self.modal {
             None => "none",
             Some(Modal::Branches(_)) => "branches",
+            Some(Modal::Worktrees(_)) => "worktrees",
             Some(Modal::Palette(_)) => "palette",
             Some(Modal::Clone(_)) => "clone",
             Some(Modal::Accounts(_)) => "accounts",
@@ -935,9 +963,10 @@ mod tests {
 
         // Every overlay opened over every other one: only the newest may remain.
         type Opener = fn(&mut VisualTestContext);
-        let openers: [(&str, Opener); 5] = [
+        let openers: [(&str, Opener); 6] = [
             ("clone", |cx| show(cx, CloneRepository)),
             ("branches", |cx| show(cx, ToggleBranches)),
+            ("worktrees", |cx| show(cx, ToggleWorktrees)),
             ("accounts", |cx| show(cx, ShowAccounts)),
             ("palette", |cx| show(cx, TogglePalette)),
             ("add-remote", |cx| show(cx, AddRemote)),
@@ -974,6 +1003,19 @@ mod tests {
         show(cx, ToggleBranches);
         show(cx, ToggleBranches);
         assert_eq!(name(&workspace, cx), "none");
+    }
+
+    #[gpui::test]
+    fn the_worktree_shortcut_opens_the_list_and_closes_it_again(cx: &mut TestAppContext) {
+        let dir = tempfile::TempDir::new().unwrap();
+        let (workspace, cx) = open(cx, dir.path());
+
+        show(cx, ToggleWorktrees);
+        let opened = name(&workspace, cx);
+        show(cx, ToggleWorktrees);
+        let closed = name(&workspace, cx);
+
+        assert_eq!((opened, closed), ("worktrees", "none"));
     }
 
     #[gpui::test]

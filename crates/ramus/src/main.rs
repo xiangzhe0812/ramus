@@ -36,6 +36,7 @@ use crate::{
     actions::{
         CloneRepository, DiscardSelected, OpenRepository, SelectNextFile, SelectPreviousFile,
         ShowChanges, ShowHistory, ShowStashes, ToggleBranches, TogglePalette, ToggleSelectedFile,
+        ToggleWorktrees,
     },
     github::Endpoints,
     repo_state::RepoState,
@@ -66,6 +67,7 @@ fn main() {
             cx.bind_keys([
                 KeyBinding::new("cmd-o", OpenRepository, None),
                 KeyBinding::new("cmd-b", ToggleBranches, None),
+                KeyBinding::new("cmd-shift-b", ToggleWorktrees, None),
                 KeyBinding::new("cmd-shift-o", CloneRepository, None),
                 KeyBinding::new("cmd-k", TogglePalette, None),
                 KeyBinding::new("cmd-1", ShowChanges, None),

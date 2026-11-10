@@ -6,7 +6,7 @@ use anyhow::Result;
 use gpui::{AssetSource, SharedString};
 
 /// The icons, compiled in so the app is a single file with nothing to find at run time.
-const ICONS: [(&str, &[u8]); 3] = [
+const ICONS: [(&str, &[u8]); 4] = [
     (
         "icons/folder.svg",
         include_bytes!("../assets/icons/folder.svg"),
@@ -14,6 +14,10 @@ const ICONS: [(&str, &[u8]); 3] = [
     (
         "icons/branch.svg",
         include_bytes!("../assets/icons/branch.svg"),
+    ),
+    (
+        "icons/worktree.svg",
+        include_bytes!("../assets/icons/worktree.svg"),
     ),
     (
         "icons/search.svg",

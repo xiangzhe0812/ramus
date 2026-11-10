@@ -5,7 +5,9 @@ use gpui::{
 };
 
 use crate::{
-    actions::{AddRemote, NewBranchHere, OpenRepository, ToggleBranches, TogglePalette},
+    actions::{
+        AddRemote, NewBranchHere, OpenRepository, ToggleBranches, TogglePalette, ToggleWorktrees,
+    },
     repo_state::{RepoState, SyncKind},
     theme::{MONO_FONT, Theme},
     ui::icon,
@@ -91,10 +93,12 @@ pub fn primary_sync(status: &RepoStatus) -> Option<SyncAction> {
     )
 }
 
+const PILL_MIN_WIDTH: f32 = 220.;
+
 fn pill(theme: &Theme) -> gpui::Div {
     div()
         .h(px(40.))
-        .min_w(px(220.))
+        .min_w(px(PILL_MIN_WIDTH))
         .px(px(14.))
         .flex()
         .items_center()
@@ -111,9 +115,13 @@ impl Render for TitleBar {
         let theme = cx.global::<Theme>().clone();
         let state = self.repo_state.read(cx);
         let repo_name = state
-            .repo()
-            .map(|repo| repo.name())
+            .repository_name()
             .unwrap_or_else(|| "No repository".into());
+        // The open worktree's folder name. The pill shows whenever a repository is open.
+        let worktree_name = state
+            .repo()
+            .map(|repo| repo.root().file_name().unwrap_or(repo.root().as_os_str()))
+            .map(|name| name.to_string_lossy().into_owned());
         let branch = state.status().map(|status| &status.branch);
 
         let branch_label = branch.map(|branch| match &branch.head {
@@ -178,6 +186,20 @@ impl Render for TitleBar {
                         )
                     }),
             )
+            .children(worktree_name.map(|name| {
+                pill(&theme)
+                    .id("worktree-pill")
+                    // Fixed width, so the branch pill (and the list under it) stays put
+                    // however long the folder's name is.
+                    .max_w(px(PILL_MIN_WIDTH))
+                    .cursor_pointer()
+                    .hover(|style| style.bg(theme.surface_selected))
+                    .on_click(cx.listener(|_, _, window, cx| {
+                        window.dispatch_action(Box::new(ToggleWorktrees), cx)
+                    }))
+                    .child(icon("worktree", 16., theme.text_muted))
+                    .child(div().flex_1().min_w_0().truncate().child(name))
+            }))
             .children(branch_label.map(|label| {
                 let pill = pill(&theme)
                     .id("branch-pill")

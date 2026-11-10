@@ -12,6 +12,7 @@ pub enum Command {
     CloneRepository,
     ShowAccounts,
     SwitchBranch,
+    SwitchWorktree,
     ShowChanges,
     ShowHistory,
     ShowStashes,
@@ -99,6 +100,11 @@ fn all_commands(situation: &Situation) -> Vec<Entry> {
         "Switch branch…",
         Some("⌘B"),
         Command::SwitchBranch,
+    ));
+    entries.push(Entry::command(
+        "Switch worktree…",
+        Some("⇧⌘B"),
+        Command::SwitchWorktree,
     ));
     entries.push(Entry::command(
         "Show changes",
@@ -246,6 +252,20 @@ mod tests {
         let all = entries(&situation(&local, &[]), "");
         assert!(all.iter().any(|e| e.label == "Switch branch…"));
         assert!(all.iter().all(|e| !e.is_branch()));
+    }
+
+    #[test]
+    fn switch_worktree_is_offered_with_a_repository() {
+        let all = entries(&situation(&[], &[]), "");
+
+        let branch = all
+            .iter()
+            .position(|entry| entry.label == "Switch branch…")
+            .unwrap();
+        let worktree = &all[branch + 1];
+        assert_eq!(worktree.label, "Switch worktree…");
+        assert_eq!(worktree.shortcut, Some("⇧⌘B"));
+        assert_eq!(worktree.target, Target::Command(Command::SwitchWorktree));
     }
 
     #[test]

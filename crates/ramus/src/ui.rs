@@ -26,7 +26,7 @@ pub fn panel(theme: &Theme) -> Div {
         .overflow_hidden()
 }
 
-/// One of the bundled icons (`"folder"`, `"branch"`, `"search"`), drawn in `color`.
+/// One of the bundled icons (`"folder"`, `"worktree"`, `"branch"`, `"search"`), drawn in `color`.
 pub fn icon(name: &str, size: f32, color: Rgba) -> Svg {
     svg()
         .path(format!("icons/{name}.svg"))
