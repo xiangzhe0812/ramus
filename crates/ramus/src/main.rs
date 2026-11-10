@@ -27,6 +27,7 @@ mod title_bar;
 mod ui;
 mod welcome;
 mod workspace;
+mod worktree_popover;
 
 use gpui::{AppContext, Bounds, KeyBinding, WindowBounds, WindowOptions, px, size};
 
