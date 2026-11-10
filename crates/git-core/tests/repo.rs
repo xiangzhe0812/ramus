@@ -5,7 +5,7 @@ use std::{
     sync::Once,
 };
 
-use git_core::{ChangeKind, Error, Head, Repo, worktree_folder_name};
+use git_core::{ChangeKind, Error, Head, RemovalCheck, Repo, Worktree, worktree_folder_name};
 use tempfile::TempDir;
 
 fn git(dir: &Path, args: &[&str]) {
@@ -4314,4 +4314,135 @@ fn add_worktree_rejects_an_invalid_branch_name() {
             "{bad:?}"
         );
     }
+}
+
+fn worktree_at(repo: &Repo, path: &Path) -> Worktree {
+    let wanted = path.file_name().unwrap();
+    repo.worktrees()
+        .unwrap()
+        .into_iter()
+        .find(|w| w.path.file_name() == Some(wanted))
+        .unwrap()
+}
+
+#[test]
+fn a_clean_new_worktree_has_nothing_to_lose() {
+    let (_parent, root) = new_repo_in_parent();
+    let repo = Repo::open(&root).unwrap();
+    let path = repo.add_worktree("b", "b").unwrap();
+
+    let check = repo.removal_check(&worktree_at(&repo, &path)).unwrap();
+
+    assert_eq!(check, RemovalCheck::default());
+}
+
+#[test]
+fn removal_check_counts_changed_staged_and_untracked_files_but_not_ignored_ones() {
+    let (_parent, root) = new_repo_in_parent();
+    commit_file(&root, ".gitignore", "*.log\n");
+    let repo = Repo::open(&root).unwrap();
+    let path = repo.add_worktree("b", "b").unwrap();
+    fs::write(path.join("a.txt"), "changed").unwrap();
+    fs::write(path.join("new.txt"), "new").unwrap();
+    git(&path, &["add", "new.txt"]);
+    fs::write(path.join("u.txt"), "untracked").unwrap();
+    fs::write(path.join("x.log"), "ignored").unwrap();
+
+    let check = repo.removal_check(&worktree_at(&repo, &path)).unwrap();
+
+    assert_eq!(check.uncommitted_files, 3);
+}
+
+#[test]
+fn removal_check_counts_a_rename_once() {
+    let (_parent, root) = new_repo_in_parent();
+    let repo = Repo::open(&root).unwrap();
+    let path = repo.add_worktree("b", "b").unwrap();
+    git(&path, &["mv", "a.txt", "renamed.txt"]);
+
+    let check = repo.removal_check(&worktree_at(&repo, &path)).unwrap();
+
+    assert_eq!(check.uncommitted_files, 1);
+}
+
+#[test]
+fn removal_check_counts_commits_only_this_branch_has() {
+    let (_parent, root) = new_repo_in_parent();
+    let repo = Repo::open(&root).unwrap();
+    let path = repo.add_worktree("b", "b").unwrap();
+    commit_file(&path, "one.txt", "1");
+    commit_file(&path, "two.txt", "2");
+
+    let check = repo.removal_check(&worktree_at(&repo, &path)).unwrap();
+
+    assert_eq!(check.unique_commits, 2);
+}
+
+#[test]
+fn a_branch_merged_into_main_has_no_unique_commits() {
+    let (_parent, root) = new_repo_in_parent();
+    let repo = Repo::open(&root).unwrap();
+    let path = repo.add_worktree("b", "b").unwrap();
+    commit_file(&path, "one.txt", "1");
+    git(&root, &["merge", "-q", "--ff-only", "b"]);
+
+    let check = repo.removal_check(&worktree_at(&repo, &path)).unwrap();
+
+    assert_eq!(check.unique_commits, 0);
+}
+
+#[test]
+fn a_pushed_branch_has_no_unique_commits() {
+    let (parent, root) = new_repo_in_parent();
+    let clone = clone_into(parent.path(), &root);
+    let repo = Repo::open(&clone).unwrap();
+    let path = repo.add_worktree("b", "b").unwrap();
+    commit_file(&path, "one.txt", "1");
+    git(&path, &["push", "-q", "-u", "origin", "b"]);
+
+    let check = repo.removal_check(&worktree_at(&repo, &path)).unwrap();
+
+    assert_eq!(check.unique_commits, 0);
+}
+
+#[test]
+fn a_detached_worktree_counts_commits_no_ref_reaches() {
+    let (parent, root) = new_repo_in_parent();
+    let path = parent.path().join("det");
+    add_linked(&root, &["--detach"], &path);
+    commit_file(&path, "one.txt", "1");
+    let repo = Repo::open(&root).unwrap();
+
+    let check = repo.removal_check(&worktree_at(&repo, &path)).unwrap();
+
+    assert_eq!(check.unique_commits, 1);
+}
+
+#[test]
+fn removal_check_is_the_same_from_inside_the_worktree() {
+    let (_parent, root) = new_repo_in_parent();
+    let main = Repo::open(&root).unwrap();
+    let path = main.add_worktree("b", "b").unwrap();
+    commit_file(&path, "one.txt", "1");
+    let inside = Repo::open(&path).unwrap();
+
+    let from_inside = inside.removal_check(&worktree_at(&inside, &path)).unwrap();
+    let from_main = main.removal_check(&worktree_at(&main, &path)).unwrap();
+
+    assert_eq!(from_inside, from_main);
+    assert_eq!(from_inside.unique_commits, 1);
+}
+
+#[test]
+fn a_missing_worktree_reports_no_uncommitted_files() {
+    let (_parent, root) = new_repo_in_parent();
+    let repo = Repo::open(&root).unwrap();
+    let path = repo.add_worktree("b", "b").unwrap();
+    commit_file(&path, "one.txt", "1");
+    fs::remove_dir_all(&path).unwrap();
+
+    let check = repo.removal_check(&worktree_at(&repo, &path)).unwrap();
+
+    assert_eq!(check.uncommitted_files, 0);
+    assert_eq!(check.unique_commits, 1);
 }

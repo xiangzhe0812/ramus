@@ -18,6 +18,18 @@ pub struct Worktree {
     pub locked: bool,
     /// git reports it prunable: its folder is gone.
     pub missing: bool,
+    /// Full hash of the checked-out commit, kept for detached worktrees.
+    oid: String,
+}
+
+/// What removing a worktree would throw away.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct RemovalCheck {
+    /// Changed, staged and untracked files. Ignored files are not counted.
+    pub uncommitted_files: usize,
+    /// Commits on its branch, or at its detached HEAD, that no other branch,
+    /// remote-tracking branch or tag reaches.
+    pub unique_commits: usize,
 }
 
 impl Repo {
@@ -85,6 +97,49 @@ impl Repo {
         Ok(destination)
     }
 
+    /// What removing `worktree` would lose. The same answer from any worktree.
+    pub fn removal_check(&self, worktree: &Worktree) -> Result<RemovalCheck, Error> {
+        let uncommitted_files = if worktree.missing {
+            0
+        } else {
+            let output = run_git(
+                &worktree.path,
+                &["status", "--porcelain=v1", "-z", "--untracked-files=all"],
+            )?;
+            count_status_entries(&output)
+        };
+        Ok(RemovalCheck {
+            uncommitted_files,
+            unique_commits: self.unique_commits(worktree)?,
+        })
+    }
+
+    /// Commits at the worktree's tip that no other branch, remote-tracking branch or tag
+    /// reaches. `--all` is not used: it includes the current HEAD, which would hide the
+    /// branch's own commits when asked from inside that worktree.
+    fn unique_commits(&self, worktree: &Worktree) -> Result<usize, Error> {
+        let (tip, exclude) = match &worktree.head {
+            Head::Branch(name) => {
+                // With `--branches`, `--exclude` takes the short name, not `refs/heads/…`.
+                let exclude = format!("--exclude={name}");
+                (format!("refs/heads/{name}"), Some(exclude))
+            }
+            Head::Detached(_) => (worktree.oid.clone(), None),
+        };
+        if run_git(self.root(), &["rev-parse", "--verify", "--quiet", &tip]).is_err() {
+            // An unborn branch has no commits to lose.
+            return Ok(0);
+        }
+        let mut args = vec!["rev-list", "--count", tip.as_str(), "--not"];
+        args.extend(exclude.as_deref());
+        args.extend(["--branches", "--remotes", "--tags"]);
+        let output = run_git(self.root(), &args)?;
+        String::from_utf8_lossy(&output)
+            .trim()
+            .parse()
+            .map_err(|_| Error::Parse(format!("rev-list count: {}", String::from_utf8_lossy(&output))))
+    }
+
     fn main_worktree_path(&self) -> Result<PathBuf, Error> {
         self.worktrees()?
             .into_iter()
@@ -111,6 +166,20 @@ const BASE_FALLBACKS: [&str; 4] = [
     "refs/heads/main",
     "refs/heads/master",
 ];
+
+/// Counts entries in `git status --porcelain=v1 -z`. A rename or copy entry is followed
+/// by an extra NUL-terminated source path, which is not an entry of its own.
+fn count_status_entries(output: &[u8]) -> usize {
+    let mut fields = output.split(|&byte| byte == 0).filter(|field| !field.is_empty());
+    let mut count = 0;
+    while let Some(field) = fields.next() {
+        count += 1;
+        if matches!(field.first(), Some(b'R' | b'C')) {
+            fields.next();
+        }
+    }
+    count
+}
 
 /// The default folder name for a new worktree's branch: "/" becomes "-".
 pub fn worktree_folder_name(branch: &str) -> String {
@@ -201,6 +270,7 @@ fn parse_record(attributes: &[&[u8]], is_main: bool) -> Result<Worktree, Error> 
         is_main,
         locked,
         missing,
+        oid: sha,
     })
 }
 
