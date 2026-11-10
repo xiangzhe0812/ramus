@@ -41,7 +41,8 @@ pub struct RemovalCheck {
 }
 
 impl Repo {
-    /// Every worktree of this repository, the main one first.
+    /// Every worktree of this repository, the main one first. A bare repository has no
+    /// main one: its checkouts are all linked.
     pub fn worktrees(&self) -> Result<Vec<Worktree>, Error> {
         let mut worktrees = parse_worktrees(&run_git(
             self.root(),
@@ -385,20 +386,23 @@ fn trim_newline(mut output: Vec<u8>) -> Vec<u8> {
 fn parse_worktrees(output: &[u8]) -> Result<Vec<Worktree>, Error> {
     let mut worktrees = Vec::new();
     let mut record: Vec<&[u8]> = Vec::new();
+    // git lists the repository itself first: its main checkout, or, for a bare
+    // repository, the bare folder, which is no worktree and is left out.
+    let mut is_first = true;
+    // The output ends with an empty attribute, which closes the last record.
     for attribute in output.split(|&byte| byte == 0) {
-        if attribute.is_empty() {
-            if !record.is_empty() {
-                let is_main = worktrees.is_empty();
-                worktrees.push(parse_record(&record, is_main)?);
-                record.clear();
-            }
-        } else {
+        if !attribute.is_empty() {
             record.push(attribute);
+            continue;
         }
-    }
-    if !record.is_empty() {
-        let is_main = worktrees.is_empty();
-        worktrees.push(parse_record(&record, is_main)?);
+        if record.is_empty() {
+            continue;
+        }
+        if !(is_first && record.contains(&&b"bare"[..])) {
+            worktrees.push(parse_record(&record, is_first)?);
+        }
+        is_first = false;
+        record.clear();
     }
     Ok(worktrees)
 }

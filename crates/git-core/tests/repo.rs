@@ -4103,6 +4103,29 @@ fn worktrees_lists_linked_ones_with_branch_detached_locked_and_missing() {
 }
 
 #[test]
+fn worktrees_of_a_bare_repository_are_all_linked_and_the_bare_folder_is_not_one() {
+    let (parent, root) = new_repo_in_parent();
+    let bare = parent.path().join("bare.git");
+    git(
+        parent.path(),
+        &["clone", "-q", "--bare", "repo", bare.to_str().unwrap()],
+    );
+    let checkout = parent.path().join("checkout");
+    add_linked(&bare, &["-b", "feature"], &checkout);
+    drop(root);
+
+    let worktrees = Repo::open(&checkout).unwrap().worktrees().unwrap();
+
+    assert_eq!(worktrees.len(), 1);
+    assert_eq!(
+        worktrees[0].path.canonicalize().unwrap(),
+        checkout.canonicalize().unwrap()
+    );
+    assert!(!worktrees[0].is_main);
+    assert_eq!(worktrees[0].head, Head::Branch("feature".into()));
+}
+
+#[test]
 fn worktrees_lists_a_folder_whose_name_has_spaces() {
     let (parent, root) = new_repo_in_parent();
     add_linked(&root, &["-b", "s"], &parent.path().join("my worktree ü"));

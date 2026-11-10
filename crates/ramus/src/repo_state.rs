@@ -83,7 +83,7 @@ pub struct RepoState {
     /// helpers). Until it is trusted, commit and network operations are refused.
     trusted: bool,
     /// Every worktree of the open repository, main first. `None` when git couldn't list
-    /// them (a worktree of a bare repository), or doesn't list the open folder among them
+    /// them, or doesn't list the open folder among them
     /// (a submodule, or a folder that only points at another repository's git folder).
     worktrees: Option<Vec<Worktree>>,
     /// Which of `worktrees` is open in the window.
@@ -945,7 +945,7 @@ impl RepoState {
 }
 
 /// The repository's worktrees and which of them `repo` is. `None` when git can't list
-/// them (a worktree of a bare repository) or doesn't list `repo`'s folder among them.
+/// them or doesn't list `repo`'s folder among them.
 fn listed_worktrees(repo: &Repo) -> Option<(Vec<Worktree>, usize)> {
     let worktrees = repo.worktrees().ok()?;
     let open = worktrees
@@ -1707,8 +1707,9 @@ mod tests {
         assert!(state.read_with(cx, |state, _| state.branches().is_none()));
     }
 
-    #[gpui::test]
-    async fn a_worktree_of_a_bare_repository_still_opens(cx: &mut TestAppContext) {
+    /// A bare repository at `<parent>/bare.git` with checkouts `<parent>/one` and
+    /// `<parent>/two`; returns (parent, one, two).
+    fn bare_repo_with_two_checkouts() -> (TempDir, PathBuf, PathBuf) {
         let (parent, main, _linked) = repo_with_linked_worktree();
         let bare = parent.path().join("bare.git");
         git(
@@ -1721,20 +1722,45 @@ mod tests {
                 bare.to_str().unwrap(),
             ],
         );
-        git(&bare, &["worktree", "add", "-q", "../checkout", "main"]);
-        let checkout = parent.path().join("checkout");
+        git(&bare, &["worktree", "add", "-q", "../one", "main"]);
+        git(&bare, &["worktree", "add", "-q", "-b", "second", "../two"]);
+        let (one, two) = (parent.path().join("one"), parent.path().join("two"));
+        (parent, one, two)
+    }
+
+    #[gpui::test]
+    async fn a_checkout_of_a_bare_repository_lists_the_other_checkouts(cx: &mut TestAppContext) {
+        let (_parent, one, _two) = bare_repo_with_two_checkouts();
         let state = cx.new(|_| RepoState::default());
 
-        state.update(cx, |state, cx| state.open(checkout.clone(), cx));
+        state.update(cx, |state, cx| state.open(one.clone(), cx));
         cx.executor().run_until_parked();
 
-        assert_eq!(open_root(cx, &state), checkout.canonicalize().unwrap());
+        assert_eq!(open_root(cx, &state), one.canonicalize().unwrap());
         state.read_with(cx, |state, _| {
             assert!(state.error().is_none(), "{:?}", state.error());
-            assert!(state.worktrees().is_none());
-            assert_eq!(state.repository_name(), Some("checkout".to_owned()));
+            let worktrees = state.worktrees().unwrap();
+            assert_eq!(worktrees.len(), 2);
+            assert!(worktrees.iter().all(|worktree| !worktree.is_main));
+            assert!(state.is_open_worktree(&worktrees[0]));
+            // There is no main checkout to name the repository after.
+            assert_eq!(state.repository_name(), Some("one".to_owned()));
             assert!(!state.is_trusted());
         });
+    }
+
+    #[gpui::test]
+    async fn trusting_one_checkout_of_a_bare_repository_trusts_the_others(cx: &mut TestAppContext) {
+        let (_parent, one, two) = bare_repo_with_two_checkouts();
+        let state = cx.new(|_| RepoState::default());
+        state.update(cx, |state, cx| state.open(one, cx));
+        cx.executor().run_until_parked();
+
+        state.update(cx, |state, cx| state.trust(cx));
+        state.update(cx, |state, cx| state.open(two, cx));
+        cx.executor().run_until_parked();
+
+        assert!(state.read_with(cx, |state, _| state.is_trusted()));
     }
 
     #[gpui::test]
