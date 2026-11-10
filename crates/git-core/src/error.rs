@@ -26,6 +26,12 @@ pub enum Error {
     InvalidUrl(String),
     #[error("stopped with conflicts in {}", .0.join(", "))]
     Conflicts(Vec<String>),
+    #[error("\"{0}\" is not a valid folder name")]
+    InvalidFolderName(String),
+    #[error("{} already exists", .0.display())]
+    FolderExists(PathBuf),
+    #[error("a branch called \"{0}\" already exists")]
+    BranchExists(String),
     #[error("found no main branch to start from (origin/HEAD, main or master)")]
     NoDefaultBranch,
     #[error("unexpected git output: {0}")]

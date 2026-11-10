@@ -5,7 +5,7 @@ use std::{
     sync::Once,
 };
 
-use git_core::{ChangeKind, Error, Head, Repo};
+use git_core::{ChangeKind, Error, Head, Repo, worktree_folder_name};
 use tempfile::TempDir;
 
 fn git(dir: &Path, args: &[&str]) {
@@ -4196,4 +4196,122 @@ fn common_dir_is_the_same_from_main_and_linked_worktrees() {
 
     assert_eq!(main_dir, linked_dir);
     assert_eq!(main_dir, root.join(".git").canonicalize().unwrap());
+}
+
+fn git_out(dir: &Path, args: &[&str]) -> String {
+    isolate_from_host_git_config();
+    let output = Command::new("git").arg("-C").arg(dir).args(args).output().unwrap();
+    assert!(output.status.success(), "git {args:?} failed");
+    String::from_utf8(output.stdout).unwrap().trim().to_owned()
+}
+
+fn has_local_branch(repo: &Repo, name: &str) -> bool {
+    repo.branches().unwrap().local.iter().any(|b| b.name == name)
+}
+
+#[test]
+fn add_worktree_creates_the_branch_off_main_next_to_the_repo() {
+    let (parent, root) = new_repo_in_parent();
+    let repo = Repo::open(&root).unwrap();
+
+    let path = repo.add_worktree("feat/one", "feat-one").unwrap();
+
+    assert_eq!(
+        path.canonicalize().unwrap(),
+        parent.path().join("feat-one").canonicalize().unwrap()
+    );
+    let status = Repo::open(&path).unwrap().status().unwrap();
+    assert_eq!(status.branch.head, Head::Branch("feat/one".into()));
+    assert_eq!(status.branch.upstream, None);
+}
+
+#[test]
+fn add_worktree_starts_from_origin_main_not_the_current_branch() {
+    let (parent, root) = new_repo_in_parent();
+    let clone = clone_into(parent.path(), &root);
+    git(&clone, &["switch", "-q", "-c", "work"]);
+    commit_file(&clone, "w.txt", "w");
+    let repo = Repo::open(&clone).unwrap();
+
+    let path = repo.add_worktree("b", "b").unwrap();
+
+    assert_eq!(
+        git_out(&path, &["rev-parse", "HEAD"]),
+        git_out(&clone, &["rev-parse", "origin/main"])
+    );
+}
+
+#[test]
+fn add_worktree_from_a_linked_worktree_still_goes_next_to_the_main_one() {
+    let (parent, root) = new_repo_in_parent();
+    let nested = parent.path().join("inner");
+    fs::create_dir(&nested).unwrap();
+    let linked = nested.join("linked");
+    add_linked(&root, &["-b", "l"], &linked);
+
+    let path = Repo::open(&linked).unwrap().add_worktree("b", "b").unwrap();
+
+    assert_eq!(
+        path.parent().unwrap().canonicalize().unwrap(),
+        parent.path().canonicalize().unwrap()
+    );
+}
+
+#[test]
+fn add_worktree_turns_slashes_in_the_branch_into_dashes() {
+    assert_eq!(worktree_folder_name("feature/neo-1/x"), "feature-neo-1-x");
+}
+
+#[test]
+fn add_worktree_refuses_an_existing_folder_and_creates_no_branch() {
+    let (parent, root) = new_repo_in_parent();
+    fs::create_dir(parent.path().join("taken")).unwrap();
+    let repo = Repo::open(&root).unwrap();
+
+    let result = repo.add_worktree("b", "taken");
+
+    assert!(matches!(result, Err(Error::FolderExists(_))));
+    assert!(!has_local_branch(&repo, "b"));
+}
+
+#[test]
+fn add_worktree_refuses_an_existing_branch_and_creates_no_folder() {
+    let (parent, root) = new_repo_in_parent();
+    git(&root, &["branch", "existing"]);
+    let repo = Repo::open(&root).unwrap();
+
+    let result = repo.add_worktree("existing", "f");
+
+    assert!(matches!(result, Err(Error::BranchExists(_))));
+    assert!(!parent.path().join("f").exists());
+}
+
+#[test]
+fn add_worktree_rejects_folder_names_that_are_not_one_plain_name() {
+    let (_parent, root) = new_repo_in_parent();
+    let repo = Repo::open(&root).unwrap();
+
+    for bad in ["", ".", "..", "a/b", "-x", "a\0b"] {
+        let result = repo.add_worktree("ok", bad);
+
+        assert!(
+            matches!(result, Err(Error::InvalidFolderName(_))),
+            "{bad:?}"
+        );
+    }
+}
+
+#[test]
+fn add_worktree_rejects_an_invalid_branch_name() {
+    let (_parent, root) = new_repo_in_parent();
+    let repo = Repo::open(&root).unwrap();
+
+    for bad in ["-x", "a..b"] {
+        let result = repo.add_worktree(bad, "f");
+
+        assert!(
+            matches!(result, Err(Error::InvalidBranchName(_))),
+            "{bad:?}"
+        );
+    }
 }

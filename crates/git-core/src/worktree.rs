@@ -3,7 +3,7 @@
 
 use std::{ffi::OsString, os::unix::ffi::OsStringExt, path::PathBuf};
 
-use crate::{Error, Head, Repo, runner::run_git};
+use crate::{Error, Head, Repo, branch::is_safe_branch_name, runner::run_git};
 
 /// Length of the abbreviated commit shown for a detached worktree.
 const SHORT_SHA_LEN: usize = 7;
@@ -47,6 +47,52 @@ impl Repo {
             .ok_or(Error::NoDefaultBranch)
     }
 
+    /// Creates `branch`, with no upstream, off [`Repo::default_base`] and checks it out in
+    /// a new folder called `folder` next to the main worktree. Returns the new worktree's
+    /// path. Runs the repository's hooks, so callers must check trust first.
+    ///
+    /// Everything is checked before git runs, so a refusal creates nothing.
+    pub fn add_worktree(&self, branch: &str, folder: &str) -> Result<PathBuf, Error> {
+        let branch = branch.trim();
+        if !is_safe_branch_name(branch)
+            || run_git(self.root(), &["check-ref-format", "--branch", branch]).is_err()
+        {
+            return Err(Error::InvalidBranchName(branch.to_owned()));
+        }
+        if !is_plain_folder_name(folder) {
+            return Err(Error::InvalidFolderName(folder.to_owned()));
+        }
+        let main = self.main_worktree_path()?;
+        let destination = main
+            .parent()
+            .ok_or_else(|| Error::InvalidFolderName(folder.to_owned()))?
+            .join(folder);
+        // `symlink_metadata`, so a dangling symbolic link counts as taken too.
+        if destination.symlink_metadata().is_ok() {
+            return Err(Error::FolderExists(destination));
+        }
+        let full_ref = format!("refs/heads/{branch}");
+        if run_git(self.root(), &["rev-parse", "--verify", "--quiet", &full_ref]).is_ok() {
+            return Err(Error::BranchExists(branch.to_owned()));
+        }
+        let base = self.default_base()?;
+        // Relative to the main worktree, where git runs, so the path is always text.
+        let relative = format!("../{folder}");
+        run_git(
+            &main,
+            &["worktree", "add", "--no-track", "-b", branch, &relative, &base],
+        )?;
+        Ok(destination)
+    }
+
+    fn main_worktree_path(&self) -> Result<PathBuf, Error> {
+        self.worktrees()?
+            .into_iter()
+            .find(|worktree| worktree.is_main)
+            .map(|worktree| worktree.path)
+            .ok_or_else(|| Error::Parse("worktree list has no main worktree".into()))
+    }
+
     /// The git folder every worktree of this repository shares, absolute and canonical.
     pub fn common_dir(&self) -> Result<PathBuf, Error> {
         let output = run_git(
@@ -65,6 +111,20 @@ const BASE_FALLBACKS: [&str; 4] = [
     "refs/heads/main",
     "refs/heads/master",
 ];
+
+/// The default folder name for a new worktree's branch: "/" becomes "-".
+pub fn worktree_folder_name(branch: &str) -> String {
+    branch.replace('/', "-")
+}
+
+/// One path component that is neither special nor readable as a git option.
+fn is_plain_folder_name(name: &str) -> bool {
+    !name.is_empty()
+        && name != "."
+        && name != ".."
+        && !name.starts_with('-')
+        && !name.contains(['/', '\0'])
+}
 
 fn short_ref_name(full: &str) -> String {
     full.strip_prefix("refs/remotes/")
