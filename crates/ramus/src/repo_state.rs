@@ -670,7 +670,7 @@ impl RepoState {
                         if this.repo.as_ref().map(Repo::root) != Some(repo.root()) {
                             this.stashes = None;
                         }
-                        this.trusted = this.settings.is_trusted(repo.root());
+                        this.trusted = this.settings.is_trusted(repo.root(), repo.root());
                         this.repo = Some(repo);
                         // Restoring discarded files into a different commit's tree would be
                         // wrong, so the undo lapses when HEAD moves.

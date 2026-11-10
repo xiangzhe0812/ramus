@@ -45,7 +45,8 @@ didn't write should not run its programs.
 - A repository starts in **Restricted mode**. Viewing, diffs and staging work, but anything that
   would run the repository's hooks or helpers (commit, switching branches, fetch/push, merge,
   apply a stash) is refused until you click **Trust repository**. Repositories you clone through
-  Ramus are trusted automatically; the choice is remembered per path.
+  Ramus are trusted automatically. The choice is remembered per repository, and trusting any
+  of its worktrees trusts them all.
 - Every `git` call neutralises repo-configured `fsmonitor`, filter drivers, external diff and text
   conversion programs and signature verification, and never prompts for a password.
 - Network commands only use the `file`, `git`, `http`, `https` and `ssh` protocols, so an `ext::`

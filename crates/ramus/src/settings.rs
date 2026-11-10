@@ -12,7 +12,9 @@ use serde::{Deserialize, Serialize};
 #[serde(default)]
 pub struct Settings {
     /// Repositories the user has said may run their own configured programs
-    /// (hooks, credential helpers, ssh commands). Stored as resolved paths.
+    /// (hooks, credential helpers, ssh commands). Stored as resolved paths: a repository's
+    /// shared git folder, or a worktree folder for records from before trust was per
+    /// repository.
     pub trusted_repositories: BTreeSet<PathBuf>,
 }
 
@@ -61,12 +63,16 @@ impl Settings {
         fs::rename(temporary, path)
     }
 
-    pub fn is_trusted(&self, root: &Path) -> bool {
-        self.trusted_repositories.contains(&identity(root))
+    /// Trusted if the shared git folder, or (records from before per-repository trust)
+    /// the worktree's own folder, is on record.
+    pub fn is_trusted(&self, root: &Path, common_dir: &Path) -> bool {
+        self.trusted_repositories.contains(&identity(common_dir))
+            || self.trusted_repositories.contains(&identity(root))
     }
 
-    pub fn trust(&mut self, root: &Path) {
-        self.trusted_repositories.insert(identity(root));
+    /// Records trust for the whole repository, by its shared git folder.
+    pub fn trust(&mut self, common_dir: &Path) {
+        self.trusted_repositories.insert(identity(common_dir));
     }
 }
 
@@ -88,39 +94,74 @@ mod tests {
     #[test]
     fn settings_survive_a_save_and_load() {
         let dir = TempDir::new().unwrap();
-        let repo = TempDir::new().unwrap();
+        let (root, common) = (TempDir::new().unwrap(), TempDir::new().unwrap());
         let path = dir.path().join("nested/Ramus/settings.json");
 
         let mut settings = Settings::default();
-        settings.trust(repo.path());
+        settings.trust(common.path());
         settings.save(&path).unwrap();
 
         let loaded = Settings::load(&path);
-        assert!(loaded.is_trusted(repo.path()));
+        assert!(loaded.is_trusted(root.path(), common.path()));
         assert_eq!(loaded, settings);
     }
 
     #[test]
     fn a_repository_is_not_trusted_until_it_is_trusted() {
-        let repo = TempDir::new().unwrap();
-        let other = TempDir::new().unwrap();
+        let (root, common) = (TempDir::new().unwrap(), TempDir::new().unwrap());
         let mut settings = Settings::default();
-        assert!(!settings.is_trusted(repo.path()));
-        settings.trust(repo.path());
-        assert!(settings.is_trusted(repo.path()));
-        assert!(!settings.is_trusted(other.path()));
+        assert!(!settings.is_trusted(root.path(), common.path()));
+
+        settings.trust(common.path());
+
+        assert!(settings.is_trusted(root.path(), common.path()));
+    }
+
+    #[test]
+    fn trusting_a_repository_trusts_every_worktree_that_shares_its_git_folder() {
+        let common = TempDir::new().unwrap();
+        let (main, linked) = (TempDir::new().unwrap(), TempDir::new().unwrap());
+        let mut settings = Settings::default();
+
+        settings.trust(common.path());
+
+        assert!(settings.is_trusted(main.path(), common.path()));
+        assert!(settings.is_trusted(linked.path(), common.path()));
+    }
+
+    #[test]
+    fn a_folder_trusted_before_the_upgrade_is_still_trusted() {
+        let (root, common) = (TempDir::new().unwrap(), TempDir::new().unwrap());
+        let mut settings = Settings::default();
+        settings
+            .trusted_repositories
+            .insert(root.path().canonicalize().unwrap());
+
+        assert!(settings.is_trusted(root.path(), common.path()));
+    }
+
+    #[test]
+    fn another_repository_stays_untrusted() {
+        let common = TempDir::new().unwrap();
+        let (other_root, other_common) = (TempDir::new().unwrap(), TempDir::new().unwrap());
+        let mut settings = Settings::default();
+
+        settings.trust(common.path());
+
+        assert!(!settings.is_trusted(other_root.path(), other_common.path()));
     }
 
     #[test]
     fn the_same_folder_reached_through_a_symlink_is_one_repository() {
-        let repo = TempDir::new().unwrap();
+        let (root, common) = (TempDir::new().unwrap(), TempDir::new().unwrap());
         let links = TempDir::new().unwrap();
         let link = links.path().join("alias");
-        std::os::unix::fs::symlink(repo.path(), &link).unwrap();
+        std::os::unix::fs::symlink(common.path(), &link).unwrap();
 
         let mut settings = Settings::default();
         settings.trust(&link);
-        assert!(settings.is_trusted(repo.path()));
+
+        assert!(settings.is_trusted(root.path(), common.path()));
     }
 
     #[test]
