@@ -27,6 +27,7 @@ mod title_bar;
 mod ui;
 mod welcome;
 mod workspace;
+mod worktrees_view;
 
 use gpui::{AppContext, Bounds, KeyBinding, WindowBounds, WindowOptions, px, size};
 
@@ -34,7 +35,8 @@ use crate::{
     accounts::AccountsState,
     actions::{
         CloneRepository, DiscardSelected, OpenRepository, SelectNextFile, SelectPreviousFile,
-        ShowChanges, ShowHistory, ShowStashes, ToggleBranches, TogglePalette, ToggleSelectedFile,
+        ShowChanges, ShowHistory, ShowStashes, ShowWorktrees, ToggleBranches, TogglePalette,
+        ToggleSelectedFile,
     },
     github::Endpoints,
     repo_state::RepoState,
@@ -70,6 +72,7 @@ fn main() {
                 KeyBinding::new("cmd-1", ShowChanges, None),
                 KeyBinding::new("cmd-2", ShowHistory, None),
                 KeyBinding::new("cmd-3", ShowStashes, None),
+                KeyBinding::new("cmd-4", ShowWorktrees, None),
                 KeyBinding::new("cmd-backspace", DiscardSelected, Some("Workspace")),
                 KeyBinding::new("down", SelectNextFile, Some("ChangesList")),
                 KeyBinding::new("up", SelectPreviousFile, Some("ChangesList")),

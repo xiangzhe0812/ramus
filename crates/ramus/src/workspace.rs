@@ -11,7 +11,7 @@ use crate::{
     accounts_view::AccountsView,
     actions::{
         AddRemote, CloneRepository, DiscardSelected, NewBranchHere, OpenRepository, ShowAccounts,
-        ShowChanges, ShowHistory, ShowStashes, ToggleBranches, TogglePalette,
+        ShowChanges, ShowHistory, ShowStashes, ShowWorktrees, ToggleBranches, TogglePalette,
     },
     add_remote_dialog::AddRemoteDialog,
     branch_popover::BranchPopover,
@@ -27,6 +27,7 @@ use crate::{
     theme::{MONO_FONT, Theme},
     title_bar::{Tab, TabRequested, TitleBar},
     welcome::Welcome,
+    worktrees_view::WorktreesView,
 };
 
 /// How often the open repository is fetched in the background.
@@ -49,6 +50,7 @@ pub struct Workspace {
     history: Entity<HistoryView>,
     conflicts: Entity<ConflictsView>,
     stashes: Entity<StashView>,
+    worktrees: Entity<WorktreesView>,
     tab: Tab,
     welcome: Entity<Welcome>,
     /// The one overlay that can be open (branches, palette, Clone, Accounts, Add remote).
@@ -97,6 +99,7 @@ impl Workspace {
         let changes = cx.new(|cx| ChangesView::new(repo_state.clone(), window, cx));
         let history = cx.new(|cx| HistoryView::new(repo_state.clone(), window, cx));
         let stashes = cx.new(|cx| StashView::new(repo_state.clone(), window, cx));
+        let worktrees = cx.new(|cx| WorktreesView::new(repo_state.clone(), window, cx));
         let conflicts = cx.new(|cx| ConflictsView::new(repo_state.clone(), window, cx));
         let title_bar = cx.new(|cx| TitleBar::new(repo_state.clone(), cx));
         cx.subscribe(&title_bar, |this, _, event: &TabRequested, cx| {
@@ -122,6 +125,7 @@ impl Workspace {
             history,
             conflicts,
             stashes,
+            worktrees,
             tab: Tab::Changes,
             welcome: cx.new(|_| Welcome),
             modal: None,
@@ -397,6 +401,7 @@ impl Workspace {
             Command::ShowChanges => self.show(Tab::Changes, cx),
             Command::ShowHistory => self.show(Tab::History, cx),
             Command::ShowStashes => self.show(Tab::Stashes, cx),
+            Command::ShowWorktrees => self.show(Tab::Worktrees, cx),
             Command::StashChanges => self
                 .repo_state
                 .update(cx, |state, cx| state.stash_changes(String::new(), cx)),
@@ -800,6 +805,7 @@ impl Render for Workspace {
                 Tab::Changes => self.changes.clone().into_any_element(),
                 Tab::History => self.history.clone().into_any_element(),
                 Tab::Stashes => self.stashes.clone().into_any_element(),
+                Tab::Worktrees => self.worktrees.clone().into_any_element(),
             }
         } else {
             div()
@@ -838,6 +844,7 @@ impl Render for Workspace {
             .on_action(cx.listener(|this, _: &ShowChanges, _, cx| this.show(Tab::Changes, cx)))
             .on_action(cx.listener(|this, _: &ShowHistory, _, cx| this.show(Tab::History, cx)))
             .on_action(cx.listener(|this, _: &ShowStashes, _, cx| this.show(Tab::Stashes, cx)))
+            .on_action(cx.listener(|this, _: &ShowWorktrees, _, cx| this.show(Tab::Worktrees, cx)))
             .on_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, _, cx| {
                 if this.pending_discard.is_some() {
                     match event.keystroke.key.as_str() {

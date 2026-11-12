@@ -8,8 +8,8 @@ use std::{
 use crate::settings::{self, Settings};
 
 use git_core::{
-    Branch, BranchList, CancelToken, CommitInfo, DiffHunk, DiscardBackup, FileChange, InProgress,
-    Progress, Repo, RepoStatus, Stash,
+    Branch, BranchList, CancelToken, CommitInfo, DiffHunk, DiscardBackup, FileChange, Head,
+    InProgress, Progress, Repo, RepoStatus, Stash, Worktree, worktree_folder_name,
 };
 use gpui::{Context, EventEmitter, SharedString, Task};
 
@@ -85,6 +85,9 @@ pub struct RepoState {
     /// Stashes for the Stashes tab; `None` until loaded.
     stashes: Option<Vec<Stash>>,
     stashes_task: Option<Task<()>>,
+    /// Worktrees for the Worktrees tab; `None` until loaded.
+    worktrees: Option<Vec<Worktree>>,
+    worktrees_task: Option<Task<()>>,
     operation: Option<Operation>,
     /// The last fetch, pull or push that was started, so a failure can be retried.
     last_sync: Option<SyncKind>,
@@ -131,6 +134,8 @@ impl RepoState {
             branches_task: None,
             stashes: None,
             stashes_task: None,
+            worktrees: None,
+            worktrees_task: None,
             operation: None,
             last_sync: None,
             push_after_pull: false,
@@ -477,6 +482,81 @@ impl RepoState {
         );
     }
 
+    pub fn worktrees(&self) -> Option<&[Worktree]> {
+        self.worktrees.as_deref()
+    }
+
+    /// Reads the worktree list in the background.
+    pub fn load_worktrees(&mut self, cx: &mut Context<Self>) {
+        let Some(repo) = self.repo.clone() else {
+            return;
+        };
+        self.worktrees_task = Some(cx.spawn(async move |this, cx| {
+            let result = cx
+                .background_executor()
+                .spawn(async move { repo.worktrees() })
+                .await;
+            this.update(cx, |this, cx| {
+                match result {
+                    Ok(worktrees) => this.worktrees = Some(worktrees),
+                    Err(error) => this.error = Some(error.to_string().into()),
+                }
+                cx.notify();
+            })
+            .ok();
+        }));
+    }
+
+    /// Makes a worktree on a new branch off the default branch, in a folder next to the
+    /// main one. Creating it runs the repository's hooks, so it needs trust.
+    pub fn add_worktree(&mut self, branch: String, cx: &mut Context<Self>) {
+        if self.require_trust("create a worktree", cx) {
+            // Even a failure can leave a worktree behind (a failing hook), so look again.
+            self.worktrees = None;
+            self.write(cx, None, move |repo| {
+                repo.add_worktree(&branch, &worktree_folder_name(&branch))
+                    .map(drop)
+            });
+        }
+    }
+
+    /// Removes a linked worktree, and with `delete_branch` the branch it had checked out.
+    /// `force` discards its uncommitted changes. If the open worktree is the one removed,
+    /// the main worktree is opened instead.
+    pub fn remove_worktree(
+        &mut self,
+        worktree: Worktree,
+        force: bool,
+        delete_branch: bool,
+        cx: &mut Context<Self>,
+    ) {
+        let removed = worktree.path.clone();
+        self.worktrees = None;
+        self.write_returning(
+            cx,
+            move |repo| {
+                let main = repo.remove_worktree(&worktree, force)?;
+                if let (true, Head::Branch(name)) = (delete_branch, &worktree.head) {
+                    main.delete_branch(name)?;
+                }
+                Ok(main)
+            },
+            move |this, main, cx| {
+                let was_open = this
+                    .repo
+                    .as_ref()
+                    .is_some_and(|repo| repo.root() == removed.as_path());
+                if was_open {
+                    this.trusted = this.settings.is_trusted(main.root());
+                    this.repo = Some(main);
+                    this.stashes = None;
+                    this.branches = None;
+                }
+                this.load_worktrees(cx);
+            },
+        );
+    }
+
     /// Whether `action` may run: refused, with an explanation, in a repository that
     /// hasn't been trusted, because checkouts and commits run the repo's own hooks.
     fn require_trust(&mut self, action: &str, cx: &mut Context<Self>) -> bool {
@@ -669,6 +749,7 @@ impl RepoState {
                         this.in_progress = in_progress;
                         if this.repo.as_ref().map(Repo::root) != Some(repo.root()) {
                             this.stashes = None;
+                            this.worktrees = None;
                         }
                         this.trusted = this.settings.is_trusted(repo.root());
                         this.repo = Some(repo);
