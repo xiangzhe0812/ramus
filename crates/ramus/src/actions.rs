@@ -13,6 +13,7 @@ actions!(
         ShowChanges,
         ShowHistory,
         ShowStashes,
+        ShowWorktrees,
         TogglePalette,
         CloneRepository,
         ShowAccounts,

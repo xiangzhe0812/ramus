@@ -8,8 +8,8 @@ use std::{
 use crate::settings::{self, Settings};
 
 use git_core::{
-    Branch, BranchList, CancelToken, CommitInfo, DiffHunk, DiscardBackup, FileChange, InProgress,
-    Progress, Repo, RepoStatus, Stash, Worktree,
+    Branch, BranchList, CancelToken, CommitInfo, DiffHunk, DiscardBackup, FileChange, Head,
+    InProgress, Progress, Repo, RepoStatus, Stash, Worktree, worktree_folder_name,
 };
 use gpui::{Context, EventEmitter, SharedString, Task};
 
@@ -501,6 +501,67 @@ impl RepoState {
             cx,
             move |repo| repo.stash_drop(&stash),
             |this, (), cx| this.load_stashes(cx),
+        );
+    }
+
+    /// Makes a worktree on a new branch off the default branch, in a folder next to the
+    /// main one. Creating it runs the repository's hooks, so it needs trust.
+    pub fn add_worktree(&mut self, branch: String, cx: &mut Context<Self>) {
+        if self.require_trust("create a worktree", cx) {
+            self.write_returning(
+                cx,
+                // Even a failure can leave a worktree behind (a failing hook), so the
+                // outcome is carried through and the list is read again either way.
+                move |repo| {
+                    Ok(repo
+                        .add_worktree(&branch, &worktree_folder_name(&branch))
+                        .map(drop))
+                },
+                |this, created, cx| {
+                    if let Err(error) = created {
+                        this.error = Some(error.to_string().into());
+                    }
+                    this.load_worktrees(cx);
+                },
+            );
+        }
+    }
+
+    /// Removes a linked worktree, and with `delete_branch` the branch it had checked out.
+    /// `force` discards its uncommitted changes. If the open worktree is the one removed,
+    /// the main worktree is opened instead.
+    pub fn remove_worktree(
+        &mut self,
+        worktree: Worktree,
+        force: bool,
+        delete_branch: bool,
+        cx: &mut Context<Self>,
+    ) {
+        let was_open = self.is_open_worktree(&worktree);
+        self.write_returning(
+            cx,
+            move |repo| {
+                let main = repo.remove_worktree(&worktree, force)?;
+                // The worktree is gone by now, so a branch that won't delete is reported
+                // without losing the main worktree to fall back to.
+                let branch_deleted = match (delete_branch, &worktree.head) {
+                    (true, Head::Branch(name)) => main.delete_branch(name),
+                    _ => Ok(()),
+                };
+                Ok((main, branch_deleted))
+            },
+            move |this, (main, branch_deleted), cx| {
+                if was_open {
+                    // Opened without clearing the error, so a branch that wouldn't
+                    // delete is still reported once the main worktree is showing.
+                    this.load(None, main.root().to_owned(), false, cx);
+                } else {
+                    this.load_worktrees(cx);
+                }
+                if let Err(error) = branch_deleted {
+                    this.error = Some(error.to_string().into());
+                }
+            },
         );
     }
 
@@ -1533,6 +1594,67 @@ mod tests {
             );
             assert_eq!(state.repository_name(), Some("main".to_owned()));
             assert!(state.is_open_worktree(&linked));
+        });
+    }
+
+    #[gpui::test]
+    async fn removing_the_open_worktree_opens_the_main_one_still_trusted(cx: &mut TestAppContext) {
+        let (_parent, main, linked) = repo_with_linked_worktree();
+        let state = open_trusted(cx, &linked);
+        let open = worktree_at(cx, &state, 1);
+
+        state.update(cx, |state, cx| state.remove_worktree(open, false, true, cx));
+        cx.executor().run_until_parked();
+
+        assert!(!linked.exists());
+        assert_eq!(open_root(cx, &state), main.canonicalize().unwrap());
+        state.read_with(cx, |state, _| {
+            assert!(state.error().is_none(), "{:?}", state.error());
+            assert!(state.is_trusted());
+            let worktrees = state.worktrees().unwrap();
+            assert_eq!(worktrees.len(), 1);
+            assert!(state.is_open_worktree(&worktrees[0]));
+        });
+        assert!(!crate::testutil::git_ok(
+            &main,
+            &["rev-parse", "--verify", "-q", "refs/heads/feature"]
+        ));
+    }
+
+    #[gpui::test]
+    async fn a_branch_that_will_not_delete_is_reported_after_its_open_worktree_is_removed(
+        cx: &mut TestAppContext,
+    ) {
+        let (_parent, main, linked) = repo_with_linked_worktree();
+        let state = open_trusted(cx, &linked);
+        let open = worktree_at(cx, &state, 1);
+        // The branch the list remembers no longer goes by that name.
+        git(&main, &["branch", "-m", "feature", "renamed"]);
+
+        state.update(cx, |state, cx| state.remove_worktree(open, false, true, cx));
+        cx.executor().run_until_parked();
+
+        assert!(!linked.exists());
+        assert_eq!(open_root(cx, &state), main.canonicalize().unwrap());
+        assert!(state.read_with(cx, |state, _| state.error().is_some()));
+    }
+
+    #[gpui::test]
+    async fn a_worktree_left_behind_by_a_failing_hook_is_listed_with_the_error(
+        cx: &mut TestAppContext,
+    ) {
+        let (_parent, main, _linked) = repo_with_linked_worktree();
+        let script = main.join(".git/hooks/post-checkout");
+        fs::write(&script, "#!/bin/sh\nexit 1\n").unwrap();
+        fs::set_permissions(&script, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+        let state = open_trusted(cx, &main);
+
+        state.update(cx, |state, cx| state.add_worktree("topic".into(), cx));
+        cx.executor().run_until_parked();
+
+        state.read_with(cx, |state, _| {
+            assert!(state.error().is_some());
+            assert_eq!(state.worktrees().unwrap().len(), 3);
         });
     }
 

@@ -19,6 +19,7 @@ pub enum Tab {
     Changes,
     History,
     Stashes,
+    Worktrees,
 }
 
 /// The user clicked a tab.
@@ -362,6 +363,7 @@ impl Render for TitleBar {
                             (Tab::Changes, "Changes"),
                             (Tab::History, "History"),
                             (Tab::Stashes, "Stashes"),
+                            (Tab::Worktrees, "Worktrees"),
                         ]
                         .map(|(tab, label)| {
                             let active = self.tab == tab;

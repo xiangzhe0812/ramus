@@ -16,6 +16,7 @@ pub enum Command {
     ShowChanges,
     ShowHistory,
     ShowStashes,
+    ShowWorktrees,
     StashChanges,
     Sync(SyncKind),
     StageAll,
@@ -120,6 +121,11 @@ fn all_commands(situation: &Situation) -> Vec<Entry> {
         "Show stashes",
         Some("⌘3"),
         Command::ShowStashes,
+    ));
+    entries.push(Entry::command(
+        "Show worktrees",
+        Some("⌘4"),
+        Command::ShowWorktrees,
     ));
     entries.push(Entry::command("Stash changes", None, Command::StashChanges));
     if !situation.busy {
