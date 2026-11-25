@@ -21,6 +21,8 @@ repository is allowed to run on your machine.
 - **Conflicts:** when a merge, cherry-pick or revert stops, resolve each conflicting region
   (ours, theirs or both) or edit the result, then continue or abort.
 - **Stashes:** stash (including untracked files), apply, pop and drop.
+- **Repositories:** every repository you open or clone is remembered; switch between them from
+  the repository pill (⌘T), and the last one reopens when Ramus starts.
 - **Clone** any Git address, and a **command palette** (⌘K) for everything above.
 - **GitHub sign-in** (OAuth device flow, token kept in the macOS keychain).
 
@@ -32,6 +34,7 @@ Ramus deliberately has no commit-graph view. Not built yet: a light theme (dark 
 | --- | --- |
 | ⌘K | Command palette |
 | ⌘O / ⇧⌘O | Open / clone a repository |
+| ⌘T | Switch repository |
 | ⌘B | Branch switcher |
 | ⌘1 / ⌘2 / ⌘3 | Changes / History / Stashes |
 | ⌘⌫ | Discard selected changes |
