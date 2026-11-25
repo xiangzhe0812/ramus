@@ -37,7 +37,7 @@ pub fn icon(name: &str, size: f32, color: Rgba) -> Svg {
 }
 
 /// `path` as the user would write it: the home folder shortened to `~`. Compared by path
-/// component, so `/Users/zhe2/x` is not mistaken for something inside `/Users/zhe`.
+/// component, so `/Users/me2/x` is not mistaken for something inside `/Users/me`.
 pub fn abbreviate_home(path: &Path, home: Option<&Path>) -> String {
     match home.and_then(|home| path.strip_prefix(home).ok()) {
         Some(rest) if rest.as_os_str().is_empty() => "~".to_owned(),
@@ -54,20 +54,20 @@ mod tests {
 
     #[test]
     fn the_home_folder_becomes_a_tilde() {
-        let home = Some(Path::new("/Users/zhe"));
+        let home = Some(Path::new("/Users/me"));
         assert_eq!(
-            abbreviate_home(Path::new("/Users/zhe/dev/ramus"), home),
+            abbreviate_home(Path::new("/Users/me/dev/ramus"), home),
             "~/dev/ramus"
         );
-        assert_eq!(abbreviate_home(Path::new("/Users/zhe"), home), "~");
+        assert_eq!(abbreviate_home(Path::new("/Users/me"), home), "~");
     }
 
     #[test]
     fn a_folder_that_only_shares_a_prefix_is_left_alone() {
-        let home = Some(Path::new("/Users/zhe"));
+        let home = Some(Path::new("/Users/me"));
         assert_eq!(
-            abbreviate_home(Path::new("/Users/zhe2/x"), home),
-            "/Users/zhe2/x"
+            abbreviate_home(Path::new("/Users/me2/x"), home),
+            "/Users/me2/x"
         );
         assert_eq!(abbreviate_home(Path::new("/tmp/x"), home), "/tmp/x");
     }
@@ -75,8 +75,8 @@ mod tests {
     #[test]
     fn without_a_home_nothing_is_shortened() {
         assert_eq!(
-            abbreviate_home(Path::new("/Users/zhe/x"), None),
-            "/Users/zhe/x"
+            abbreviate_home(Path::new("/Users/me/x"), None),
+            "/Users/me/x"
         );
     }
 }
