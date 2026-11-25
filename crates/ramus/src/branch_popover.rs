@@ -183,7 +183,7 @@ impl BranchPopover {
                             .h(px(24.))
                             .flex()
                             .items_center()
-                            .rounded(px(theme.metrics.radius_lg))
+                            .rounded(px(theme.metrics.radius_md))
                             .text_size(px(theme.metrics.text_sm))
                             .text_color(theme.accent_soft)
                             .hover(|link| link.bg(theme.pill_active))

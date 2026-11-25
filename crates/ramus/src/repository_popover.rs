@@ -191,7 +191,7 @@ impl RepositoryPopover {
                     .flex()
                     .items_center()
                     .justify_center()
-                    .rounded(px(theme.metrics.radius_md))
+                    .rounded_full()
                     .text_color(theme.text_muted)
                     .cursor_pointer()
                     .hover(|button| button.bg(theme.pill_active).text_color(theme.text))

@@ -408,11 +408,11 @@ impl Render for TitleBar {
                             let active = self.tab == tab;
                             div()
                                 .id(label)
-                                .h(px(theme.metrics.control_height - 6.))
+                                .h(px(theme.metrics.control_height - 8.))
                                 .px(px(12.))
                                 .flex()
                                 .items_center()
-                                .rounded(px(theme.metrics.radius_md))
+                                .rounded(px(theme.metrics.radius_sm))
                                 .cursor_pointer()
                                 .on_mouse_down(MouseButton::Left, keep_click)
                                 .when(active, |pill| {

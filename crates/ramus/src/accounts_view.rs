@@ -129,7 +129,7 @@ impl Render for AccountsView {
                     .items_center()
                     .border_b_1()
                     .border_color(theme.border)
-                    .text_size(px(theme.metrics.text_base))
+                    .text_size(px(theme.metrics.text_lg))
                     .font_weight(gpui::FontWeight::SEMIBOLD)
                     .child("Accounts"),
             )

@@ -149,7 +149,7 @@ impl WorktreePopover {
                 .h(px(20.))
                 .flex()
                 .items_center()
-                .rounded(px(theme.metrics.radius_md))
+                .rounded_full()
                 .bg(theme.pill_active)
                 .text_size(px(theme.metrics.text_xs))
                 .text_color(theme.text_muted)

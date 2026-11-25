@@ -247,7 +247,7 @@ impl ConflictsView {
         let pick = |id: (&'static str, usize), label: &'static str, choice: Choice| {
             div()
                 .id(id)
-                .h(px(28.))
+                .h(px(theme.metrics.control_height))
                 .px(px(12.))
                 .flex()
                 .items_center()
@@ -320,7 +320,7 @@ impl ConflictsView {
         let button = |id: &'static str, label: &'static str| {
             div()
                 .id(id)
-                .h(px(theme.metrics.row_height))
+                .h(px(theme.metrics.control_height))
                 .px(px(12.))
                 .flex()
                 .items_center()

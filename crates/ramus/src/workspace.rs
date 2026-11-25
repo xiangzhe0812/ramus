@@ -263,7 +263,7 @@ impl Workspace {
         };
         Some(
             div()
-                .mx(px(16.))
+                .mx(px(12.))
                 .mb(px(12.))
                 .min_h(px(40.))
                 .px(px(12.))
@@ -604,7 +604,7 @@ impl Workspace {
 
         Some(
             div()
-                .mx(px(16.))
+                .mx(px(12.))
                 .mb(px(12.))
                 .flex()
                 .flex_col()
@@ -710,7 +710,7 @@ impl Workspace {
         let text = operation_summary(progress.kind, progress.merging.as_deref(), &branch, open);
         Some(
             div()
-                .mx(px(16.))
+                .mx(px(12.))
                 .mb(px(12.))
                 .h(px(40.))
                 .px(px(12.))
@@ -751,7 +751,7 @@ impl Workspace {
         }
         Some(
             div()
-                .mx(px(16.))
+                .mx(px(12.))
                 .mb(px(12.))
                 .min_h(px(40.))
                 .px(px(12.))
@@ -1066,7 +1066,10 @@ mod tests {
     fn clicking_the_repository_pill_again_closes_the_list(cx: &mut TestAppContext) {
         let dir = tempfile::TempDir::new().unwrap();
         let (workspace, cx) = open(cx, dir.path());
-        let pill = gpui::point(px(crate::title_bar::REPO_PILL_LEFT + 20.), px(30.));
+        let pill = gpui::point(
+            px(crate::title_bar::REPO_PILL_LEFT + 20.),
+            px(crate::theme::TITLE_BAR_HEIGHT / 2.),
+        );
 
         cx.simulate_click(pill, gpui::Modifiers::none());
         cx.run_until_parked();

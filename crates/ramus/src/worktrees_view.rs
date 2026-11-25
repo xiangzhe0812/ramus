@@ -224,7 +224,7 @@ impl WorktreesView {
         let button = |id: &'static str| {
             div()
                 .id(id)
-                .h(px(theme.metrics.row_height))
+                .h(px(theme.metrics.control_height))
                 .px(px(12.))
                 .flex()
                 .items_center()

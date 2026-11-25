@@ -344,7 +344,7 @@ impl HistoryView {
                 div()
                     .size(px(30.))
                     .flex_none()
-                    .rounded(px(theme.metrics.radius_md))
+                    .rounded_full()
                     .bg(theme.pill_active)
                     .text_size(px(theme.metrics.text_xs))
                     .font_weight(gpui::FontWeight::SEMIBOLD)
@@ -404,7 +404,7 @@ impl HistoryView {
         let button = |id: &'static str| {
             div()
                 .id(id)
-                .h(px(theme.metrics.row_height))
+                .h(px(theme.metrics.control_height))
                 .px(px(10.))
                 .flex()
                 .items_center()

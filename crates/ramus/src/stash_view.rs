@@ -244,7 +244,7 @@ impl StashView {
         let button = |id: &'static str| {
             div()
                 .id(id)
-                .h(px(theme.metrics.row_height))
+                .h(px(theme.metrics.control_height))
                 .px(px(12.))
                 .flex()
                 .items_center()
@@ -259,8 +259,8 @@ impl StashView {
 
         let header = div()
             .flex_none()
-            .px(px(18.))
-            .py(px(14.))
+            .px(px(12.))
+            .py(px(10.))
             .border_b_1()
             .border_color(theme.border)
             .flex()
