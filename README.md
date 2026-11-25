@@ -95,20 +95,30 @@ cargo clippy --workspace --all-targets
 `dist/Ramus-<version>-<arch>.dmg`. With a Developer ID certificate, sign it by setting
 `CODESIGN_IDENTITY="Developer ID Application: …"`.
 
-Releases are built by GitHub Actions (`.github/workflows/release.yml`). To publish one, set the
-version in `Cargo.toml`, then tag and push it:
+### Contributing and releases
 
-```sh
-git tag v0.1.0 && git push origin v0.1.0
-```
+`main` is protected: every change arrives as a pull request (from a fork, for anyone who isn't
+a maintainer), needs CI to pass and, for contributors, one approval. PRs are squash-merged, so
+the **PR title** becomes the commit, and it must start with a type:
 
-The workflow checks the tag matches the crate version, builds the disk image on a macOS runner and
-attaches it, with a checksum file, to a new GitHub release (marked a pre-release while the
-version starts with `0.`). "Run workflow" on the Actions tab builds the installer without
-publishing and keeps it for a day as a downloadable artifact, so you can try a build first. The
-build job has read-only access; only a small separate job that runs no build code can write the
-release. The finished files cross between the two through the Actions cache, not artifact storage,
-so a full artifact quota cannot block a release.
+| Title starts with | Means | Release |
+| --- | --- | --- |
+| `feat:` | a new feature | next minor version |
+| `fix:` | a bug fix | next patch version |
+| `perf:` | faster, same behaviour | next patch version |
+| `docs:` `ci:` `build:` `chore:` `refactor:` `style:` `test:` | everything else | none |
+
+Releases are automatic. After each merge, [release-please](https://github.com/googleapis/release-please)
+keeps one "chore(main): release x.y.z" PR open with the next version (in `Cargo.toml` and
+`Cargo.lock`) and a `CHANGELOG.md` entry built from the merged PR titles. Changes that only touch
+`.github/` or `docs/`, or whose titles don't release, never open or change it. **Merging that PR
+ships the release**: it is tagged, the disk image is built on a macOS runner and attached, with a
+checksum file, to a new GitHub release whose notes are the changelog.
+
+The build job has read-only access; only a small separate job that runs no build code can write
+the release. The finished files cross between the two through the Actions cache, not artifact
+storage, so a full artifact quota cannot block a release. "Run workflow" on the Release workflow
+builds the installer without publishing and keeps it for a day, so you can try a build first.
 
 ### GitHub sign-in
 

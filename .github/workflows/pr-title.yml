@@ -1,0 +1,35 @@
+name: PR title
+
+# PRs are squash-merged, so a PR's title becomes the commit on main, and release-please reads
+# those titles to decide whether a release is due. This check keeps them in the shape it
+# understands: `type: summary` or `type(scope): summary`, with `!` before the colon for a
+# breaking change.
+#
+#   feat:  a new feature          → next minor release
+#   fix:   a bug fix              → next patch release
+#   perf:  faster, same behaviour → next patch release
+#   docs: ci: build: chore: refactor: style: test: revert:  → no release by themselves
+on:
+  pull_request:
+    types: [opened, edited, reopened, synchronize]
+
+permissions: {}
+
+jobs:
+  title:
+    name: conventional title
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check the title
+        # The title is passed through the environment, never pasted into the script, so a
+        # title cannot inject shell commands.
+        env:
+          TITLE: ${{ github.event.pull_request.title }}
+        run: |
+          types='feat|fix|perf|revert|docs|ci|build|chore|refactor|style|test'
+          if printf '%s' "$TITLE" | grep -Eq "^($types)(\([a-z0-9._/-]+\))?!?: [^ ].*"; then
+            echo "The title is in the expected form."
+          else
+            echo "::error::PR title must start with a type, like 'feat: …' or 'fix: …' (one of: ${types//|/, })."
+            exit 1
+          fi

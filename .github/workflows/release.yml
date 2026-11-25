@@ -1,8 +1,10 @@
 name: Release
 
-# Pushing a tag like `v0.1.0` builds the installer and publishes it as a GitHub release.
-# "Run workflow" (any branch) builds the same installer and stops there, which is how to try
-# a build without publishing anything.
+# Normally called by release-please.yml with the tag it just created, after a release PR is
+# merged: this builds the installer and attaches it to that release. Pushing a tag like
+# `v0.3.0` by hand does the same (and creates the release if there is none). "Run workflow"
+# (any branch) builds the same installer and stops there, which is how to try a build
+# without publishing anything.
 #
 # The build and the publish are separate jobs so that the one that compiles third-party code
 # has no write access. The finished files cross between them through the Actions *cache*, not
@@ -10,6 +12,12 @@ name: Release
 # files are deleted), while the cache has its own limit and evicts old entries instead of
 # refusing new ones.
 on:
+  workflow_call:
+    inputs:
+      tag:
+        description: The release tag to build and publish, such as v0.3.0.
+        required: true
+        type: string
   push:
     tags: ["v*"]
   workflow_dispatch:
@@ -20,6 +28,9 @@ permissions:
 
 env:
   CARGO_TERM_COLOR: always
+  # The release this run publishes: the tag release-please passed in, or the tag that was
+  # pushed. Empty for a manual "Run workflow", which publishes nothing.
+  TAG: ${{ inputs.tag || (startsWith(github.ref, 'refs/tags/v') && github.ref_name) || '' }}
 
 jobs:
   build:
@@ -30,6 +41,8 @@ jobs:
       # Actions are pinned to full commit SHAs, not tags a maintainer could move.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          # Build exactly what was tagged, not whatever main has moved on to.
+          ref: ${{ inputs.tag || github.ref }}
           persist-credentials: false
 
       - name: Install Rust
@@ -46,11 +59,11 @@ jobs:
 
       # A release must be built from the version it claims to be.
       - name: Tag matches the crate version
-        if: startsWith(github.ref, 'refs/tags/v')
+        if: env.TAG != ''
         run: |
           version=$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -n 1)
-          if [ "v$version" != "$GITHUB_REF_NAME" ]; then
-            echo "tag $GITHUB_REF_NAME does not match Cargo.toml version $version" >&2
+          if [ "v$version" != "$TAG" ]; then
+            echo "tag $TAG does not match Cargo.toml version $version" >&2
             exit 1
           fi
 
@@ -75,7 +88,7 @@ jobs:
       # For a manual rehearsal, which publishes nothing: keep the build for a day so it can be
       # downloaded and tried. Best effort, since artifact storage may be full.
       - name: Keep the build for a day (manual runs)
-        if: ${{ !startsWith(github.ref, 'refs/tags/v') }}
+        if: env.TAG == ''
         continue-on-error: true
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
@@ -90,7 +103,7 @@ jobs:
     name: publish the release
     needs: build
     # Only a tag publishes; a manual run stops after the build.
-    if: startsWith(github.ref, 'refs/tags/v')
+    if: inputs.tag != '' || startsWith(github.ref, 'refs/tags/v')
     # Same operating system as the build, so the cache archive restores the same way.
     runs-on: macos-latest
     # The only job allowed to write to the repository. It runs no build code: it downloads
@@ -112,16 +125,22 @@ jobs:
       - name: Verify the checksum
         run: cd dist && shasum -a 256 -c SHA256SUMS.txt
 
-      - name: Create the release
+      - name: Attach the files to the release
         env:
           GH_TOKEN: ${{ github.token }}
-          TAG: ${{ github.ref_name }}
         run: |
-          # Anything before 1.0 is announced as a pre-release.
-          case "$TAG" in v0.*) flag="--prerelease" ;; *) flag="" ;; esac
-          gh release create "$TAG" dist/*.dmg dist/SHA256SUMS.txt \
-            --repo "$GITHUB_REPOSITORY" \
-            --title "Ramus $TAG" \
-            --generate-notes \
-            --verify-tag \
-            $flag
+          # release-please has already created the release, with its changelog as the notes:
+          # attach the files and leave the notes alone. A tag pushed by hand has no release
+          # yet, so create one. Either way it is a full release and becomes the latest.
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release upload "$TAG" dist/*.dmg dist/SHA256SUMS.txt \
+              --repo "$GITHUB_REPOSITORY" --clobber
+            gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --latest
+          else
+            gh release create "$TAG" dist/*.dmg dist/SHA256SUMS.txt \
+              --repo "$GITHUB_REPOSITORY" \
+              --title "Ramus $TAG" \
+              --generate-notes \
+              --verify-tag \
+              --latest
+          fi
