@@ -20,5 +20,7 @@ pub fn apply(theme: &Theme, cx: &mut App) {
     colors.ring = theme.accent.into();
     colors.primary = theme.accent.into();
     colors.selection = Hsla::from(theme.accent).opacity(0.35);
-    component.font_size = px(13.);
+    component.font_size = px(theme.metrics.text_base);
+    component.radius = px(theme.metrics.radius_md);
+    component.radius_lg = px(theme.metrics.radius_lg);
 }

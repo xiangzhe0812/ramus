@@ -7,6 +7,37 @@ pub const MONO_FONT: &str = "Menlo";
 /// The platform UI font, for text inside an element that is otherwise monospace.
 pub const UI_FONT: &str = ".SystemUIFont";
 
+/// The title bar's height. A constant, not only a metric, because the positions of the
+/// popovers hanging under it and of the window's traffic lights are constants too.
+pub const TITLE_BAR_HEIGHT: f32 = 44.;
+
+/// Named sizes, in pixels. Views use these rather than literals, so the type scale,
+/// corners and density can change in one place.
+#[derive(Clone, Copy, Debug)]
+pub struct Metrics {
+    /// Badges, shortcuts, small labels.
+    pub text_xs: f32,
+    /// Secondary lines, paths, code.
+    pub text_sm: f32,
+    /// Body text: the window's default.
+    pub text_base: f32,
+    /// Dialog titles.
+    pub text_lg: f32,
+    /// The Welcome heading.
+    pub text_title: f32,
+    /// Chips and small marks.
+    pub radius_sm: f32,
+    /// Pills, buttons, inputs, rows.
+    pub radius_md: f32,
+    /// Panels, popovers, dialogs.
+    pub radius_lg: f32,
+    /// Pills, buttons and tabs.
+    pub control_height: f32,
+    /// One-line list rows.
+    pub row_height: f32,
+    pub title_bar_height: f32,
+}
+
 /// A badge's background and foreground.
 #[derive(Clone, Copy, Debug)]
 pub struct Badge {
@@ -60,6 +91,7 @@ pub struct Theme {
     pub error_background: Rgba,
     pub error_border: Rgba,
     pub error_text: Rgba,
+    pub metrics: Metrics,
 }
 
 impl Theme {
@@ -69,16 +101,16 @@ impl Theme {
             text: rgb(text),
         };
         Self {
-            background: rgb(0x0d1016),
-            surface: rgb(0x151922),
-            surface_selected: rgb(0x1d2431),
-            border: rgb(0x232a36),
-            text: rgb(0xe8ebf0),
-            text_muted: rgb(0x98a2b3),
+            background: rgb(0x000000),
+            surface: rgb(0x0a0c0e),
+            surface_selected: rgb(0x1f252a),
+            border: rgb(0x1f252a),
+            text: rgb(0xe6e8eb),
+            text_muted: rgb(0x8a919a),
             accent: rgb(0x3b7be0),
             accent_text: rgb(0xffffff),
             accent_soft: rgb(0x6aa5ff),
-            pill_active: rgb(0x262f40),
+            pill_active: rgb(0x262c33),
             scrim: rgba(0x00000066),
             scrim_strong: rgba(0x00000099),
             panel_shadow: rgba(0x00000059),
@@ -94,7 +126,7 @@ impl Theme {
             diff_removed_background: rgba(0xf0707a21),
             diff_removed_sign: rgb(0xf0707a),
             diff_removed_text: rgb(0xfbe3e5),
-            diff_hunk_background: rgb(0x182236),
+            diff_hunk_background: rgb(0x10151b),
             diff_hunk_text: rgb(0x9bc0ff),
             diff_line_number: rgb(0x8b95a1),
             diff_context_text: rgb(0xd5d9de),
@@ -106,8 +138,61 @@ impl Theme {
             error_background: rgb(0x40242a),
             error_border: rgb(0x6b3640),
             error_text: rgb(0xfbe3e5),
+            metrics: Metrics {
+                text_xs: 11.,
+                text_sm: 12.,
+                text_base: 13.,
+                text_lg: 15.,
+                text_title: 20.,
+                radius_sm: 4.,
+                radius_md: 6.,
+                radius_lg: 8.,
+                control_height: 28.,
+                row_height: 32.,
+                title_bar_height: TITLE_BAR_HEIGHT,
+            },
         }
     }
 }
 
 impl Global for Theme {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The spread between a colour's strongest and weakest channel: 0 for a pure grey.
+    fn tint(color: Rgba) -> f32 {
+        let channels = [color.r, color.g, color.b];
+        channels.iter().cloned().fold(0., f32::max) - channels.iter().cloned().fold(1., f32::min)
+    }
+
+    #[test]
+    fn the_background_is_black() {
+        assert_eq!(Theme::dark().background, rgb(0x000000));
+    }
+
+    #[test]
+    fn the_chrome_has_no_blue_tint() {
+        let theme = Theme::dark();
+        for (name, color) in [
+            ("background", theme.background),
+            ("surface", theme.surface),
+            ("surface_selected", theme.surface_selected),
+            ("border", theme.border),
+            ("pill_active", theme.pill_active),
+        ] {
+            // Orca's own greys carry a faint cool cast (#1f252a spreads by 11); no more.
+            assert!(tint(color) <= 14. / 255., "{name} is tinted: {color:?}");
+        }
+    }
+
+    #[test]
+    fn sizes_step_up() {
+        let m = Theme::dark().metrics;
+        assert!(m.text_xs < m.text_sm && m.text_sm < m.text_base);
+        assert!(m.text_base < m.text_lg && m.text_lg < m.text_title);
+        assert!(m.radius_sm < m.radius_md && m.radius_md < m.radius_lg);
+        assert!(m.control_height < m.row_height && m.row_height < m.title_bar_height);
+    }
+}

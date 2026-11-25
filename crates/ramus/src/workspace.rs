@@ -913,7 +913,7 @@ impl Render for Workspace {
             .flex_col()
             .bg(theme.background)
             .text_color(theme.text)
-            .text_size(px(13.))
+            .text_size(px(theme.metrics.text_base))
             .child(self.title_bar.clone())
             .children(self.restricted_banner(&theme, cx))
             .children(self.operation_banner(&theme, cx))
