@@ -16,6 +16,34 @@ pub struct Settings {
     /// shared git folder, or a worktree folder for records from before trust was per
     /// repository.
     pub trusted_repositories: BTreeSet<PathBuf>,
+    /// Repositories the user has opened, most recent first, for the Repositories list.
+    pub repositories: Vec<RecentRepository>,
+}
+
+/// One repository on the Repositories list.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RecentRepository {
+    /// The repository's shared git folder, resolved: what makes two worktrees, or two
+    /// routes to one folder, the same repository.
+    pub repository: PathBuf,
+    /// The worktree folder last open in it, which choosing the entry reopens.
+    pub open_path: PathBuf,
+}
+
+impl RecentRepository {
+    /// The name the repository goes by: the folder holding its `.git`, or a bare
+    /// repository's own folder.
+    pub fn name(&self) -> String {
+        let folder = match self.repository.file_name() {
+            Some(name) if name == ".git" => self.repository.parent(),
+            _ => Some(self.repository.as_path()),
+        };
+        folder
+            .and_then(Path::file_name)
+            .unwrap_or(self.repository.as_os_str())
+            .to_string_lossy()
+            .into_owned()
+    }
 }
 
 /// `~/Library/Application Support/Ramus/settings.json`.
@@ -30,7 +58,7 @@ pub fn default_path() -> Option<PathBuf> {
 
 /// The path a repository is remembered by: symlinks resolved, so the same folder reached
 /// two ways is one repository.
-fn identity(root: &Path) -> PathBuf {
+pub(crate) fn identity(root: &Path) -> PathBuf {
     root.canonicalize().unwrap_or_else(|_| root.to_owned())
 }
 
@@ -73,6 +101,28 @@ impl Settings {
     /// Records trust for the whole repository, by its shared git folder.
     pub fn trust(&mut self, common_dir: &Path) {
         self.trusted_repositories.insert(identity(common_dir));
+    }
+
+    /// Puts the repository whose shared git folder is `common_dir` first on the list,
+    /// remembering `open_path` as the folder to reopen.
+    pub fn remember(&mut self, common_dir: &Path, open_path: &Path) {
+        let repository = identity(common_dir);
+        self.repositories
+            .retain(|entry| entry.repository != repository);
+        self.repositories.insert(
+            0,
+            RecentRepository {
+                repository,
+                open_path: open_path.to_owned(),
+            },
+        );
+    }
+
+    /// Takes the repository off the list. Nothing on disk, and no trust, changes.
+    pub fn forget(&mut self, repository: &Path) {
+        let repository = identity(repository);
+        self.repositories
+            .retain(|entry| entry.repository != repository);
     }
 }
 
@@ -184,6 +234,93 @@ mod tests {
         let path = dir.path().join("settings.json");
         fs::write(&path, r#"{"from_a_newer_version": true}"#).unwrap();
         assert_eq!(Settings::load(&path), Settings::default());
+    }
+
+    /// A folder standing in for a repository: `<dir>/.git` is its shared git folder.
+    fn repository() -> (TempDir, PathBuf) {
+        let dir = TempDir::new().unwrap();
+        let common = dir.path().join(".git");
+        fs::create_dir(&common).unwrap();
+        (dir, common)
+    }
+
+    fn open_paths(settings: &Settings) -> Vec<PathBuf> {
+        settings
+            .repositories
+            .iter()
+            .map(|entry| entry.open_path.clone())
+            .collect()
+    }
+
+    #[test]
+    fn remembering_puts_the_repository_first() {
+        let ((a, a_git), (b, b_git)) = (repository(), repository());
+        let a_linked = TempDir::new().unwrap();
+        let mut settings = Settings::default();
+
+        settings.remember(&a_git, a.path());
+        settings.remember(&b_git, b.path());
+        assert_eq!(open_paths(&settings), [b.path(), a.path()]);
+
+        settings.remember(&a_git, a_linked.path());
+        assert_eq!(open_paths(&settings), [a_linked.path(), b.path()]);
+    }
+
+    #[test]
+    fn a_repository_reached_two_ways_is_one_entry() {
+        let (real, real_git) = repository();
+        let links = TempDir::new().unwrap();
+        let link = links.path().join("alias");
+        std::os::unix::fs::symlink(real.path(), &link).unwrap();
+        let mut settings = Settings::default();
+
+        settings.remember(&real_git, real.path());
+        settings.remember(&link.join(".git"), &link);
+
+        assert_eq!(settings.repositories.len(), 1);
+    }
+
+    #[test]
+    fn forgetting_removes_only_that_repository() {
+        let ((a, a_git), (b, b_git)) = (repository(), repository());
+        let mut settings = Settings::default();
+        settings.remember(&a_git, a.path());
+        settings.remember(&b_git, b.path());
+
+        settings.forget(&settings.repositories[0].repository.clone());
+
+        assert_eq!(open_paths(&settings), [a.path()]);
+    }
+
+    #[test]
+    fn the_list_survives_a_save_and_load() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("settings.json");
+        let (a, a_git) = repository();
+        let mut settings = Settings::default();
+        settings.remember(&a_git, a.path());
+
+        settings.save(&path).unwrap();
+
+        assert_eq!(Settings::load(&path), settings);
+    }
+
+    #[test]
+    fn a_file_without_the_list_loads_an_empty_one() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("settings.json");
+        fs::write(&path, r#"{"trusted_repositories": []}"#).unwrap();
+        assert!(Settings::load(&path).repositories.is_empty());
+    }
+
+    #[test]
+    fn the_name_is_the_main_folder() {
+        let entry = |repository: &str| RecentRepository {
+            repository: repository.into(),
+            open_path: "/anywhere".into(),
+        };
+        assert_eq!(entry("/w/ramus/.git").name(), "ramus");
+        assert_eq!(entry("/w/bare.git").name(), "bare.git");
     }
 
     #[test]
