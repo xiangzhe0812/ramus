@@ -1,4 +1,4 @@
-//! Files the app carries inside its binary: the icons.
+//! Files the app carries inside its binary: the icons and the fonts.
 
 use std::borrow::Cow;
 
@@ -24,6 +24,23 @@ const ICONS: [(&str, &[u8]); 4] = [
         include_bytes!("../assets/icons/search.svg"),
     ),
 ];
+
+/// The fonts, compiled in for the same reason: Inter for the interface, JetBrains Mono for
+/// code, branch names and hashes. Both are under the SIL Open Font License; the licence
+/// texts sit next to the files in `assets/fonts`.
+const FONTS: [&[u8]; 6] = [
+    include_bytes!("../assets/fonts/Inter-Regular.ttf"),
+    include_bytes!("../assets/fonts/Inter-Medium.ttf"),
+    include_bytes!("../assets/fonts/Inter-SemiBold.ttf"),
+    include_bytes!("../assets/fonts/JetBrainsMono-Regular.ttf"),
+    include_bytes!("../assets/fonts/JetBrainsMono-Medium.ttf"),
+    include_bytes!("../assets/fonts/JetBrainsMono-Bold.ttf"),
+];
+
+/// Every bundled font, to register with the text system at start-up.
+pub fn fonts() -> Vec<Cow<'static, [u8]>> {
+    FONTS.iter().map(|bytes| Cow::Borrowed(*bytes)).collect()
+}
 
 pub struct Assets;
 
@@ -61,5 +78,12 @@ mod tests {
     fn an_unknown_path_is_not_an_error() {
         assert!(Assets.load("icons/nope.svg").unwrap().is_none());
         assert_eq!(Assets.list("icons/").unwrap().len(), ICONS.len());
+    }
+
+    #[test]
+    fn the_ui_and_code_fonts_are_bundled() {
+        let fonts = fonts();
+        assert_eq!(fonts.len(), 6);
+        assert!(fonts.iter().all(|bytes| bytes.starts_with(&[0, 1, 0, 0])));
     }
 }

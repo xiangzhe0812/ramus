@@ -3,7 +3,7 @@
 use gpui::{App, Hsla, px};
 use gpui_component::ThemeMode;
 
-use crate::theme::Theme;
+use crate::theme::{MONO_FONT, Theme, UI_FONT};
 
 pub fn apply(theme: &Theme, cx: &mut App) {
     // Switching modes reloads the library's colors, so set the mode before overriding them.
@@ -17,9 +17,11 @@ pub fn apply(theme: &Theme, cx: &mut App) {
     colors.border = theme.border.into();
     colors.input = theme.border.into();
     colors.caret = theme.text.into();
-    colors.ring = theme.accent.into();
-    colors.primary = theme.accent.into();
-    colors.selection = Hsla::from(theme.accent).opacity(0.35);
+    colors.ring = theme.focus.into();
+    colors.primary = theme.focus.into();
+    colors.selection = Hsla::from(theme.focus).opacity(0.35);
+    component.font_family = UI_FONT.into();
+    component.mono_font_family = MONO_FONT.into();
     component.font_size = px(theme.metrics.text_base);
     component.radius = px(theme.metrics.radius_md);
     component.radius_lg = px(theme.metrics.radius_lg);

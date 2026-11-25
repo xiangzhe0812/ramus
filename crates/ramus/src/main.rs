@@ -79,6 +79,9 @@ fn main() {
     gpui_platform::application()
         .with_assets(assets::Assets)
         .run(|cx| {
+            cx.text_system()
+                .add_fonts(assets::fonts())
+                .expect("the bundled fonts load");
             gpui_component::init(cx);
             let theme = Theme::dark();
             component_theme::apply(&theme, cx);

@@ -1,11 +1,11 @@
 use gpui::{Global, Rgba, rgb, rgba};
 
-/// Monospace font for branch names, hashes and code. Replace with a bundled
-/// JetBrains Mono once fonts are embedded.
-pub const MONO_FONT: &str = "Menlo";
+/// Monospace font for branch names, hashes and code, bundled (see `assets.rs`).
+pub const MONO_FONT: &str = "JetBrains Mono";
 
-/// The platform UI font, for text inside an element that is otherwise monospace.
-pub const UI_FONT: &str = ".SystemUIFont";
+/// The interface font, bundled; the window's default, and for text inside an element that
+/// is otherwise monospace.
+pub const UI_FONT: &str = "Inter";
 
 /// The title bar's height. A constant, not only a metric, because the positions of the
 /// popovers hanging under it and of the window's traffic lights are constants too.
@@ -54,8 +54,11 @@ pub struct Theme {
     pub border: Rgba,
     pub text: Rgba,
     pub text_muted: Rgba,
+    /// Main buttons, ticked checkboxes and picked options.
     pub accent: Rgba,
     pub accent_text: Rgba,
+    /// The focus ring and text selection.
+    pub focus: Rgba,
     /// A lighter accent for text links and small actions on a dark surface.
     pub accent_soft: Rgba,
     pub pill_active: Rgba,
@@ -106,14 +109,15 @@ impl Theme {
             border: rgb(0x1f252a),
             text: rgb(0xe6e8eb),
             text_muted: rgb(0x8a919a),
-            accent: rgb(0x3b7be0),
-            accent_text: rgb(0xffffff),
+            accent: rgb(0xe6e8eb),
+            accent_text: rgb(0x0a0c0e),
+            focus: rgb(0x3b7be0),
             accent_soft: rgb(0x6aa5ff),
             pill_active: rgb(0x262c33),
             scrim: rgba(0x00000066),
             scrim_strong: rgba(0x00000099),
             panel_shadow: rgba(0x00000059),
-            accent_chip: rgba(0xffffff38),
+            accent_chip: rgba(0x0000001f),
             modified: badge(0x3a3020, 0xf0c878),
             added: badge(0x153327, 0x86e0b4),
             deleted: badge(0x40242a, 0xf59aa2),
@@ -213,6 +217,29 @@ mod tests {
             "use theme.metrics instead of:\n{}",
             literals.join("\n")
         );
+    }
+
+    /// How light a colour looks, 0 (black) to 1 (white).
+    fn lightness(color: Rgba) -> f32 {
+        0.2126 * color.r + 0.7152 * color.g + 0.0722 * color.b
+    }
+
+    #[test]
+    fn main_buttons_are_light_and_neutral_with_dark_text() {
+        let theme = Theme::dark();
+        assert!(lightness(theme.accent) > 0.8, "{:?}", theme.accent);
+        assert!(tint(theme.accent) <= 14. / 255.);
+        assert!(
+            lightness(theme.accent_text) < 0.1,
+            "{:?}",
+            theme.accent_text
+        );
+    }
+
+    #[test]
+    fn focus_stays_blue() {
+        let focus = Theme::dark().focus;
+        assert!(focus.b > focus.r && focus.b > focus.g);
     }
 
     #[test]

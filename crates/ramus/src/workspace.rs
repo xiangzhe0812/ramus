@@ -26,7 +26,7 @@ use crate::{
     repo_state::RepoState,
     repository_popover::RepositoryPopover,
     stash_view::StashView,
-    theme::{MONO_FONT, Theme},
+    theme::{MONO_FONT, Theme, UI_FONT},
     title_bar::{
         BRANCH_PILL_LEFT, POPOVER_TOP, REPO_PILL_LEFT, Tab, TabRequested, TitleBar,
         WORKTREE_PILL_LEFT,
@@ -923,6 +923,7 @@ impl Render for Workspace {
             .bg(theme.background)
             .text_color(theme.text)
             .text_size(px(theme.metrics.text_base))
+            .font_family(UI_FONT)
             .child(self.title_bar.clone())
             .children(self.restricted_banner(&theme, cx))
             .children(self.operation_banner(&theme, cx))
