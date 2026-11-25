@@ -81,6 +81,7 @@ impl PaletteView {
         let branches = state.branches();
         let situation = Situation {
             has_repo: state.repo().is_some(),
+            has_recent: !state.recent_repositories().is_empty(),
             busy: state.is_busy(),
             primary_sync: state
                 .status()

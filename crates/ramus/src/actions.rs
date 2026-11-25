@@ -6,6 +6,7 @@ actions!(
         OpenRepository,
         ToggleBranches,
         ToggleWorktrees,
+        ToggleRepositories,
         DiscardSelected,
         SelectNextFile,
         SelectPreviousFile,

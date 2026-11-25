@@ -10,6 +10,7 @@ use crate::repo_state::SyncKind;
 pub enum Command {
     OpenRepository,
     CloneRepository,
+    SwitchRepository,
     ShowAccounts,
     SwitchBranch,
     SwitchWorktree,
@@ -56,6 +57,8 @@ impl Entry {
 /// What is true right now, which decides which commands make sense.
 pub struct Situation<'a> {
     pub has_repo: bool,
+    /// Repositories are remembered, so there is something to switch to.
+    pub has_recent: bool,
     /// A git operation is already running, so another can't start.
     pub busy: bool,
     /// The sync the title-bar button would run, and its label ("Push origin").
@@ -93,6 +96,13 @@ fn all_commands(situation: &Situation) -> Vec<Entry> {
         Some("⇧⌘O"),
         Command::CloneRepository,
     ));
+    if situation.has_recent {
+        entries.push(Entry::command(
+            "Switch repository…",
+            Some("⌘T"),
+            Command::SwitchRepository,
+        ));
+    }
     entries.push(Entry::command("Accounts…", None, Command::ShowAccounts));
     if !situation.has_repo {
         return entries;
@@ -231,6 +241,7 @@ mod tests {
     fn situation<'a>(local: &'a [Branch], remote_only: &'a [Branch]) -> Situation<'a> {
         Situation {
             has_repo: true,
+            has_recent: false,
             busy: false,
             primary_sync: Some((SyncKind::Push, "Push origin".into())),
             local,
@@ -258,6 +269,22 @@ mod tests {
         let all = entries(&situation(&local, &[]), "");
         assert!(all.iter().any(|e| e.label == "Switch branch…"));
         assert!(all.iter().all(|e| !e.is_branch()));
+    }
+
+    #[test]
+    fn switch_repository_is_offered_once_something_is_remembered() {
+        let mut s = situation(&[], &[]);
+        s.has_repo = false;
+        assert!(!labels(&entries(&s, "")).contains(&"Switch repository…"));
+
+        s.has_recent = true;
+        let all = entries(&s, "");
+        let entry = all
+            .iter()
+            .find(|entry| entry.label == "Switch repository…")
+            .unwrap();
+        assert_eq!(entry.shortcut, Some("⌘T"));
+        assert_eq!(entry.target, Target::Command(Command::SwitchRepository));
     }
 
     #[test]

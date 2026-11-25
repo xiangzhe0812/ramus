@@ -6,7 +6,8 @@ use gpui::{
 
 use crate::{
     actions::{
-        AddRemote, NewBranchHere, OpenRepository, ToggleBranches, TogglePalette, ToggleWorktrees,
+        AddRemote, NewBranchHere, ToggleBranches, TogglePalette, ToggleRepositories,
+        ToggleWorktrees,
     },
     repo_state::{RepoState, SyncKind},
     theme::{MONO_FONT, Theme},
@@ -101,8 +102,10 @@ const PILL_GAP: f32 = 10.;
 /// the lists that hang under those, stay put however long a name is. The branch pill is
 /// at least this wide.
 const PILL_WIDTH: f32 = 220.;
+/// Where the repository pill starts, for the list that hangs under it.
+pub const REPO_PILL_LEFT: f32 = BAR_PADDING;
 /// Where the worktree pill starts, for the list that hangs under it.
-pub const WORKTREE_PILL_LEFT: f32 = BAR_PADDING + PILL_WIDTH + PILL_GAP;
+pub const WORKTREE_PILL_LEFT: f32 = REPO_PILL_LEFT + PILL_WIDTH + PILL_GAP;
 /// Where the branch pill starts, for the list that hangs under it.
 pub const BRANCH_PILL_LEFT: f32 = WORKTREE_PILL_LEFT + PILL_WIDTH + PILL_GAP;
 
@@ -173,7 +176,7 @@ impl Render for TitleBar {
                     .cursor_pointer()
                     .hover(|style| style.bg(theme.surface_selected))
                     .on_click(cx.listener(|_, _, window, cx| {
-                        window.dispatch_action(Box::new(OpenRepository), cx)
+                        window.dispatch_action(Box::new(ToggleRepositories), cx)
                     }))
                     .child(icon("folder", 16., theme.text_muted))
                     .child(

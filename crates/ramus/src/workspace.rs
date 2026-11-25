@@ -12,7 +12,7 @@ use crate::{
     actions::{
         AddRemote, CloneRepository, DiscardSelected, NewBranchHere, OpenRepository, ShowAccounts,
         ShowChanges, ShowHistory, ShowStashes, ShowWorktrees, ToggleBranches, TogglePalette,
-        ToggleWorktrees,
+        ToggleRepositories, ToggleWorktrees,
     },
     add_remote_dialog::AddRemoteDialog,
     branch_popover::BranchPopover,
@@ -24,9 +24,12 @@ use crate::{
     palette::{Command, Target},
     palette_view::{PaletteView, RunEntry},
     repo_state::RepoState,
+    repository_popover::RepositoryPopover,
     stash_view::StashView,
     theme::{MONO_FONT, Theme},
-    title_bar::{BRANCH_PILL_LEFT, Tab, TabRequested, TitleBar, WORKTREE_PILL_LEFT},
+    title_bar::{
+        BRANCH_PILL_LEFT, REPO_PILL_LEFT, Tab, TabRequested, TitleBar, WORKTREE_PILL_LEFT,
+    },
     welcome::Welcome,
     worktree_popover::WorktreePopover,
     worktrees_view::WorktreesView,
@@ -38,6 +41,7 @@ const AUTO_FETCH_EVERY: std::time::Duration = std::time::Duration::from_secs(300
 /// An overlay drawn over the window. Only one can be open at a time, so opening any of
 /// them closes whichever was showing.
 enum Modal {
+    Repositories(Entity<RepositoryPopover>),
     Branches(Entity<BranchPopover>),
     Worktrees(Entity<WorktreePopover>),
     Palette(Entity<PaletteView>),
@@ -399,6 +403,7 @@ impl Workspace {
         match command {
             Command::OpenRepository => window.dispatch_action(Box::new(OpenRepository), cx),
             Command::CloneRepository => window.dispatch_action(Box::new(CloneRepository), cx),
+            Command::SwitchRepository => window.dispatch_action(Box::new(ToggleRepositories), cx),
             Command::ShowAccounts => window.dispatch_action(Box::new(ShowAccounts), cx),
             Command::SwitchBranch => window.dispatch_action(Box::new(ToggleBranches), cx),
             Command::SwitchWorktree => window.dispatch_action(Box::new(ToggleWorktrees), cx),
@@ -430,6 +435,24 @@ impl Workspace {
         let popover = cx.new(|cx| BranchPopover::new(self.repo_state.clone(), window, cx));
         self.close_on_dismiss(&popover, window, cx);
         self.show_modal(Modal::Branches(popover), cx);
+    }
+
+    /// Unlike branches and worktrees, the list opens with no repository open: it is how
+    /// one gets opened.
+    fn toggle_repositories(
+        &mut self,
+        _: &ToggleRepositories,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if matches!(self.modal, Some(Modal::Repositories(_))) {
+            self.close_modal(window, cx);
+            return;
+        }
+        self.close_modal(window, cx);
+        let popover = cx.new(|cx| RepositoryPopover::new(self.repo_state.clone(), window, cx));
+        self.close_on_dismiss(&popover, window, cx);
+        self.show_modal(Modal::Repositories(popover), cx);
     }
 
     fn toggle_worktrees(
@@ -493,6 +516,7 @@ impl Workspace {
                 .into_any_element()
         };
         match modal {
+            Modal::Repositories(popover) => under_pill(REPO_PILL_LEFT, popover.clone().into()),
             Modal::Branches(popover) => under_pill(BRANCH_PILL_LEFT, popover.clone().into()),
             Modal::Worktrees(popover) => under_pill(WORKTREE_PILL_LEFT, popover.clone().into()),
             Modal::Palette(palette) => scrim(
@@ -857,6 +881,7 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::open_repository))
             .on_action(cx.listener(Self::toggle_branches))
             .on_action(cx.listener(Self::toggle_worktrees))
+            .on_action(cx.listener(Self::toggle_repositories))
             .on_action(cx.listener(Self::toggle_palette))
             .on_action(cx.listener(Self::open_clone))
             .on_action(cx.listener(Self::open_accounts))
@@ -901,6 +926,7 @@ impl Workspace {
     fn modal_name(&self) -> &'static str {
         match self.modal {
             None => "none",
+            Some(Modal::Repositories(_)) => "repositories",
             Some(Modal::Branches(_)) => "branches",
             Some(Modal::Worktrees(_)) => "worktrees",
             Some(Modal::Palette(_)) => "palette",
@@ -965,8 +991,9 @@ mod tests {
 
         // Every overlay opened over every other one: only the newest may remain.
         type Opener = fn(&mut VisualTestContext);
-        let openers: [(&str, Opener); 6] = [
+        let openers: [(&str, Opener); 7] = [
             ("clone", |cx| show(cx, CloneRepository)),
+            ("repositories", |cx| show(cx, ToggleRepositories)),
             ("branches", |cx| show(cx, ToggleBranches)),
             ("worktrees", |cx| show(cx, ToggleWorktrees)),
             ("accounts", |cx| show(cx, ShowAccounts)),
@@ -1018,6 +1045,30 @@ mod tests {
         let closed = name(&workspace, cx);
 
         assert_eq!((opened, closed), ("worktrees", "none"));
+    }
+
+    #[gpui::test]
+    fn the_repository_list_opens_without_a_repository(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            gpui_component::init(cx);
+            cx.set_global(Theme::dark());
+        });
+        let repo_state = cx.new(|_| RepoState::default());
+        let accounts = cx.new(|_| {
+            AccountsState::new(
+                Arc::new(MemoryStore::default()),
+                Endpoints::default(),
+                String::new(),
+            )
+        });
+        let (workspace, cx) =
+            cx.add_window_view(|window, cx| Workspace::new(repo_state, accounts, window, cx));
+        cx.run_until_parked();
+
+        show(cx, ToggleRepositories);
+        assert_eq!(name(&workspace, cx), "repositories");
+        show(cx, ToggleRepositories);
+        assert_eq!(name(&workspace, cx), "none");
     }
 
     #[gpui::test]

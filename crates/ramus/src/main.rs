@@ -16,6 +16,7 @@ mod history_view;
 mod palette;
 mod palette_view;
 mod repo_state;
+mod repository_popover;
 mod secrets;
 mod settings;
 mod stash_view;
@@ -37,7 +38,7 @@ use crate::{
     actions::{
         CloneRepository, DiscardSelected, OpenRepository, SelectNextFile, SelectPreviousFile,
         ShowChanges, ShowHistory, ShowStashes, ShowWorktrees, ToggleBranches, TogglePalette,
-        ToggleSelectedFile, ToggleWorktrees,
+        ToggleRepositories, ToggleSelectedFile, ToggleWorktrees,
     },
     github::Endpoints,
     repo_state::RepoState,
@@ -85,6 +86,7 @@ fn main() {
                 KeyBinding::new("cmd-b", ToggleBranches, None),
                 KeyBinding::new("cmd-shift-b", ToggleWorktrees, None),
                 KeyBinding::new("cmd-shift-o", CloneRepository, None),
+                KeyBinding::new("cmd-t", ToggleRepositories, None),
                 KeyBinding::new("cmd-k", TogglePalette, None),
                 KeyBinding::new("cmd-1", ShowChanges, None),
                 KeyBinding::new("cmd-2", ShowHistory, None),
