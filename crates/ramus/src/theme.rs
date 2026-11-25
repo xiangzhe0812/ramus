@@ -33,9 +33,8 @@ pub struct Metrics {
     pub radius_lg: f32,
     /// Pills, buttons and tabs.
     pub control_height: f32,
-    /// One-line list rows.
+    /// One-line list rows. The title bar's height is `TITLE_BAR_HEIGHT`.
     pub row_height: f32,
-    pub title_bar_height: f32,
 }
 
 /// A badge's background and foreground.
@@ -149,7 +148,6 @@ impl Theme {
                 radius_lg: 8.,
                 control_height: 28.,
                 row_height: 32.,
-                title_bar_height: TITLE_BAR_HEIGHT,
             },
         }
     }
@@ -187,12 +185,53 @@ mod tests {
         }
     }
 
+    /// Views whose text sizes and corners must come from `Metrics`.
+    const NAMED_SIZE_VIEWS: &[&str] = &[
+        "title_bar.rs",
+        "workspace.rs",
+        "main.rs",
+        "repository_popover.rs",
+        "branch_popover.rs",
+        "worktree_popover.rs",
+        "palette_view.rs",
+        "clone_dialog.rs",
+        "add_remote_dialog.rs",
+        "accounts_view.rs",
+        "welcome.rs",
+        "error_banner.rs",
+        "ui.rs",
+    ];
+
+    #[test]
+    fn views_use_named_text_sizes_and_radii() {
+        let mut literals = Vec::new();
+        for file in NAMED_SIZE_VIEWS {
+            let path = format!("{}/src/{file}", env!("CARGO_MANIFEST_DIR"));
+            let source = std::fs::read_to_string(&path).unwrap();
+            for (number, line) in source.lines().enumerate() {
+                let literal = |call: &str| {
+                    line.split(call)
+                        .skip(1)
+                        .any(|rest| rest.starts_with(|c: char| c.is_ascii_digit()))
+                };
+                if literal("text_size(px(") || literal("rounded(px(") {
+                    literals.push(format!("{file}:{}: {}", number + 1, line.trim()));
+                }
+            }
+        }
+        assert!(
+            literals.is_empty(),
+            "use theme.metrics instead of:\n{}",
+            literals.join("\n")
+        );
+    }
+
     #[test]
     fn sizes_step_up() {
         let m = Theme::dark().metrics;
         assert!(m.text_xs < m.text_sm && m.text_sm < m.text_base);
         assert!(m.text_base < m.text_lg && m.text_lg < m.text_title);
         assert!(m.radius_sm < m.radius_md && m.radius_md < m.radius_lg);
-        assert!(m.control_height < m.row_height && m.row_height < m.title_bar_height);
+        assert!(m.control_height < m.row_height && m.row_height < TITLE_BAR_HEIGHT);
     }
 }

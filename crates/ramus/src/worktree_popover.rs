@@ -14,8 +14,6 @@ use crate::{
     theme::{MONO_FONT, Theme},
 };
 
-const ROW_HEIGHT: f32 = 40.;
-
 /// One line of the list: a section title or a worktree (an index into the shown ones).
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum Row {
@@ -151,16 +149,16 @@ impl WorktreePopover {
                 .h(px(20.))
                 .flex()
                 .items_center()
-                .rounded(px(10.))
+                .rounded(px(theme.metrics.radius_md))
                 .bg(theme.pill_active)
-                .text_size(px(11.))
+                .text_size(px(theme.metrics.text_xs))
                 .text_color(theme.text_muted)
                 .child(text)
         };
         div()
             .id(("worktree", ix))
             .w_full()
-            .h(px(ROW_HEIGHT))
+            .h(px(theme.metrics.row_height))
             .px(px(12.))
             .flex()
             .items_center()
@@ -199,7 +197,7 @@ impl WorktreePopover {
                     .max_w(px(200.))
                     .truncate()
                     .font_family(MONO_FONT)
-                    .text_size(px(11.5))
+                    .text_size(px(theme.metrics.text_sm))
                     .text_color(theme.text_muted)
                     .child(SharedString::from(head_label(worktree).to_owned())),
             )
@@ -239,11 +237,11 @@ impl Render for WorktreePopover {
                                 div()
                                     .id(("section", ix))
                                     .w_full()
-                                    .h(px(ROW_HEIGHT))
+                                    .h(px(theme.metrics.row_height))
                                     .px(px(12.))
                                     .flex()
                                     .items_center()
-                                    .text_size(px(11.))
+                                    .text_size(px(theme.metrics.text_xs))
                                     .text_color(row_theme.text_muted)
                                     .child(*title)
                                     .into_any_element(),
@@ -269,7 +267,7 @@ impl Render for WorktreePopover {
             .bg(theme.surface)
             .border_1()
             .border_color(theme.border)
-            .rounded(px(12.))
+            .rounded(px(theme.metrics.radius_lg))
             .shadow_lg()
             .overflow_hidden()
             // Clicks inside must not reach the backdrop that closes the popover.

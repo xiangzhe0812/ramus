@@ -160,11 +160,11 @@ impl Render for CloneDialog {
         let button = |id: &'static str| {
             div()
                 .id(id)
-                .h(px(40.))
+                .h(px(theme.metrics.control_height))
                 .px(px(20.))
                 .flex()
                 .items_center()
-                .rounded(px(6.))
+                .rounded(px(theme.metrics.radius_md))
                 .cursor_pointer()
         };
 
@@ -177,7 +177,7 @@ impl Render for CloneDialog {
             .bg(theme.surface)
             .border_1()
             .border_color(theme.border)
-            .rounded(px(10.))
+            .rounded(px(theme.metrics.radius_md))
             .shadow_lg()
             .overflow_hidden()
             .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
@@ -188,13 +188,13 @@ impl Render for CloneDialog {
             }))
             .child(
                 div()
-                    .h(px(52.))
-                    .px(px(16.))
+                    .h(px(44.))
+                    .px(px(12.))
                     .flex()
                     .items_center()
                     .border_b_1()
                     .border_color(theme.border)
-                    .text_size(px(15.))
+                    .text_size(px(theme.metrics.text_base))
                     .font_weight(gpui::FontWeight::SEMIBOLD)
                     .child("Clone a repository"),
             )
@@ -206,7 +206,7 @@ impl Render for CloneDialog {
                     .gap(px(8.))
                     .child(
                         div()
-                            .text_size(px(12.))
+                            .text_size(px(theme.metrics.text_sm))
                             .text_color(theme.text_muted)
                             .child("Repository address"),
                     )
@@ -214,7 +214,7 @@ impl Render for CloneDialog {
                     .child(
                         div()
                             .mt(px(8.))
-                            .text_size(px(12.))
+                            .text_size(px(theme.metrics.text_sm))
                             .text_color(theme.text_muted)
                             .child("Clone into"),
                     )
@@ -229,7 +229,7 @@ impl Render for CloneDialog {
                                     .min_w_0()
                                     .truncate()
                                     .font_family(MONO_FONT)
-                                    .text_size(px(12.5))
+                                    .text_size(px(theme.metrics.text_sm))
                                     .child(SharedString::from(match &target {
                                         Some(path) => path.display().to_string(),
                                         None => self.parent.display().to_string(),
@@ -237,8 +237,8 @@ impl Render for CloneDialog {
                             )
                             .child(
                                 button("choose-folder")
-                                    .h(px(36.))
-                                    .px(px(14.))
+                                    .h(px(theme.metrics.control_height))
+                                    .px(px(10.))
                                     .border_1()
                                     .border_color(theme.border)
                                     .hover(|b| b.bg(theme.surface_selected))
@@ -249,7 +249,7 @@ impl Render for CloneDialog {
                     .children(error.map(|message| {
                         div()
                             .mt(px(8.))
-                            .text_size(px(12.))
+                            .text_size(px(theme.metrics.text_sm))
                             .text_color(theme.error_text)
                             .child(message)
                     })),

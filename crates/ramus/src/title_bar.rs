@@ -11,7 +11,7 @@ use crate::{
         ToggleWorktrees,
     },
     repo_state::{RepoState, SyncKind},
-    theme::{MONO_FONT, Theme},
+    theme::{MONO_FONT, TITLE_BAR_HEIGHT, Theme},
     ui::icon,
 };
 
@@ -100,14 +100,16 @@ pub fn primary_sync(status: &RepoStatus) -> Option<SyncAction> {
 const BAR_PADDING: f32 = 16.;
 /// Room on the left for the window's close, minimise and zoom buttons, which sit inside
 /// the bar now that the window has no native title bar.
-const TRAFFIC_LIGHTS_WIDTH: f32 = 70.;
-/// Where the traffic lights sit: inset from the left, centred on the 60px bar.
-pub const TRAFFIC_LIGHTS_POSITION: (f32, f32) = (18., 22.);
-const PILL_GAP: f32 = 10.;
+const TRAFFIC_LIGHTS_WIDTH: f32 = 64.;
+/// Where the traffic lights sit: inset from the left, centred on the bar.
+pub const TRAFFIC_LIGHTS_POSITION: (f32, f32) = (16., 14.);
+const PILL_GAP: f32 = 8.;
 /// The repository and worktree pills are exactly this wide, so the pills after them, and
 /// the lists that hang under those, stay put however long a name is. The branch pill is
 /// at least this wide.
-const PILL_WIDTH: f32 = 220.;
+const PILL_WIDTH: f32 = 200.;
+/// Where a popover hanging under a title-bar pill starts: just below the bar.
+pub const POPOVER_TOP: f32 = TITLE_BAR_HEIGHT + 4.;
 /// Where the repository pill starts, for the list that hangs under it.
 pub const REPO_PILL_LEFT: f32 = BAR_PADDING + TRAFFIC_LIGHTS_WIDTH;
 /// Where the worktree pill starts, for the list that hangs under it.
@@ -117,13 +119,13 @@ pub const BRANCH_PILL_LEFT: f32 = WORKTREE_PILL_LEFT + PILL_WIDTH + PILL_GAP;
 
 fn pill(theme: &Theme) -> gpui::Div {
     div()
-        .h(px(40.))
+        .h(px(theme.metrics.control_height))
         .min_w(px(PILL_WIDTH))
-        .px(px(14.))
+        .px(px(10.))
         .flex()
         .items_center()
         .gap(px(10.))
-        .rounded(px(20.))
+        .rounded(px(theme.metrics.radius_md))
         .border_1()
         .border_color(theme.border)
         .bg(theme.surface)
@@ -174,7 +176,7 @@ impl Render for TitleBar {
         });
 
         div()
-            .h(px(60.))
+            .h(px(TITLE_BAR_HEIGHT))
             .flex_none()
             .flex()
             .items_center()
@@ -215,9 +217,9 @@ impl Render for TitleBar {
                                 .flex_none()
                                 .px(px(8.))
                                 .py(px(2.))
-                                .rounded(px(10.))
+                                .rounded(px(theme.metrics.radius_md))
                                 .bg(theme.pill_active)
-                                .text_size(px(11.))
+                                .text_size(px(theme.metrics.text_xs))
                                 .text_color(theme.text_muted)
                                 .child("Local only"),
                         )
@@ -259,13 +261,13 @@ impl Render for TitleBar {
                 // While something runs, the button shows it, and clicking it cancels.
                 div()
                     .id("sync-progress")
-                    .h(px(40.))
+                    .h(px(theme.metrics.control_height))
                     .min_w(px(200.))
-                    .px(px(16.))
+                    .px(px(12.))
                     .flex()
                     .items_center()
                     .gap(px(10.))
-                    .rounded(px(20.))
+                    .rounded(px(theme.metrics.radius_md))
                     .border_1()
                     .border_color(theme.border)
                     .bg(theme.pill_active)
@@ -280,7 +282,7 @@ impl Render for TitleBar {
                     .child(div().flex_1().child(label))
                     .child(
                         div()
-                            .text_size(px(11.))
+                            .text_size(px(theme.metrics.text_xs))
                             .font_weight(gpui::FontWeight::NORMAL)
                             .text_color(theme.text_muted)
                             .child("Cancel"),
@@ -290,12 +292,12 @@ impl Render for TitleBar {
                 let kind = action.kind;
                 div()
                     .id("sync")
-                    .h(px(40.))
-                    .px(px(16.))
+                    .h(px(theme.metrics.control_height))
+                    .px(px(12.))
                     .flex()
                     .items_center()
                     .gap(px(8.))
-                    .rounded(px(20.))
+                    .rounded(px(theme.metrics.radius_md))
                     .bg(theme.accent)
                     .text_color(theme.accent_text)
                     .font_weight(gpui::FontWeight::SEMIBOLD)
@@ -308,8 +310,8 @@ impl Render for TitleBar {
                     .children(action.count.map(|count| {
                         div()
                             .px(px(7.))
-                            .rounded(px(10.))
-                            .text_size(px(11.))
+                            .rounded(px(theme.metrics.radius_md))
+                            .text_size(px(theme.metrics.text_xs))
                             .bg(theme.accent_chip)
                             .child(count.to_string())
                     }))
@@ -319,11 +321,11 @@ impl Render for TitleBar {
                 bar.child(
                     div()
                         .id("branch-here")
-                        .h(px(40.))
-                        .px(px(16.))
+                        .h(px(theme.metrics.control_height))
+                        .px(px(12.))
                         .flex()
                         .items_center()
-                        .rounded(px(20.))
+                        .rounded(px(theme.metrics.radius_md))
                         .bg(theme.accent)
                         .text_color(theme.accent_text)
                         .font_weight(gpui::FontWeight::SEMIBOLD)
@@ -339,11 +341,11 @@ impl Render for TitleBar {
                 bar.child(
                     div()
                         .id("add-remote")
-                        .h(px(40.))
-                        .px(px(16.))
+                        .h(px(theme.metrics.control_height))
+                        .px(px(12.))
                         .flex()
                         .items_center()
-                        .rounded(px(20.))
+                        .rounded(px(theme.metrics.radius_md))
                         .border_1()
                         .border_color(theme.accent)
                         .text_color(theme.accent_soft)
@@ -361,12 +363,12 @@ impl Render for TitleBar {
             .child(
                 div()
                     .id("palette-button")
-                    .h(px(40.))
-                    .px(px(14.))
+                    .h(px(theme.metrics.control_height))
+                    .px(px(10.))
                     .flex()
                     .items_center()
                     .gap(px(8.))
-                    .rounded(px(20.))
+                    .rounded(px(theme.metrics.radius_md))
                     .border_1()
                     .border_color(theme.border)
                     .bg(theme.surface)
@@ -379,14 +381,19 @@ impl Render for TitleBar {
                     }))
                     .child(icon("search", 14., theme.text_muted))
                     .child("Search")
-                    .child(div().font_family(MONO_FONT).text_size(px(11.)).child("⌘ K")),
+                    .child(
+                        div()
+                            .font_family(MONO_FONT)
+                            .text_size(px(theme.metrics.text_xs))
+                            .child("⌘ K"),
+                    ),
             )
             .child(
                 div()
                     .flex()
                     .p(px(3.))
                     .gap(px(2.))
-                    .rounded(px(20.))
+                    .rounded(px(theme.metrics.radius_md))
                     .border_1()
                     .border_color(theme.border)
                     .bg(theme.surface)
@@ -401,11 +408,11 @@ impl Render for TitleBar {
                             let active = self.tab == tab;
                             div()
                                 .id(label)
-                                .h(px(32.))
-                                .px(px(16.))
+                                .h(px(theme.metrics.control_height - 6.))
+                                .px(px(12.))
                                 .flex()
                                 .items_center()
-                                .rounded(px(16.))
+                                .rounded(px(theme.metrics.radius_md))
                                 .cursor_pointer()
                                 .on_mouse_down(MouseButton::Left, keep_click)
                                 .when(active, |pill| {

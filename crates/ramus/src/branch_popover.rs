@@ -14,8 +14,6 @@ use crate::{
     theme::{MONO_FONT, Theme},
 };
 
-const ROW_HEIGHT: f32 = 40.;
-
 /// One line of the list: a section title or a branch (an index into the shown branches).
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum Row {
@@ -149,7 +147,7 @@ impl BranchPopover {
         div()
             .id(("branch", ix))
             .w_full()
-            .h(px(ROW_HEIGHT))
+            .h(px(theme.metrics.row_height))
             .px(px(12.))
             .flex()
             .items_center()
@@ -185,8 +183,8 @@ impl BranchPopover {
                             .h(px(24.))
                             .flex()
                             .items_center()
-                            .rounded(px(12.))
-                            .text_size(px(11.5))
+                            .rounded(px(theme.metrics.radius_lg))
+                            .text_size(px(theme.metrics.text_sm))
                             .text_color(theme.accent_soft)
                             .hover(|link| link.bg(theme.pill_active))
                             // Merging must not also switch to the branch the row stands for.
@@ -202,7 +200,7 @@ impl BranchPopover {
             .children(branch.last_commit.map(|time| {
                 div()
                     .flex_none()
-                    .text_size(px(11.5))
+                    .text_size(px(theme.metrics.text_sm))
                     .text_color(theme.text_muted)
                     .child(relative_time(time, now))
             }))
@@ -260,11 +258,11 @@ impl Render for BranchPopover {
                                         div()
                                             .id(("section", ix))
                                             .w_full()
-                                            .h(px(ROW_HEIGHT))
+                                            .h(px(theme.metrics.row_height))
                                             .px(px(12.))
                                             .flex()
                                             .items_center()
-                                            .text_size(px(11.))
+                                            .text_size(px(theme.metrics.text_xs))
                                             .text_color(row_theme.text_muted)
                                             .child(*title)
                                             .into_any_element(),
@@ -296,7 +294,7 @@ impl Render for BranchPopover {
             .bg(theme.surface)
             .border_1()
             .border_color(theme.border)
-            .rounded(px(12.))
+            .rounded(px(theme.metrics.radius_lg))
             .shadow_lg()
             .overflow_hidden()
             // Clicks inside must not reach the backdrop that closes the popover.
@@ -330,11 +328,11 @@ impl Render for BranchPopover {
                             div()
                                 .id("new-branch")
                                 .flex_1()
-                                .h(px(40.))
+                                .h(px(theme.metrics.control_height))
                                 .flex()
                                 .items_center()
                                 .justify_center()
-                                .rounded(px(8.))
+                                .rounded(px(theme.metrics.radius_md))
                                 .bg(theme.accent)
                                 .text_color(theme.accent_text)
                                 .font_weight(gpui::FontWeight::SEMIBOLD)
@@ -350,18 +348,18 @@ impl Render for BranchPopover {
                             .child(
                                 div().flex_1().child(
                                     Input::new(&self.new_name)
-                                        .h(px(40.))
+                                        .h(px(theme.metrics.control_height))
                                         .aria_label("New branch name"),
                                 ),
                             )
                             .child(
                                 div()
                                     .id("create-branch")
-                                    .h(px(40.))
-                                    .px(px(16.))
+                                    .h(px(theme.metrics.control_height))
+                                    .px(px(12.))
                                     .flex()
                                     .items_center()
-                                    .rounded(px(8.))
+                                    .rounded(px(theme.metrics.radius_md))
                                     .bg(theme.accent)
                                     .text_color(theme.accent_text)
                                     .font_weight(gpui::FontWeight::SEMIBOLD)

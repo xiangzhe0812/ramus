@@ -15,7 +15,7 @@ pub fn panel(theme: &Theme) -> Div {
         .bg(theme.surface)
         .border_1()
         .border_color(theme.border)
-        .rounded(px(12.))
+        .rounded(px(theme.metrics.radius_lg))
         .shadow(vec![BoxShadow {
             color: theme.panel_shadow.into(),
             offset: point(px(0.), px(8.)),

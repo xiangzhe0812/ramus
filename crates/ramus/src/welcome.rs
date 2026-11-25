@@ -33,7 +33,7 @@ impl Render for Welcome {
                             .gap(px(8.))
                             .child(
                                 div()
-                                    .text_size(px(24.))
+                                    .text_size(px(theme.metrics.text_title))
                                     .font_weight(gpui::FontWeight::SEMIBOLD)
                                     .child("Open a repository to get started"),
                             )
@@ -79,11 +79,11 @@ fn action_row(
 ) -> impl IntoElement {
     div()
         .id(id)
-        .h(px(56.))
-        .px(px(16.))
+        .h(px(44.))
+        .px(px(12.))
         .flex()
         .items_center()
-        .rounded(px(10.))
+        .rounded(px(theme.metrics.radius_md))
         .border_1()
         .border_color(theme.border)
         .bg(theme.background)
@@ -99,11 +99,11 @@ fn action_row(
         .child(
             div()
                 .px(px(6.))
-                .rounded(px(4.))
+                .rounded(px(theme.metrics.radius_sm))
                 .border_1()
                 .border_color(theme.border)
                 .font_family(MONO_FONT)
-                .text_size(px(11.))
+                .text_size(px(theme.metrics.text_xs))
                 .text_color(theme.text_muted)
                 .child(shortcut),
         )

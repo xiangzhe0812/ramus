@@ -57,11 +57,11 @@ impl Render for AccountsView {
         let button = |id: &'static str, label: &'static str| {
             div()
                 .id(id)
-                .h(px(32.))
-                .px(px(14.))
+                .h(px(theme.metrics.control_height))
+                .px(px(10.))
                 .flex()
                 .items_center()
-                .rounded(px(6.))
+                .rounded(px(theme.metrics.radius_md))
                 .cursor_pointer()
                 .border_1()
                 .border_color(theme.border)
@@ -112,7 +112,7 @@ impl Render for AccountsView {
             .bg(theme.surface)
             .border_1()
             .border_color(theme.border)
-            .rounded(px(10.))
+            .rounded(px(theme.metrics.radius_md))
             .shadow_lg()
             .overflow_hidden()
             .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
@@ -123,13 +123,13 @@ impl Render for AccountsView {
             }))
             .child(
                 div()
-                    .h(px(52.))
-                    .px(px(16.))
+                    .h(px(44.))
+                    .px(px(12.))
                     .flex()
                     .items_center()
                     .border_b_1()
                     .border_color(theme.border)
-                    .text_size(px(15.))
+                    .text_size(px(theme.metrics.text_base))
                     .font_weight(gpui::FontWeight::SEMIBOLD)
                     .child("Accounts"),
             )
@@ -141,12 +141,12 @@ impl Render for AccountsView {
                     .gap(px(12.))
                     .child(
                         div()
-                            .min_h(px(60.))
+                            .min_h(px(48.))
                             .px(px(12.))
                             .flex()
                             .items_center()
                             .gap(px(12.))
-                            .rounded(px(8.))
+                            .rounded(px(theme.metrics.radius_md))
                             .border_1()
                             .border_color(theme.border)
                             .bg(theme.background)
@@ -157,9 +157,9 @@ impl Render for AccountsView {
                                     .flex()
                                     .items_center()
                                     .justify_center()
-                                    .rounded(px(8.))
+                                    .rounded(px(theme.metrics.radius_md))
                                     .bg(theme.border)
-                                    .text_size(px(11.))
+                                    .text_size(px(theme.metrics.text_xs))
                                     .font_weight(gpui::FontWeight::SEMIBOLD)
                                     .child("GH"),
                             )
@@ -174,7 +174,7 @@ impl Render for AccountsView {
                                     )
                                     .child(
                                         div()
-                                            .text_size(px(11.5))
+                                            .text_size(px(theme.metrics.text_sm))
                                             .text_color(theme.text_muted)
                                             .child(SharedString::from(detail)),
                                     ),
@@ -190,7 +190,7 @@ impl Render for AccountsView {
                                     .flex()
                                     .flex_col()
                                     .gap(px(10.))
-                                    .rounded(px(8.))
+                                    .rounded(px(theme.metrics.radius_md))
                                     .border_1()
                                     .border_color(theme.border)
                                     .child(
@@ -201,7 +201,7 @@ impl Render for AccountsView {
                                     .child(
                                         div()
                                             .font_family(MONO_FONT)
-                                            .text_size(px(26.))
+                                            .text_size(px(theme.metrics.text_title))
                                             .font_weight(gpui::FontWeight::SEMIBOLD)
                                             .child(SharedString::from(code.clone())),
                                     )
@@ -226,7 +226,7 @@ impl Render for AccountsView {
                         }
                         Flow::Failed(message) => Some(
                             div()
-                                .text_size(px(12.))
+                                .text_size(px(theme.metrics.text_sm))
                                 .text_color(theme.error_text)
                                 .child(SharedString::from(message.clone()))
                                 .into_any_element(),
@@ -236,7 +236,7 @@ impl Render for AccountsView {
                     .when(account.is_some(), |body| {
                         body.child(
                             div()
-                                .text_size(px(11.5))
+                                .text_size(px(theme.metrics.text_sm))
                                 .text_color(theme.text_muted)
                                 .child(
                                     "Signing out forgets the token on this Mac. To revoke it on \

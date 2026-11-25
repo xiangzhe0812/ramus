@@ -28,7 +28,8 @@ use crate::{
     stash_view::StashView,
     theme::{MONO_FONT, Theme},
     title_bar::{
-        BRANCH_PILL_LEFT, REPO_PILL_LEFT, Tab, TabRequested, TitleBar, WORKTREE_PILL_LEFT,
+        BRANCH_PILL_LEFT, POPOVER_TOP, REPO_PILL_LEFT, Tab, TabRequested, TitleBar,
+        WORKTREE_PILL_LEFT,
     },
     welcome::Welcome,
     worktree_popover::WorktreePopover,
@@ -179,11 +180,11 @@ impl Workspace {
         let button = |id: &'static str| {
             div()
                 .id(id)
-                .h(px(36.))
-                .px(px(16.))
+                .h(px(theme.metrics.control_height))
+                .px(px(12.))
                 .flex()
                 .items_center()
-                .rounded(px(8.))
+                .rounded(px(theme.metrics.radius_md))
                 .cursor_pointer()
                 .font_weight(gpui::FontWeight::SEMIBOLD)
         };
@@ -207,14 +208,14 @@ impl Workspace {
                         .flex()
                         .flex_col()
                         .gap(px(14.))
-                        .rounded(px(12.))
+                        .rounded(px(theme.metrics.radius_lg))
                         .border_1()
                         .border_color(theme.border)
                         .bg(theme.surface)
                         .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| cx.stop_propagation())
                         .child(
                             div()
-                                .text_size(px(16.))
+                                .text_size(px(theme.metrics.text_lg))
                                 .font_weight(gpui::FontWeight::SEMIBOLD)
                                 .child("Discard changes?"),
                         )
@@ -251,11 +252,11 @@ impl Workspace {
         let action = |id: &'static str| {
             div()
                 .id(id)
-                .h(px(32.))
-                .px(px(14.))
+                .h(px(theme.metrics.control_height))
+                .px(px(10.))
                 .flex()
                 .items_center()
-                .rounded(px(16.))
+                .rounded(px(theme.metrics.radius_md))
                 .border_1()
                 .border_color(theme.border)
                 .cursor_pointer()
@@ -264,12 +265,12 @@ impl Workspace {
             div()
                 .mx(px(16.))
                 .mb(px(12.))
-                .min_h(px(48.))
-                .px(px(16.))
+                .min_h(px(40.))
+                .px(px(12.))
                 .flex()
                 .items_center()
                 .gap(px(12.))
-                .rounded(px(12.))
+                .rounded(px(theme.metrics.radius_lg))
                 .border_1()
                 .border_color(theme.border)
                 .bg(theme.surface)
@@ -518,7 +519,13 @@ impl Workspace {
                         cx.stop_propagation();
                     }),
                 )
-                .child(div().absolute().top(px(64.)).left(px(left)).child(popover))
+                .child(
+                    div()
+                        .absolute()
+                        .top(px(POPOVER_TOP))
+                        .left(px(left))
+                        .child(popover),
+                )
                 .into_any_element()
         };
         match modal {
@@ -583,11 +590,11 @@ impl Workspace {
         let outline = |id: &'static str, label: &'static str| {
             div()
                 .id(id)
-                .h(px(32.))
-                .px(px(14.))
+                .h(px(theme.metrics.control_height))
+                .px(px(10.))
                 .flex()
                 .items_center()
-                .rounded(px(16.))
+                .rounded(px(theme.metrics.radius_md))
                 .border_1()
                 .border_color(theme.error_border)
                 .cursor_pointer()
@@ -601,15 +608,15 @@ impl Workspace {
                 .mb(px(12.))
                 .flex()
                 .flex_col()
-                .rounded(px(12.))
+                .rounded(px(theme.metrics.radius_lg))
                 .border_1()
                 .border_color(theme.error_border)
                 .bg(theme.error_background)
                 .text_color(theme.error_text)
                 .child(
                     div()
-                        .min_h(px(48.))
-                        .px(px(16.))
+                        .min_h(px(40.))
+                        .px(px(12.))
                         .py(px(8.))
                         .flex()
                         .items_center()
@@ -626,7 +633,9 @@ impl Workspace {
                                         .child(SharedString::from(present.title.clone())),
                                 )
                                 .children(present.hint.clone().map(|hint| {
-                                    div().text_size(px(12.)).child(SharedString::from(hint))
+                                    div()
+                                        .text_size(px(theme.metrics.text_sm))
+                                        .child(SharedString::from(hint))
                                 })),
                         )
                         .when(offer_fix, |row| {
@@ -674,12 +683,12 @@ impl Workspace {
                 .when(open, |banner| {
                     banner.child(
                         div()
-                            .px(px(16.))
+                            .px(px(12.))
                             .py(px(10.))
                             .border_t_1()
                             .border_color(theme.error_border)
                             .font_family(MONO_FONT)
-                            .text_size(px(12.))
+                            .text_size(px(theme.metrics.text_sm))
                             .child(message),
                     )
                 }),
@@ -703,12 +712,12 @@ impl Workspace {
             div()
                 .mx(px(16.))
                 .mb(px(12.))
-                .h(px(48.))
-                .px(px(16.))
+                .h(px(40.))
+                .px(px(12.))
                 .flex()
                 .items_center()
                 .gap(px(12.))
-                .rounded(px(12.))
+                .rounded(px(theme.metrics.radius_lg))
                 .border_1()
                 .border_color(theme.modified.text)
                 .bg(theme.modified.background)
@@ -717,11 +726,11 @@ impl Workspace {
                 .child(
                     div()
                         .id("abort-operation")
-                        .h(px(32.))
-                        .px(px(14.))
+                        .h(px(theme.metrics.control_height))
+                        .px(px(10.))
                         .flex()
                         .items_center()
-                        .rounded(px(16.))
+                        .rounded(px(theme.metrics.radius_md))
                         .border_1()
                         .border_color(theme.modified.text)
                         .cursor_pointer()
@@ -744,13 +753,13 @@ impl Workspace {
             div()
                 .mx(px(16.))
                 .mb(px(12.))
-                .min_h(px(48.))
-                .px(px(16.))
+                .min_h(px(40.))
+                .px(px(12.))
                 .py(px(8.))
                 .flex()
                 .items_center()
                 .gap(px(12.))
-                .rounded(px(12.))
+                .rounded(px(theme.metrics.radius_lg))
                 .border_1()
                 .border_color(theme.modified.text)
                 .bg(theme.modified.background)
@@ -765,7 +774,7 @@ impl Workspace {
                                 .font_weight(gpui::FontWeight::SEMIBOLD)
                                 .child("Restricted mode"),
                         )
-                        .child(div().text_size(px(12.)).child(
+                        .child(div().text_size(px(theme.metrics.text_sm)).child(
                             "You can view changes and stage files. Committing and syncing are off, \
                              because this repository's own settings can run programs (hooks, credential \
                              helpers). Trust it only if you trust where it came from.",
@@ -774,11 +783,11 @@ impl Workspace {
                 .child(
                     div()
                         .id("trust-repository")
-                        .h(px(32.))
-                        .px(px(14.))
+                        .h(px(theme.metrics.control_height))
+                        .px(px(10.))
                         .flex()
                         .items_center()
-                        .rounded(px(16.))
+                        .rounded(px(theme.metrics.radius_md))
                         .bg(theme.accent)
                         .text_color(theme.accent_text)
                         .font_weight(gpui::FontWeight::SEMIBOLD)
@@ -815,13 +824,13 @@ impl Workspace {
             .map(|repo| crate::ui::abbreviate_home(repo.root(), home.as_deref()));
 
         div()
-            .h(px(28.))
+            .h(px(24.))
             .flex_none()
-            .px(px(16.))
+            .px(px(12.))
             .flex()
             .items_center()
             .gap(px(16.))
-            .text_size(px(12.))
+            .text_size(px(theme.metrics.text_sm))
             .text_color(theme.text_muted)
             .when_some(summary, |bar, (sync, changes)| {
                 bar.child(sync).child(changes)
@@ -862,12 +871,12 @@ impl Render for Workspace {
             div()
                 .flex_1()
                 .min_h_0()
-                .px(px(16.))
+                .px(px(12.))
                 .pb(px(12.))
                 .child(
                     div()
                         .size_full()
-                        .rounded(px(12.))
+                        .rounded(px(theme.metrics.radius_lg))
                         .border_1()
                         .border_color(theme.border)
                         .overflow_hidden()

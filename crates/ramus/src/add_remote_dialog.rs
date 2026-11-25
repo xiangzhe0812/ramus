@@ -64,11 +64,11 @@ impl Render for AddRemoteDialog {
         let button = |id: &'static str| {
             div()
                 .id(id)
-                .h(px(40.))
+                .h(px(theme.metrics.control_height))
                 .px(px(20.))
                 .flex()
                 .items_center()
-                .rounded(px(6.))
+                .rounded(px(theme.metrics.radius_md))
                 .cursor_pointer()
         };
         div()
@@ -80,7 +80,7 @@ impl Render for AddRemoteDialog {
             .bg(theme.surface)
             .border_1()
             .border_color(theme.border)
-            .rounded(px(10.))
+            .rounded(px(theme.metrics.radius_md))
             .shadow_lg()
             .overflow_hidden()
             .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
@@ -91,13 +91,13 @@ impl Render for AddRemoteDialog {
             }))
             .child(
                 div()
-                    .h(px(52.))
-                    .px(px(16.))
+                    .h(px(44.))
+                    .px(px(12.))
                     .flex()
                     .items_center()
                     .border_b_1()
                     .border_color(theme.border)
-                    .text_size(px(15.))
+                    .text_size(px(theme.metrics.text_base))
                     .font_weight(gpui::FontWeight::SEMIBOLD)
                     .child("Add a remote"),
             )
@@ -109,7 +109,7 @@ impl Render for AddRemoteDialog {
                     .gap(px(8.))
                     .child(
                         div()
-                            .text_size(px(12.))
+                            .text_size(px(theme.metrics.text_sm))
                             .text_color(theme.text_muted)
                             .child("Address of the repository to push to (it becomes \"origin\")"),
                     )

@@ -115,11 +115,11 @@ impl PaletteView {
 
 fn section_title(title: &'static str, theme: &Theme) -> impl IntoElement {
     div()
-        .h(px(28.))
-        .px(px(16.))
+        .h(px(24.))
+        .px(px(12.))
         .flex()
         .items_center()
-        .text_size(px(11.))
+        .text_size(px(theme.metrics.text_xs))
         .text_color(theme.text_muted)
         .child(title)
 }
@@ -176,8 +176,8 @@ impl Render for PaletteView {
             list = list.child(
                 div()
                     .id(("entry", ix))
-                    .h(px(44.))
-                    .px(px(16.))
+                    .h(px(theme.metrics.row_height))
+                    .px(px(12.))
                     .flex()
                     .flex_none()
                     .items_center()
@@ -200,7 +200,7 @@ impl Render for PaletteView {
                     .when(entry.is_branch(), |row| {
                         row.child(
                             div()
-                                .text_size(px(11.5))
+                                .text_size(px(theme.metrics.text_sm))
                                 .text_color(theme.text_muted)
                                 .child("Switch"),
                         )
@@ -218,7 +218,7 @@ impl Render for PaletteView {
             .bg(theme.surface)
             .border_1()
             .border_color(theme.border)
-            .rounded(px(10.))
+            .rounded(px(theme.metrics.radius_md))
             .shadow_lg()
             .overflow_hidden()
             // Clicks inside must not reach the backdrop that closes the palette.
@@ -233,9 +233,9 @@ impl Render for PaletteView {
             }))
             .child(
                 div()
-                    .h(px(52.))
+                    .h(px(44.))
                     .flex_none()
-                    .px(px(16.))
+                    .px(px(12.))
                     .flex()
                     .items_center()
                     .gap(px(10.))
@@ -251,15 +251,15 @@ impl Render for PaletteView {
             .child(list)
             .child(
                 div()
-                    .h(px(36.))
+                    .h(px(theme.metrics.control_height))
                     .flex_none()
-                    .px(px(16.))
+                    .px(px(12.))
                     .flex()
                     .items_center()
                     .gap(px(16.))
                     .border_t_1()
                     .border_color(theme.border)
-                    .text_size(px(12.))
+                    .text_size(px(theme.metrics.text_sm))
                     .text_color(theme.text_muted)
                     .child("Up/Down to move")
                     .child("Enter to run"),
@@ -273,9 +273,9 @@ fn key_chip(keys: &'static str, theme: &Theme) -> impl IntoElement {
         .py(px(2.))
         .border_1()
         .border_color(theme.border)
-        .rounded(px(4.))
+        .rounded(px(theme.metrics.radius_sm))
         .font_family(MONO_FONT)
-        .text_size(px(11.))
+        .text_size(px(theme.metrics.text_xs))
         .text_color(theme.text_muted)
         .child(keys)
 }

@@ -18,8 +18,6 @@ use crate::{
     theme::{MONO_FONT, Theme},
 };
 
-const ROW_HEIGHT: f32 = 40.;
-
 /// The repository switcher: a filter, the remembered repositories, then Add and Clone.
 pub struct RepositoryPopover {
     repo_state: Entity<RepoState>,
@@ -139,7 +137,7 @@ impl RepositoryPopover {
         div()
             .id(("repository", ix))
             .w_full()
-            .h(px(ROW_HEIGHT))
+            .h(px(theme.metrics.row_height))
             .px(px(12.))
             .flex()
             .items_center()
@@ -175,7 +173,7 @@ impl RepositoryPopover {
                     .min_w_0()
                     .truncate()
                     .font_family(MONO_FONT)
-                    .text_size(px(11.5))
+                    .text_size(px(theme.metrics.text_sm))
                     .text_color(theme.text_muted)
                     .child(if missing {
                         SharedString::from("Folder not found")
@@ -193,7 +191,7 @@ impl RepositoryPopover {
                     .flex()
                     .items_center()
                     .justify_center()
-                    .rounded(px(10.))
+                    .rounded(px(theme.metrics.radius_md))
                     .text_color(theme.text_muted)
                     .cursor_pointer()
                     .hover(|button| button.bg(theme.pill_active).text_color(theme.text))
@@ -222,7 +220,7 @@ impl RepositoryPopover {
         div()
             .id(id)
             .w_full()
-            .h(px(ROW_HEIGHT))
+            .h(px(theme.metrics.row_height))
             .px(px(12.))
             .flex()
             .items_center()
@@ -236,7 +234,7 @@ impl RepositoryPopover {
             .child(div().flex_1().child(label))
             .child(
                 div()
-                    .text_size(px(11.))
+                    .text_size(px(theme.metrics.text_xs))
                     .text_color(theme.text_muted)
                     .child(shortcut),
             )
@@ -291,7 +289,7 @@ impl Render for RepositoryPopover {
             .bg(theme.surface)
             .border_1()
             .border_color(theme.border)
-            .rounded(px(12.))
+            .rounded(px(theme.metrics.radius_lg))
             .shadow_lg()
             .overflow_hidden()
             // Clicks inside must not reach the backdrop that closes the popover.
