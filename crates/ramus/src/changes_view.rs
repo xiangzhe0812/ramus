@@ -507,7 +507,7 @@ fn checkbox(
         .id(id)
         .size(px(16.))
         .flex_none()
-        .rounded(px(4.))
+        .rounded(px(theme.metrics.radius_sm))
         .border_1()
         .border_color(if filled {
             theme.accent
@@ -518,7 +518,7 @@ fn checkbox(
         .flex()
         .items_center()
         .justify_center()
-        .text_size(px(11.))
+        .text_size(px(theme.metrics.text_xs))
         .text_color(theme.accent_text)
         .cursor_pointer()
         .child(match state {
@@ -555,8 +555,8 @@ fn file_row(
     div()
         .id(("file", ix))
         .w_full()
-        .h(px(44.))
-        .px(px(14.))
+        .h(px(40.))
+        .px(px(10.))
         .flex()
         .items_center()
         .gap(px(10.))
@@ -581,7 +581,7 @@ fn file_row(
                     column.child(
                         div()
                             .truncate()
-                            .text_size(px(11.))
+                            .text_size(px(theme.metrics.text_xs))
                             .text_color(theme.text_muted)
                             .child(SharedString::from(dir.to_owned())),
                     )
@@ -591,11 +591,11 @@ fn file_row(
             div()
                 .size(px(20.))
                 .flex_none()
-                .rounded(px(10.))
+                .rounded(px(theme.metrics.radius_md))
                 .bg(badge.background)
                 .text_color(badge.text)
                 .font_family(MONO_FONT)
-                .text_size(px(11.))
+                .text_size(px(theme.metrics.text_xs))
                 .flex()
                 .items_center()
                 .justify_center()
@@ -605,14 +605,14 @@ fn file_row(
 }
 
 impl ChangesView {
-    fn pill(text: String, colors: Badge) -> impl IntoElement {
+    fn pill(text: String, colors: Badge, theme: &Theme) -> impl IntoElement {
         div()
             .px(px(8.))
-            .rounded(px(10.))
+            .rounded(px(theme.metrics.radius_md))
             .bg(colors.background)
             .text_color(colors.text)
             .font_family(MONO_FONT)
-            .text_size(px(11.5))
+            .text_size(px(theme.metrics.text_sm))
             .child(text)
     }
 
@@ -634,9 +634,9 @@ impl ChangesView {
 
         let hide_whitespace = self.hide_whitespace;
         let header = div()
-            .h(px(48.))
+            .h(px(40.))
             .flex_none()
-            .px(px(16.))
+            .px(px(12.))
             .flex()
             .items_center()
             .gap(px(14.))
@@ -647,11 +647,11 @@ impl ChangesView {
                     .min_w_0()
                     .truncate()
                     .font_family(MONO_FONT)
-                    .text_size(px(12.5))
+                    .text_size(px(theme.metrics.text_sm))
                     .child(SharedString::from(path)),
             )
-            .children(additions.map(|n| Self::pill(format!("+{n}"), theme.added)))
-            .children(deletions.map(|n| Self::pill(format!("−{n}"), theme.deleted)))
+            .children(additions.map(|n| Self::pill(format!("+{n}"), theme.added, theme)))
+            .children(deletions.map(|n| Self::pill(format!("−{n}"), theme.deleted, theme)))
             .child(div().flex_1())
             .child(
                 div()
@@ -660,9 +660,9 @@ impl ChangesView {
                     .h(px(28.))
                     .flex()
                     .items_center()
-                    .rounded(px(14.))
+                    .rounded(px(theme.metrics.radius_md))
                     .cursor_pointer()
-                    .text_size(px(12.))
+                    .text_size(px(theme.metrics.text_sm))
                     .text_color(theme.deleted.text)
                     .hover(|button| button.bg(theme.deleted.background))
                     .on_click(cx.listener(|this, _, _, cx| this.request_discard(cx)))
@@ -671,7 +671,7 @@ impl ChangesView {
             .when(whitespace_blocks_hunks, |header| {
                 header.child(
                     div()
-                        .text_size(px(11.5))
+                        .text_size(px(theme.metrics.text_sm))
                         .text_color(theme.text_muted)
                         .child("Hunks can't be staged while whitespace is hidden"),
                 )
@@ -688,7 +688,7 @@ impl ChangesView {
                     .child(
                         div()
                             .size(px(16.))
-                            .rounded(px(4.))
+                            .rounded(px(theme.metrics.radius_sm))
                             .border_1()
                             .border_color(if hide_whitespace {
                                 theme.accent
@@ -699,7 +699,7 @@ impl ChangesView {
                             .flex()
                             .items_center()
                             .justify_center()
-                            .text_size(px(11.))
+                            .text_size(px(theme.metrics.text_xs))
                             .text_color(theme.accent_text)
                             .when(hide_whitespace, |checkbox| checkbox.child("✓")),
                     )
@@ -865,7 +865,7 @@ impl Render for ChangesView {
                         .gap(px(6.))
                         .child(
                             div()
-                                .text_size(px(20.))
+                                .text_size(px(theme.metrics.text_title))
                                 .font_weight(gpui::FontWeight::SEMIBOLD)
                                 .child("No local changes"),
                         )
@@ -884,11 +884,11 @@ impl Render for ChangesView {
                                     let repo_state = self.repo_state.clone();
                                     div()
                                         .id("clean-next-step")
-                                        .h(px(56.))
-                                        .px(px(16.))
+                                        .h(px(44.))
+                                        .px(px(12.))
                                         .flex()
                                         .items_center()
-                                        .rounded(px(10.))
+                                        .rounded(px(theme.metrics.radius_md))
                                         .bg(theme.accent)
                                         .text_color(theme.accent_text)
                                         .font_weight(gpui::FontWeight::SEMIBOLD)
@@ -901,11 +901,11 @@ impl Render for ChangesView {
                                 .children(root.map(|root| {
                                     div()
                                         .id("show-in-finder")
-                                        .h(px(56.))
-                                        .px(px(16.))
+                                        .h(px(44.))
+                                        .px(px(12.))
                                         .flex()
                                         .items_center()
-                                        .rounded(px(10.))
+                                        .rounded(px(theme.metrics.radius_md))
                                         .border_1()
                                         .border_color(theme.border)
                                         .bg(theme.background)
@@ -927,7 +927,7 @@ impl Render for ChangesView {
             .min_h_0()
             .flex()
             .gap(px(12.))
-            .px(px(16.))
+            .px(px(12.))
             .pb(px(12.))
             .child(
                 panel(&theme)
@@ -935,9 +935,9 @@ impl Render for ChangesView {
                     .flex_none()
                     .child(
                         div()
-                            .h(px(48.))
+                            .h(px(40.))
                             .flex_none()
-                            .px(px(14.))
+                            .px(px(10.))
                             .flex()
                             .items_center()
                             .gap(px(10.))
@@ -960,9 +960,9 @@ impl Render for ChangesView {
                             .child(
                                 div()
                                     .px(px(9.))
-                                    .rounded(px(10.))
+                                    .rounded(px(theme.metrics.radius_md))
                                     .bg(theme.pill_active)
-                                    .text_size(px(11.5))
+                                    .text_size(px(theme.metrics.text_sm))
                                     .text_color(theme.text_muted)
                                     .child(if count == 0 {
                                         "0 files".to_owned()
@@ -994,7 +994,7 @@ impl Render for ChangesView {
                     .child(
                         div()
                             .flex_none()
-                            .px(px(14.))
+                            .px(px(10.))
                             .pt(px(12.))
                             .pb(px(14.))
                             .flex()
@@ -1035,7 +1035,7 @@ impl Render for ChangesView {
                                         .when(amending && already_pushed, |column| {
                                             column.child(
                                                 div()
-                                                    .text_size(px(11.5))
+                                                    .text_size(px(theme.metrics.text_sm))
                                                     .text_color(theme.modified.text)
                                                     .child("This commit is already pushed. Amending it means a force push."),
                                             )
@@ -1045,11 +1045,11 @@ impl Render for ChangesView {
                             .child(
                                 div()
                                     .id("commit")
-                                    .h(px(42.))
+                                    .h(px(theme.metrics.control_height))
                                     .flex()
                                     .items_center()
                                     .justify_center()
-                                    .rounded(px(10.))
+                                    .rounded(px(theme.metrics.radius_md))
                                     .font_weight(gpui::FontWeight::SEMIBOLD)
                                     .truncate()
                                     .px(px(12.))

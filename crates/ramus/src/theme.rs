@@ -185,28 +185,17 @@ mod tests {
         }
     }
 
-    /// Views whose text sizes and corners must come from `Metrics`.
-    const NAMED_SIZE_VIEWS: &[&str] = &[
-        "title_bar.rs",
-        "workspace.rs",
-        "main.rs",
-        "repository_popover.rs",
-        "branch_popover.rs",
-        "worktree_popover.rs",
-        "palette_view.rs",
-        "clone_dialog.rs",
-        "add_remote_dialog.rs",
-        "accounts_view.rs",
-        "welcome.rs",
-        "error_banner.rs",
-        "ui.rs",
-    ];
-
     #[test]
     fn views_use_named_text_sizes_and_radii() {
+        // Every source file but this one, so a new view is covered too.
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
         let mut literals = Vec::new();
-        for file in NAMED_SIZE_VIEWS {
-            let path = format!("{}/src/{file}", env!("CARGO_MANIFEST_DIR"));
+        for entry in std::fs::read_dir(&dir).unwrap() {
+            let path = entry.unwrap().path();
+            let file = path.file_name().unwrap().to_string_lossy().into_owned();
+            if !file.ends_with(".rs") || file == "theme.rs" {
+                continue;
+            }
             let source = std::fs::read_to_string(&path).unwrap();
             for (number, line) in source.lines().enumerate() {
                 let literal = |call: &str| {

@@ -329,8 +329,8 @@ impl HistoryView {
         div()
             .id(("commit", ix))
             .w_full()
-            .h(px(60.))
-            .px(px(14.))
+            .h(px(48.))
+            .px(px(10.))
             .flex()
             .items_center()
             .gap(px(10.))
@@ -344,9 +344,9 @@ impl HistoryView {
                 div()
                     .size(px(30.))
                     .flex_none()
-                    .rounded(px(15.))
+                    .rounded(px(theme.metrics.radius_md))
                     .bg(theme.pill_active)
-                    .text_size(px(11.))
+                    .text_size(px(theme.metrics.text_xs))
                     .font_weight(gpui::FontWeight::SEMIBOLD)
                     .flex()
                     .items_center()
@@ -368,7 +368,7 @@ impl HistoryView {
                     )
                     .child(
                         div()
-                            .text_size(px(11.5))
+                            .text_size(px(theme.metrics.text_sm))
                             .text_color(theme.text_muted)
                             .child(format!(
                                 "{} · {}",
@@ -382,7 +382,7 @@ impl HistoryView {
                     div()
                         .size(px(8.))
                         .flex_none()
-                        .rounded(px(4.))
+                        .rounded(px(theme.metrics.radius_sm))
                         .bg(theme.modified.text),
                 )
             })
@@ -390,7 +390,7 @@ impl HistoryView {
                 div()
                     .flex_none()
                     .font_family(MONO_FONT)
-                    .text_size(px(11.))
+                    .text_size(px(theme.metrics.text_xs))
                     .text_color(theme.text_muted)
                     .child(SharedString::from(commit.short_id.clone())),
             )
@@ -404,11 +404,11 @@ impl HistoryView {
         let button = |id: &'static str| {
             div()
                 .id(id)
-                .h(px(32.))
-                .px(px(14.))
+                .h(px(theme.metrics.row_height))
+                .px(px(10.))
                 .flex()
                 .items_center()
-                .rounded(px(16.))
+                .rounded(px(theme.metrics.radius_md))
                 .border_1()
                 .border_color(theme.border)
                 .cursor_pointer()
@@ -427,7 +427,7 @@ impl HistoryView {
             .gap(px(6.))
             .child(
                 div()
-                    .text_size(px(18.))
+                    .text_size(px(theme.metrics.text_lg))
                     .font_weight(gpui::FontWeight::SEMIBOLD)
                     .child(SharedString::from(commit.subject.clone())),
             )
@@ -444,7 +444,7 @@ impl HistoryView {
                     .flex()
                     .items_center()
                     .gap(px(12.))
-                    .text_size(px(12.))
+                    .text_size(px(theme.metrics.text_sm))
                     .text_color(theme.text_muted)
                     .child(format!(
                         "{} · {}",
@@ -454,7 +454,7 @@ impl HistoryView {
                     .child(
                         div()
                             .px(px(8.))
-                            .rounded(px(10.))
+                            .rounded(px(theme.metrics.radius_md))
                             .bg(theme.pill_active)
                             .text_color(theme.text)
                             .font_family(MONO_FONT)
@@ -501,8 +501,8 @@ impl HistoryView {
                 div()
                     .id(("commit-file", ix))
                     .w_full()
-                    .h(px(38.))
-                    .px(px(14.))
+                    .h(px(theme.metrics.row_height))
+                    .px(px(10.))
                     .flex()
                     .items_center()
                     .gap(px(8.))
@@ -520,14 +520,14 @@ impl HistoryView {
                     .children(file.additions.map(|n| {
                         div()
                             .font_family(MONO_FONT)
-                            .text_size(px(11.))
+                            .text_size(px(theme.metrics.text_xs))
                             .text_color(theme.added.text)
                             .child(format!("+{n}"))
                     }))
                     .children(file.deletions.map(|n| {
                         div()
                             .font_family(MONO_FONT)
-                            .text_size(px(11.))
+                            .text_size(px(theme.metrics.text_xs))
                             .text_color(theme.deleted.text)
                             .child(format!("−{n}"))
                     }))
@@ -564,9 +564,9 @@ impl HistoryView {
                             .flex_col()
                             .child(
                                 div()
-                                    .h(px(36.))
+                                    .h(px(theme.metrics.row_height))
                                     .flex_none()
-                                    .px(px(14.))
+                                    .px(px(10.))
                                     .flex()
                                     .items_center()
                                     .text_color(theme.text_muted)
@@ -587,9 +587,9 @@ impl HistoryView {
                             .flex_col()
                             .child(
                                 div()
-                                    .h(px(36.))
+                                    .h(px(theme.metrics.row_height))
                                     .flex_none()
-                                    .px(px(14.))
+                                    .px(px(10.))
                                     .flex()
                                     .items_center()
                                     .justify_end()
@@ -602,9 +602,9 @@ impl HistoryView {
                                             .h(px(26.))
                                             .flex()
                                             .items_center()
-                                            .rounded(px(13.))
+                                            .rounded(px(theme.metrics.radius_md))
                                             .cursor_pointer()
-                                            .text_size(px(12.))
+                                            .text_size(px(theme.metrics.text_sm))
                                             .text_color(if hide_whitespace {
                                                 theme.accent_soft
                                             } else {
@@ -664,7 +664,7 @@ impl Render for HistoryView {
                                     div()
                                         .id("load-more")
                                         .w_full()
-                                        .h(px(60.))
+                                        .h(px(48.))
                                         .flex()
                                         .items_center()
                                         .justify_center()
@@ -691,7 +691,7 @@ impl Render for HistoryView {
             .min_h_0()
             .flex()
             .gap(px(12.))
-            .px(px(16.))
+            .px(px(12.))
             .pb(px(12.))
             .child(
                 panel(&theme)

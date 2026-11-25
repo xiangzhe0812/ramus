@@ -224,11 +224,11 @@ impl WorktreesView {
         let button = |id: &'static str| {
             div()
                 .id(id)
-                .h(px(36.))
-                .px(px(16.))
+                .h(px(theme.metrics.row_height))
+                .px(px(12.))
                 .flex()
                 .items_center()
-                .rounded(px(18.))
+                .rounded(px(theme.metrics.radius_md))
                 .border_1()
                 .border_color(theme.border)
                 .cursor_pointer()
@@ -265,7 +265,7 @@ impl WorktreesView {
                     .gap(px(2.))
                     .child(
                         div()
-                            .text_size(px(16.))
+                            .text_size(px(theme.metrics.text_lg))
                             .font_weight(gpui::FontWeight::SEMIBOLD)
                             .truncate()
                             .child(SharedString::from(title(&worktree))),
@@ -273,7 +273,7 @@ impl WorktreesView {
                     .child(
                         div()
                             .font_family(MONO_FONT)
-                            .text_size(px(12.))
+                            .text_size(px(theme.metrics.text_sm))
                             .text_color(theme.text_muted)
                             .truncate()
                             .child(SharedString::from(location)),
@@ -307,7 +307,7 @@ impl WorktreesView {
 
         let note = |text: String, color| {
             div()
-                .text_size(px(13.))
+                .text_size(px(theme.metrics.text_base))
                 .text_color(color)
                 .child(SharedString::from(text))
         };
@@ -368,7 +368,7 @@ impl WorktreesView {
                     .child(
                         div()
                             .size(px(16.))
-                            .rounded(px(4.))
+                            .rounded(px(theme.metrics.radius_sm))
                             .border_1()
                             .border_color(theme.border)
                             .when(on, |b| b.bg(theme.accent)),
@@ -414,16 +414,16 @@ impl Render for WorktreesView {
                     let badge = |text: &'static str| {
                         div()
                             .px(px(7.))
-                            .rounded(px(8.))
+                            .rounded(px(theme.metrics.radius_md))
                             .bg(theme.pill_active)
-                            .text_size(px(10.5))
+                            .text_size(px(theme.metrics.text_xs))
                             .text_color(theme.text_muted)
                             .child(text)
                     };
                     div()
                         .id(("worktree", ix))
-                        .h(px(56.))
-                        .px(px(14.))
+                        .h(px(44.))
+                        .px(px(10.))
                         .flex()
                         .flex_col()
                         .justify_center()
@@ -455,7 +455,7 @@ impl Render for WorktreesView {
                         .child(
                             div()
                                 .font_family(MONO_FONT)
-                                .text_size(px(11.))
+                                .text_size(px(theme.metrics.text_xs))
                                 .text_color(theme.text_muted)
                                 .truncate()
                                 .child(SharedString::from(abbreviate_home(
@@ -480,7 +480,7 @@ impl Render for WorktreesView {
             .min_h_0()
             .flex()
             .gap(px(12.))
-            .px(px(16.))
+            .px(px(12.))
             .pb(px(12.))
             .child(
                 panel(&theme)
@@ -488,9 +488,9 @@ impl Render for WorktreesView {
                     .flex_none()
                     .child(
                         div()
-                            .h(px(48.))
+                            .h(px(40.))
                             .flex_none()
-                            .px(px(14.))
+                            .px(px(10.))
                             .flex()
                             .items_center()
                             .gap(px(10.))
@@ -506,9 +506,9 @@ impl Render for WorktreesView {
                                 div()
                                     .px(px(9.))
                                     .py(px(2.))
-                                    .rounded(px(10.))
+                                    .rounded(px(theme.metrics.radius_md))
                                     .bg(theme.pill_active)
-                                    .text_size(px(11.5))
+                                    .text_size(px(theme.metrics.text_sm))
                                     .text_color(theme.text_muted)
                                     .child(worktrees.len().to_string()),
                             ),
@@ -526,18 +526,18 @@ impl Render for WorktreesView {
                             .child(Input::new(&self.branch).aria_label("New worktree branch"))
                             .child(
                                 div()
-                                    .text_size(px(11.5))
+                                    .text_size(px(theme.metrics.text_sm))
                                     .text_color(theme.text_muted)
                                     .child(SharedString::from(hint)),
                             )
                             .child(
                                 div()
                                     .id("create-worktree")
-                                    .h(px(40.))
+                                    .h(px(theme.metrics.control_height))
                                     .flex()
                                     .items_center()
                                     .justify_center()
-                                    .rounded(px(10.))
+                                    .rounded(px(theme.metrics.radius_md))
                                     .bg(theme.accent)
                                     .text_color(theme.accent_text)
                                     .font_weight(gpui::FontWeight::SEMIBOLD)

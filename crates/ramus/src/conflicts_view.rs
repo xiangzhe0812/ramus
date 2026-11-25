@@ -203,34 +203,36 @@ impl ConflictsView {
         theme: &Theme,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let side =
-            |title: &str, label: &str, lines: &[String], tint, fg| {
-                div()
-                    .flex_1()
-                    .min_w_0()
-                    .flex()
-                    .flex_col()
-                    .child(
-                        div()
-                            .h(px(30.))
-                            .px(px(12.))
-                            .flex()
-                            .items_center()
-                            .gap(px(8.))
-                            .child(SharedString::from(title.to_owned()))
-                            .child(
-                                div()
-                                    .px(px(8.))
-                                    .rounded(px(10.))
-                                    .bg(tint)
-                                    .text_color(fg)
-                                    .font_family(MONO_FONT)
-                                    .text_size(px(11.))
-                                    .child(SharedString::from(label.to_owned())),
-                            ),
-                    )
-                    .child(div().font_family(MONO_FONT).text_size(px(12.5)).children(
-                        lines.iter().map(|line| {
+        let side = |title: &str, label: &str, lines: &[String], tint, fg| {
+            div()
+                .flex_1()
+                .min_w_0()
+                .flex()
+                .flex_col()
+                .child(
+                    div()
+                        .h(px(theme.metrics.row_height))
+                        .px(px(12.))
+                        .flex()
+                        .items_center()
+                        .gap(px(8.))
+                        .child(SharedString::from(title.to_owned()))
+                        .child(
+                            div()
+                                .px(px(8.))
+                                .rounded(px(theme.metrics.radius_md))
+                                .bg(tint)
+                                .text_color(fg)
+                                .font_family(MONO_FONT)
+                                .text_size(px(theme.metrics.text_xs))
+                                .child(SharedString::from(label.to_owned())),
+                        ),
+                )
+                .child(
+                    div()
+                        .font_family(MONO_FONT)
+                        .text_size(px(theme.metrics.text_sm))
+                        .children(lines.iter().map(|line| {
                             div()
                                 .px(px(12.))
                                 .h(px(22.))
@@ -239,9 +241,9 @@ impl ConflictsView {
                                 .child(SharedString::from(
                                     line.trim_end_matches(['\n', '\r']).to_owned(),
                                 ))
-                        }),
-                    ))
-            };
+                        })),
+                )
+        };
         let pick = |id: (&'static str, usize), label: &'static str, choice: Choice| {
             div()
                 .id(id)
@@ -249,7 +251,7 @@ impl ConflictsView {
                 .px(px(12.))
                 .flex()
                 .items_center()
-                .rounded(px(14.))
+                .rounded(px(theme.metrics.radius_md))
                 .border_1()
                 .border_color(theme.border)
                 .cursor_pointer()
@@ -265,7 +267,7 @@ impl ConflictsView {
             .border_color(theme.border)
             .child(
                 div()
-                    .h(px(36.))
+                    .h(px(theme.metrics.row_height))
                     .px(px(12.))
                     .flex()
                     .items_center()
@@ -318,11 +320,11 @@ impl ConflictsView {
         let button = |id: &'static str, label: &'static str| {
             div()
                 .id(id)
-                .h(px(34.))
-                .px(px(16.))
+                .h(px(theme.metrics.row_height))
+                .px(px(12.))
                 .flex()
                 .items_center()
-                .rounded(px(17.))
+                .rounded(px(theme.metrics.radius_md))
                 .border_1()
                 .border_color(theme.border)
                 .cursor_pointer()
@@ -359,9 +361,9 @@ impl ConflictsView {
                         .flex_col()
                         .child(
                             div()
-                                .h(px(48.))
+                                .h(px(40.))
                                 .flex_none()
-                                .px(px(14.))
+                                .px(px(10.))
                                 .flex()
                                 .items_center()
                                 .gap(px(10.))
@@ -372,8 +374,8 @@ impl ConflictsView {
                                     div()
                                         .px(px(9.))
                                         .py(px(2.))
-                                        .rounded(px(10.))
-                                        .text_size(px(11.))
+                                        .rounded(px(theme.metrics.radius_md))
+                                        .text_size(px(theme.metrics.text_xs))
                                         .bg(if done {
                                             theme.added.background
                                         } else {
@@ -543,8 +545,8 @@ impl Render for ConflictsView {
                 let target = path.clone();
                 div()
                     .id(("conflict-file", ix))
-                    .h(px(52.))
-                    .px(px(14.))
+                    .h(px(44.))
+                    .px(px(10.))
                     .flex()
                     .items_center()
                     .gap(px(10.))
@@ -568,7 +570,7 @@ impl Render for ConflictsView {
                             )
                             .child(
                                 div()
-                                    .text_size(px(11.))
+                                    .text_size(px(theme.metrics.text_xs))
                                     .text_color(theme.text_muted)
                                     .truncate()
                                     .child(SharedString::from(dir)),
@@ -578,8 +580,8 @@ impl Render for ConflictsView {
                         div()
                             .px(px(9.))
                             .py(px(2.))
-                            .rounded(px(10.))
-                            .text_size(px(11.))
+                            .rounded(px(theme.metrics.radius_md))
+                            .text_size(px(theme.metrics.text_xs))
                             .bg(if is_open {
                                 theme.modified.background
                             } else {
@@ -613,7 +615,7 @@ impl Render for ConflictsView {
                     .min_h_0()
                     .flex()
                     .gap(px(12.))
-                    .px(px(16.))
+                    .px(px(12.))
                     .pb(px(12.))
                     .child(
                         panel(&theme)
@@ -621,9 +623,9 @@ impl Render for ConflictsView {
                             .flex_none()
                             .child(
                                 div()
-                                    .h(px(48.))
+                                    .h(px(40.))
                                     .flex_none()
-                                    .px(px(14.))
+                                    .px(px(10.))
                                     .flex()
                                     .items_center()
                                     .border_b_1()
@@ -637,9 +639,9 @@ impl Render for ConflictsView {
             )
             .child(
                 div()
-                    .h(px(56.))
+                    .h(px(44.))
                     .flex_none()
-                    .px(px(16.))
+                    .px(px(12.))
                     .flex()
                     .items_center()
                     .gap(px(12.))
@@ -653,11 +655,11 @@ impl Render for ConflictsView {
                         bar.child(
                             div()
                                 .id("continue-operation")
-                                .h(px(40.))
+                                .h(px(theme.metrics.control_height))
                                 .px(px(20.))
                                 .flex()
                                 .items_center()
-                                .rounded(px(20.))
+                                .rounded(px(theme.metrics.radius_md))
                                 .font_weight(gpui::FontWeight::SEMIBOLD)
                                 .when(can_continue, |b| {
                                     b.bg(theme.accent)

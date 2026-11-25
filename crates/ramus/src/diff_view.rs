@@ -69,7 +69,7 @@ fn diff_row(
         .flex()
         .items_center()
         .font_family(MONO_FONT)
-        .text_size(px(12.5));
+        .text_size(px(theme.metrics.text_sm));
 
     match row {
         DiffRow::Section(title) => base
@@ -77,7 +77,7 @@ fn diff_row(
             .text_color(theme.text)
             .font_family(UI_FONT)
             .font_weight(gpui::FontWeight::SEMIBOLD)
-            .text_size(px(11.5))
+            .text_size(px(theme.metrics.text_sm))
             .pl(px(14.))
             .child(title.clone())
             .into_any_element(),
@@ -99,7 +99,7 @@ fn diff_row(
                     .cursor_pointer()
                     .font_family(UI_FONT)
                     .font_weight(gpui::FontWeight::MEDIUM)
-                    .text_size(px(11.5))
+                    .text_size(px(theme.metrics.text_sm))
                     .text_color(theme.accent_soft)
                     .hover(|button| button.bg(theme.surface_selected))
                     .child(match picked {
@@ -152,7 +152,7 @@ fn diff_row(
                         .flex()
                         .items_center()
                         .justify_center()
-                        .rounded(px(3.))
+                        .rounded(px(theme.metrics.radius_sm))
                         .text_color(if picked {
                             theme.accent_text
                         } else {

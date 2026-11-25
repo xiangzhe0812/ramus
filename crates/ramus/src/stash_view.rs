@@ -244,11 +244,11 @@ impl StashView {
         let button = |id: &'static str| {
             div()
                 .id(id)
-                .h(px(36.))
-                .px(px(16.))
+                .h(px(theme.metrics.row_height))
+                .px(px(12.))
                 .flex()
                 .items_center()
-                .rounded(px(18.))
+                .rounded(px(theme.metrics.radius_md))
                 .border_1()
                 .border_color(theme.border)
                 .cursor_pointer()
@@ -257,67 +257,69 @@ impl StashView {
         let confirming = self.confirm_drop.as_ref() == Some(&stash.commit.id);
         let busy = self.repo_state.read(cx).is_busy();
 
-        let header =
-            div()
-                .flex_none()
-                .px(px(18.))
-                .py(px(14.))
-                .border_b_1()
-                .border_color(theme.border)
-                .flex()
-                .items_center()
-                .gap(px(12.))
-                .child(
-                    div()
-                        .flex_1()
-                        .min_w_0()
-                        .flex()
-                        .flex_col()
-                        .gap(px(2.))
-                        .child(
-                            div()
-                                .text_size(px(16.))
-                                .font_weight(gpui::FontWeight::SEMIBOLD)
-                                .truncate()
-                                .child(SharedString::from(stash.message.clone())),
-                        )
-                        .child(div().text_size(px(12.)).text_color(theme.text_muted).child(
-                            format!(
+        let header = div()
+            .flex_none()
+            .px(px(18.))
+            .py(px(14.))
+            .border_b_1()
+            .border_color(theme.border)
+            .flex()
+            .items_center()
+            .gap(px(12.))
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .flex()
+                    .flex_col()
+                    .gap(px(2.))
+                    .child(
+                        div()
+                            .text_size(px(theme.metrics.text_lg))
+                            .font_weight(gpui::FontWeight::SEMIBOLD)
+                            .truncate()
+                            .child(SharedString::from(stash.message.clone())),
+                    )
+                    .child(
+                        div()
+                            .text_size(px(theme.metrics.text_sm))
+                            .text_color(theme.text_muted)
+                            .child(format!(
                                 "stash@{{{}}} on {} · {}",
                                 stash.index,
                                 stash.branch,
                                 relative_time(stash.commit.time, now())
-                            ),
-                        )),
-                )
-                .child(
-                    button("apply-stash")
-                        .when(busy, |b| b.opacity(0.5))
-                        .on_click(cx.listener(|this, _, _, cx| this.apply(false, cx)))
-                        .child("Apply"),
-                )
-                .child(
-                    button("pop-stash")
-                        .bg(theme.accent)
-                        .border_color(theme.accent)
-                        .text_color(theme.accent_text)
-                        .font_weight(gpui::FontWeight::SEMIBOLD)
-                        .when(busy, |b| b.opacity(0.5))
-                        .on_click(cx.listener(|this, _, _, cx| this.apply(true, cx)))
-                        .child("Pop"),
-                )
-                .child(
-                    button("drop-stash")
-                        .border_color(theme.error_border)
-                        .text_color(theme.error_text)
-                        .when(confirming, |b| b.bg(theme.error_background))
-                        .on_click(cx.listener(|this, _, _, cx| this.drop_selected(cx)))
-                        .child(if confirming {
-                            "Click again to drop"
-                        } else {
-                            "Drop"
-                        }),
-                );
+                            )),
+                    ),
+            )
+            .child(
+                button("apply-stash")
+                    .when(busy, |b| b.opacity(0.5))
+                    .on_click(cx.listener(|this, _, _, cx| this.apply(false, cx)))
+                    .child("Apply"),
+            )
+            .child(
+                button("pop-stash")
+                    .bg(theme.accent)
+                    .border_color(theme.accent)
+                    .text_color(theme.accent_text)
+                    .font_weight(gpui::FontWeight::SEMIBOLD)
+                    .when(busy, |b| b.opacity(0.5))
+                    .on_click(cx.listener(|this, _, _, cx| this.apply(true, cx)))
+                    .child("Pop"),
+            )
+            .child(
+                button("drop-stash")
+                    .border_color(theme.error_border)
+                    .text_color(theme.error_text)
+                    .when(confirming, |b| b.bg(theme.error_background))
+                    .on_click(cx.listener(|this, _, _, cx| this.drop_selected(cx)))
+                    .child(if confirming {
+                        "Click again to drop"
+                    } else {
+                        "Drop"
+                    }),
+            );
 
         let file_rows: Vec<AnyElement> = self
             .files
@@ -335,8 +337,8 @@ impl StashView {
                 div()
                     .id(("stash-file", ix))
                     .w_full()
-                    .h(px(38.))
-                    .px(px(14.))
+                    .h(px(theme.metrics.row_height))
+                    .px(px(10.))
                     .flex()
                     .items_center()
                     .gap(px(8.))
@@ -354,7 +356,7 @@ impl StashView {
                     .when(entry.untracked, |row| {
                         row.child(
                             div()
-                                .text_size(px(11.))
+                                .text_size(px(theme.metrics.text_xs))
                                 .text_color(theme.text_muted)
                                 .child("new"),
                         )
@@ -362,14 +364,14 @@ impl StashView {
                     .children(file.additions.map(|n| {
                         div()
                             .font_family(MONO_FONT)
-                            .text_size(px(11.))
+                            .text_size(px(theme.metrics.text_xs))
                             .text_color(theme.added.text)
                             .child(format!("+{n}"))
                     }))
                     .children(file.deletions.map(|n| {
                         div()
                             .font_family(MONO_FONT)
-                            .text_size(px(11.))
+                            .text_size(px(theme.metrics.text_xs))
                             .text_color(theme.deleted.text)
                             .child(format!("−{n}"))
                     }))
@@ -412,9 +414,9 @@ impl StashView {
                             .flex_col()
                             .child(
                                 div()
-                                    .h(px(36.))
+                                    .h(px(theme.metrics.row_height))
                                     .flex_none()
-                                    .px(px(14.))
+                                    .px(px(10.))
                                     .flex()
                                     .items_center()
                                     .justify_end()
@@ -427,9 +429,9 @@ impl StashView {
                                             .h(px(26.))
                                             .flex()
                                             .items_center()
-                                            .rounded(px(13.))
+                                            .rounded(px(theme.metrics.radius_md))
                                             .cursor_pointer()
-                                            .text_size(px(12.))
+                                            .text_size(px(theme.metrics.text_sm))
                                             .text_color(if hide_whitespace {
                                                 theme.accent_soft
                                             } else {
@@ -477,8 +479,8 @@ impl Render for StashView {
                     let selected = self.selected.as_ref() == Some(&id);
                     div()
                         .id(("stash", stash.index))
-                        .h(px(68.))
-                        .px(px(14.))
+                        .h(px(56.))
+                        .px(px(10.))
                         .flex()
                         .flex_col()
                         .justify_center()
@@ -497,7 +499,7 @@ impl Render for StashView {
                                 .child(
                                     div()
                                         .font_family(MONO_FONT)
-                                        .text_size(px(11.))
+                                        .text_size(px(theme.metrics.text_xs))
                                         .text_color(theme.text_muted)
                                         .child(format!("{{{}}}", stash.index)),
                                 )
@@ -512,7 +514,7 @@ impl Render for StashView {
                         )
                         .child(
                             div()
-                                .text_size(px(11.5))
+                                .text_size(px(theme.metrics.text_sm))
                                 .text_color(theme.text_muted)
                                 .child(format!(
                                     "on {} · {}",
@@ -531,7 +533,7 @@ impl Render for StashView {
             .min_h_0()
             .flex()
             .gap(px(12.))
-            .px(px(16.))
+            .px(px(12.))
             .pb(px(12.))
             .child(
                 panel(&theme)
@@ -539,9 +541,9 @@ impl Render for StashView {
                     .flex_none()
                     .child(
                         div()
-                            .h(px(48.))
+                            .h(px(40.))
                             .flex_none()
-                            .px(px(14.))
+                            .px(px(10.))
                             .flex()
                             .items_center()
                             .gap(px(10.))
@@ -557,9 +559,9 @@ impl Render for StashView {
                                 div()
                                     .px(px(9.))
                                     .py(px(2.))
-                                    .rounded(px(10.))
+                                    .rounded(px(theme.metrics.radius_md))
                                     .bg(theme.pill_active)
-                                    .text_size(px(11.5))
+                                    .text_size(px(theme.metrics.text_sm))
                                     .text_color(theme.text_muted)
                                     .child(stashes.len().to_string()),
                             ),
@@ -578,11 +580,11 @@ impl Render for StashView {
                             .child(
                                 div()
                                     .id("stash-changes")
-                                    .h(px(40.))
+                                    .h(px(theme.metrics.control_height))
                                     .flex()
                                     .items_center()
                                     .justify_center()
-                                    .rounded(px(10.))
+                                    .rounded(px(theme.metrics.radius_md))
                                     .bg(theme.accent)
                                     .text_color(theme.accent_text)
                                     .font_weight(gpui::FontWeight::SEMIBOLD)
