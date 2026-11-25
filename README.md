@@ -103,8 +103,7 @@ git tag v0.1.0 && git push origin v0.1.0
 ```
 
 The workflow checks the tag matches the crate version, builds the disk image on a macOS runner and
-attaches it, with a checksum file, to a new GitHub release (marked a pre-release while the
-version starts with `0.`). "Run workflow" on the Actions tab builds the installer without
+attaches it, with a checksum file, to a new GitHub release, marked as the latest one. "Run workflow" on the Actions tab builds the installer without
 publishing and keeps it for a day as a downloadable artifact, so you can try a build first. The
 build job has read-only access; only a small separate job that runs no build code can write the
 release. The finished files cross between the two through the Actions cache, not artifact storage,

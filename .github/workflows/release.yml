@@ -117,11 +117,10 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ github.ref_name }}
         run: |
-          # Anything before 1.0 is announced as a pre-release.
-          case "$TAG" in v0.*) flag="--prerelease" ;; *) flag="" ;; esac
+          # Every tag is a full release and becomes the latest one.
           gh release create "$TAG" dist/*.dmg dist/SHA256SUMS.txt \
             --repo "$GITHUB_REPOSITORY" \
             --title "Ramus $TAG" \
             --generate-notes \
             --verify-tag \
-            $flag
+            --latest
