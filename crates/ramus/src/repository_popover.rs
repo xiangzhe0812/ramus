@@ -106,7 +106,7 @@ impl RepositoryPopover {
             return;
         }
         let busy = self.repo_state.update(cx, |state, cx| {
-            if state.is_busy() {
+            if !state.can_switch() {
                 return true;
             }
             if !state.is_open_repository(&entry) {
@@ -114,8 +114,8 @@ impl RepositoryPopover {
             }
             false
         });
-        // A switch can't start while git is busy, so the list stays up rather than
-        // closing as if it had worked.
+        // A switch can't start while git is busy or a folder is opening, so the list stays
+        // up rather than closing as if it had worked.
         if !busy {
             cx.emit(DismissEvent);
         }
@@ -134,7 +134,7 @@ impl RepositoryPopover {
         let missing = !entry.open_path.exists();
         // A folder that is gone can't be opened, and none can while git is busy; such
         // rows are dimmed and not clickable. A gone one can still be removed.
-        let can_pick = !missing && !state.is_busy();
+        let can_pick = !missing && state.can_switch();
         let view = cx.entity();
         div()
             .id(("repository", ix))

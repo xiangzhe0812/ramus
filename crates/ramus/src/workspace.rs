@@ -493,9 +493,10 @@ impl Workspace {
                         cx.listener(move |this, _, window, cx| {
                             if dismiss_on_outside_click {
                                 this.close_modal(window, cx);
-                            } else {
-                                cx.stop_propagation();
                             }
+                            // The press is the overlay's either way: it must not reach a
+                            // pill or the title bar's window drag underneath.
+                            cx.stop_propagation();
                         }),
                     )
                     .child(child)
@@ -510,7 +511,12 @@ impl Workspace {
                 .inset_0()
                 .on_mouse_down(
                     gpui::MouseButton::Left,
-                    cx.listener(|this, _, window, cx| this.close_modal(window, cx)),
+                    cx.listener(|this, _, window, cx| {
+                        this.close_modal(window, cx);
+                        // Clicking the pill that opened the list closes it; the press
+                        // must not also reach that pill and open it again.
+                        cx.stop_propagation();
+                    }),
                 )
                 .child(div().absolute().top(px(64.)).left(px(left)).child(popover))
                 .into_any_element()
@@ -1045,6 +1051,23 @@ mod tests {
         let closed = name(&workspace, cx);
 
         assert_eq!((opened, closed), ("worktrees", "none"));
+    }
+
+    #[gpui::test]
+    fn clicking_the_repository_pill_again_closes_the_list(cx: &mut TestAppContext) {
+        let dir = tempfile::TempDir::new().unwrap();
+        let (workspace, cx) = open(cx, dir.path());
+        let pill = gpui::point(px(crate::title_bar::REPO_PILL_LEFT + 20.), px(30.));
+
+        cx.simulate_click(pill, gpui::Modifiers::none());
+        cx.run_until_parked();
+        assert_eq!(name(&workspace, cx), "repositories");
+
+        // The press lands on the backdrop, which closes the list; it must not reach the
+        // pill underneath and open it again.
+        cx.simulate_click(pill, gpui::Modifiers::none());
+        cx.run_until_parked();
+        assert_eq!(name(&workspace, cx), "none");
     }
 
     #[gpui::test]

@@ -691,6 +691,12 @@ impl RepoState {
         self.action.is_some()
     }
 
+    /// Whether another folder can be opened now: nothing is running and no folder is
+    /// still opening.
+    pub fn can_switch(&self) -> bool {
+        !self.occupied()
+    }
+
     /// Whether new work must wait: a write is running, or a folder is still opening.
     fn occupied(&self) -> bool {
         self.action.is_some() || self.opening
@@ -2053,6 +2059,22 @@ mod tests {
         cx.executor().run_until_parked();
 
         assert_eq!(open_root(cx, &state), b.path().canonicalize().unwrap());
+    }
+
+    #[gpui::test]
+    async fn no_switch_is_possible_while_a_folder_is_still_opening(cx: &mut TestAppContext) {
+        let (_settings_dir, _settings_path, state) = state_saving_settings(cx);
+        let (a, b) = (repo_without_hooks(), repo_without_hooks());
+        open_folder(cx, &state, a.path());
+        assert!(state.read_with(cx, |state, _| state.can_switch()));
+
+        state.update(cx, |state, cx| {
+            state.open(b.path().to_owned(), cx);
+            assert!(!state.can_switch());
+        });
+        cx.executor().run_until_parked();
+
+        assert!(state.read_with(cx, |state, _| state.can_switch()));
     }
 
     #[gpui::test]
