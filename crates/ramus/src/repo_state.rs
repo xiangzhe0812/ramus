@@ -5,7 +5,7 @@ use std::{
     time::Duration,
 };
 
-use crate::settings::{self, Settings};
+use crate::settings::{self, RecentRepository, Settings};
 
 use git_core::{
     Branch, BranchList, CancelToken, CommitInfo, DiffHunk, DiscardBackup, FileChange, Head,
@@ -170,12 +170,7 @@ impl RepoState {
         self.settings
             .trust(self.common_dir.as_deref().unwrap_or(repo.root()));
         self.trusted = true;
-        if let Some(path) = &self.settings_path
-            && let Err(error) = self.settings.save(path)
-        {
-            // Trusted for this session; the choice just won't be remembered.
-            self.error = Some(format!("Couldn't save the trust setting: {error}").into());
-        }
+        self.save_settings("the trust setting");
         cx.notify();
     }
 
@@ -773,6 +768,45 @@ impl RepoState {
         self.open(worktree.path.clone(), cx);
     }
 
+    /// The repositories the user has opened, most recent first.
+    pub fn recent_repositories(&self) -> &[RecentRepository] {
+        &self.settings.repositories
+    }
+
+    /// Whether `entry` is the repository open now, in whichever of its worktrees.
+    pub fn is_open_repository(&self, entry: &RecentRepository) -> bool {
+        self.repo.as_ref().is_some_and(|repo| {
+            settings::identity(self.common_dir.as_deref().unwrap_or(repo.root()))
+                == entry.repository
+        })
+    }
+
+    /// Opens the folder `entry` remembers. Ignored while a write, a sync or another open
+    /// is running, as switching worktrees is, and for a folder that is gone.
+    pub fn switch_repository(&mut self, entry: &RecentRepository, cx: &mut Context<Self>) {
+        if self.occupied() || !entry.open_path.exists() {
+            return;
+        }
+        self.open(entry.open_path.clone(), cx);
+    }
+
+    /// Takes `entry` off the list. An open repository stays open, and stays trusted.
+    pub fn forget_repository(&mut self, entry: &RecentRepository, cx: &mut Context<Self>) {
+        self.settings.forget(&entry.repository);
+        self.save_settings("the repository list");
+        cx.notify();
+    }
+
+    /// Writes the settings file, showing a failure in the banner: the change still holds
+    /// for this session, it just won't be remembered.
+    fn save_settings(&mut self, what: &str) {
+        if let Some(path) = &self.settings_path
+            && let Err(error) = self.settings.save(path)
+        {
+            self.error = Some(format!("Couldn't save {what}: {error}").into());
+        }
+    }
+
     /// Opens the repository containing `path`. On failure the current repo stays open.
     pub fn open(&mut self, path: PathBuf, cx: &mut Context<Self>) {
         self.load(None, path, true, cx);
@@ -862,6 +896,14 @@ impl RepoState {
                         this.status = Some(status);
                         if clear_error {
                             this.error = None;
+                        }
+                        // A folder that opened goes to the top of the Repositories list.
+                        // After the error is cleared, so a failed save still shows.
+                        if opening && let Some(repo) = &this.repo {
+                            let root = repo.root().to_owned();
+                            let common_dir = this.common_dir.clone().unwrap_or(root.clone());
+                            this.settings.remember(&common_dir, &root);
+                            this.save_settings("the repository list");
                         }
                     }
                     Err(error) => this.error = Some(error.to_string().into()),
@@ -1906,6 +1948,140 @@ mod tests {
         cx.executor().run_until_parked();
 
         assert_eq!(open_root(cx, &state), main.canonicalize().unwrap());
+    }
+
+    /// State that saves its settings to a file in a fresh folder, returned with it.
+    fn state_saving_settings(
+        cx: &mut TestAppContext,
+    ) -> (TempDir, PathBuf, gpui::Entity<RepoState>) {
+        let settings_dir = TempDir::new().unwrap();
+        let settings_path = settings_dir.path().join("settings.json");
+        let state =
+            cx.new(|_| RepoState::with_settings(Settings::default(), Some(settings_path.clone())));
+        (settings_dir, settings_path, state)
+    }
+
+    fn listed(cx: &mut TestAppContext, state: &gpui::Entity<RepoState>) -> Vec<PathBuf> {
+        state.read_with(cx, |state, _| {
+            state
+                .recent_repositories()
+                .iter()
+                .map(|entry| entry.open_path.canonicalize().unwrap())
+                .collect()
+        })
+    }
+
+    fn open_folder(cx: &mut TestAppContext, state: &gpui::Entity<RepoState>, path: &Path) {
+        state.update(cx, |state, cx| state.open(path.to_owned(), cx));
+        cx.executor().run_until_parked();
+    }
+
+    #[gpui::test]
+    async fn opening_a_repository_puts_it_on_the_list_and_saves_it(cx: &mut TestAppContext) {
+        let (_settings_dir, settings_path, state) = state_saving_settings(cx);
+        let repo = repo_without_hooks();
+
+        open_folder(cx, &state, repo.path());
+
+        assert_eq!(listed(cx, &state), [repo.path().canonicalize().unwrap()]);
+        assert_eq!(Settings::load(&settings_path).repositories.len(), 1);
+    }
+
+    #[gpui::test]
+    async fn a_folder_that_is_not_a_repository_is_not_listed(cx: &mut TestAppContext) {
+        let (_settings_dir, _settings_path, state) = state_saving_settings(cx);
+        let folder = TempDir::new().unwrap();
+
+        open_folder(cx, &state, folder.path());
+
+        assert!(listed(cx, &state).is_empty());
+        assert!(state.read_with(cx, |state, _| state.error().is_some()));
+    }
+
+    #[gpui::test]
+    async fn switching_worktrees_updates_the_entry_instead_of_adding_one(cx: &mut TestAppContext) {
+        let (_parent, main, linked) = repo_with_linked_worktree();
+        let (_settings_dir, _settings_path, state) = state_saving_settings(cx);
+        open_folder(cx, &state, &main);
+
+        let worktree = worktree_at(cx, &state, 1);
+        state.update(cx, |state, cx| state.switch_worktree(&worktree, cx));
+        cx.executor().run_until_parked();
+
+        assert_eq!(listed(cx, &state), [linked.canonicalize().unwrap()]);
+    }
+
+    #[gpui::test]
+    async fn refreshing_does_not_reorder_the_list(cx: &mut TestAppContext) {
+        let (_settings_dir, settings_path, state) = state_saving_settings(cx);
+        let (a, b) = (repo_without_hooks(), repo_without_hooks());
+        open_folder(cx, &state, a.path());
+        open_folder(cx, &state, b.path());
+        fs::remove_file(&settings_path).unwrap();
+
+        state.update(cx, |state, cx| state.refresh(cx));
+        cx.executor().run_until_parked();
+
+        assert_eq!(
+            listed(cx, &state),
+            [
+                b.path().canonicalize().unwrap(),
+                a.path().canonicalize().unwrap()
+            ]
+        );
+        assert!(
+            !settings_path.exists(),
+            "a refresh shouldn't rewrite settings"
+        );
+    }
+
+    #[gpui::test]
+    async fn switching_repository_while_busy_is_ignored(cx: &mut TestAppContext) {
+        let (_settings_dir, _settings_path, state) = state_saving_settings(cx);
+        let (a, b) = (repo_without_hooks(), repo_without_hooks());
+        open_folder(cx, &state, a.path());
+        open_folder(cx, &state, b.path());
+        let a_entry = state.read_with(cx, |state, _| state.recent_repositories()[1].clone());
+
+        state.update(cx, |state, cx| {
+            state.stage(vec!["b.txt".into()], cx);
+            assert!(state.is_busy());
+            let loads_before = state.generation;
+            state.switch_repository(&a_entry, cx);
+            assert_eq!(state.generation, loads_before);
+        });
+        cx.executor().run_until_parked();
+
+        assert_eq!(open_root(cx, &state), b.path().canonicalize().unwrap());
+    }
+
+    #[gpui::test]
+    async fn switching_repository_opens_the_folder_it_remembers(cx: &mut TestAppContext) {
+        let (_settings_dir, _settings_path, state) = state_saving_settings(cx);
+        let (a, b) = (repo_without_hooks(), repo_without_hooks());
+        open_folder(cx, &state, a.path());
+        open_folder(cx, &state, b.path());
+        let a_entry = state.read_with(cx, |state, _| state.recent_repositories()[1].clone());
+
+        state.update(cx, |state, cx| state.switch_repository(&a_entry, cx));
+        cx.executor().run_until_parked();
+
+        assert_eq!(open_root(cx, &state), a.path().canonicalize().unwrap());
+        assert!(state.read_with(cx, |state, _| state.is_open_repository(&a_entry)));
+    }
+
+    #[gpui::test]
+    async fn forgetting_the_open_repository_keeps_it_open(cx: &mut TestAppContext) {
+        let (_settings_dir, settings_path, state) = state_saving_settings(cx);
+        let repo = repo_without_hooks();
+        open_folder(cx, &state, repo.path());
+        let entry = state.read_with(cx, |state, _| state.recent_repositories()[0].clone());
+
+        state.update(cx, |state, cx| state.forget_repository(&entry, cx));
+
+        assert!(listed(cx, &state).is_empty());
+        assert!(Settings::load(&settings_path).repositories.is_empty());
+        assert_eq!(open_root(cx, &state), repo.path().canonicalize().unwrap());
     }
 
     #[gpui::test]

@@ -57,6 +57,21 @@ fn repository_argument(
         .map(Into::into)
 }
 
+/// The folder to open at launch: the one named on the command line, otherwise the most
+/// recent repository whose folder still exists. `None` shows Welcome.
+fn launch_path(
+    argument: Option<std::path::PathBuf>,
+    recent: &[settings::RecentRepository],
+) -> Option<std::path::PathBuf> {
+    argument.or_else(|| {
+        recent
+            .iter()
+            .map(|entry| &entry.open_path)
+            .find(|path| path.exists())
+            .cloned()
+    })
+}
+
 fn main() {
     gpui_platform::application()
         .with_assets(assets::Assets)
@@ -82,7 +97,9 @@ fn main() {
             ]);
 
             let repo_state = cx.new(|_| RepoState::persistent());
-            if let Some(path) = repository_argument(std::env::args_os().skip(1)) {
+            let argument = repository_argument(std::env::args_os().skip(1));
+            let launch = launch_path(argument, repo_state.read(cx).recent_repositories());
+            if let Some(path) = launch {
                 repo_state.update(cx, |state, cx| state.open(path, cx));
             }
 
@@ -113,7 +130,8 @@ fn main() {
 mod tests {
     use std::{ffi::OsString, path::PathBuf};
 
-    use super::repository_argument;
+    use super::{launch_path, repository_argument};
+    use crate::settings::RecentRepository;
 
     fn args(list: &[&str]) -> Vec<OsString> {
         list.iter().map(OsString::from).collect()
@@ -126,6 +144,37 @@ mod tests {
             Some(PathBuf::from("/work/repo"))
         );
         assert_eq!(repository_argument(args(&[])), None);
+    }
+
+    fn entry(open_path: &std::path::Path) -> RecentRepository {
+        RecentRepository {
+            repository: open_path.join(".git"),
+            open_path: open_path.to_owned(),
+        }
+    }
+
+    #[test]
+    fn the_argument_wins_over_the_list() {
+        let remembered = tempfile::TempDir::new().unwrap();
+        assert_eq!(
+            launch_path(Some("/work/repo".into()), &[entry(remembered.path())]),
+            Some(PathBuf::from("/work/repo"))
+        );
+    }
+
+    #[test]
+    fn launch_skips_entries_whose_folder_is_gone() {
+        let kept = tempfile::TempDir::new().unwrap();
+        let gone = entry(std::path::Path::new("/nowhere/at/all"));
+        assert_eq!(
+            launch_path(None, &[gone, entry(kept.path())]),
+            Some(kept.path().to_owned())
+        );
+    }
+
+    #[test]
+    fn nothing_to_reopen_gives_none() {
+        assert_eq!(launch_path(None, &[]), None);
     }
 
     #[test]
