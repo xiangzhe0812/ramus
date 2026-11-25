@@ -1,7 +1,8 @@
 use git_core::{Head, RepoStatus};
 use gpui::{
-    Context, Entity, EventEmitter, InteractiveElement, IntoElement, ParentElement, Render,
-    StatefulInteractiveElement, Styled, Subscription, Window, div, prelude::FluentBuilder, px,
+    App, Context, Entity, EventEmitter, InteractiveElement, IntoElement, MouseButton,
+    MouseDownEvent, ParentElement, Render, StatefulInteractiveElement, Styled, Subscription,
+    Window, div, prelude::FluentBuilder, px,
 };
 
 use crate::{
@@ -97,13 +98,18 @@ pub fn primary_sync(status: &RepoStatus) -> Option<SyncAction> {
 
 /// Space between the window's edge and the first pill.
 const BAR_PADDING: f32 = 16.;
+/// Room on the left for the window's close, minimise and zoom buttons, which sit inside
+/// the bar now that the window has no native title bar.
+const TRAFFIC_LIGHTS_WIDTH: f32 = 70.;
+/// Where the traffic lights sit: inset from the left, centred on the 60px bar.
+pub const TRAFFIC_LIGHTS_POSITION: (f32, f32) = (18., 22.);
 const PILL_GAP: f32 = 10.;
 /// The repository and worktree pills are exactly this wide, so the pills after them, and
 /// the lists that hang under those, stay put however long a name is. The branch pill is
 /// at least this wide.
 const PILL_WIDTH: f32 = 220.;
 /// Where the repository pill starts, for the list that hangs under it.
-pub const REPO_PILL_LEFT: f32 = BAR_PADDING;
+pub const REPO_PILL_LEFT: f32 = BAR_PADDING + TRAFFIC_LIGHTS_WIDTH;
 /// Where the worktree pill starts, for the list that hangs under it.
 pub const WORKTREE_PILL_LEFT: f32 = REPO_PILL_LEFT + PILL_WIDTH + PILL_GAP;
 /// Where the branch pill starts, for the list that hangs under it.
@@ -122,6 +128,11 @@ fn pill(theme: &Theme) -> gpui::Div {
         .border_color(theme.border)
         .bg(theme.surface)
         .text_color(theme.text)
+}
+
+/// Keeps a press on a button in the bar from also starting a window drag.
+fn keep_click(_: &MouseDownEvent, _: &mut Window, cx: &mut App) {
+    cx.stop_propagation();
 }
 
 impl Render for TitleBar {
@@ -168,12 +179,23 @@ impl Render for TitleBar {
             .flex()
             .items_center()
             .gap(px(PILL_GAP))
-            .px(px(BAR_PADDING))
+            .pl(px(REPO_PILL_LEFT))
+            .pr(px(BAR_PADDING))
+            // Empty space in the bar moves the window, and a double-click zooms it, as a
+            // native title bar would. Buttons in the bar stop the press with `keep_click`.
+            .on_mouse_down(MouseButton::Left, |event, window, _| {
+                if event.click_count == 2 {
+                    window.titlebar_double_click();
+                } else {
+                    window.start_window_move();
+                }
+            })
             .child(
                 pill(&theme)
                     .id("repo-pill")
                     .max_w(px(PILL_WIDTH))
                     .cursor_pointer()
+                    .on_mouse_down(MouseButton::Left, keep_click)
                     .hover(|style| style.bg(theme.surface_selected))
                     .on_click(cx.listener(|_, _, window, cx| {
                         window.dispatch_action(Box::new(ToggleRepositories), cx)
@@ -206,6 +228,7 @@ impl Render for TitleBar {
                     .id("worktree-pill")
                     .max_w(px(PILL_WIDTH))
                     .cursor_pointer()
+                    .on_mouse_down(MouseButton::Left, keep_click)
                     .hover(|style| style.bg(theme.surface_selected))
                     .on_click(cx.listener(|_, _, window, cx| {
                         window.dispatch_action(Box::new(ToggleWorktrees), cx)
@@ -217,6 +240,7 @@ impl Render for TitleBar {
                 let pill = pill(&theme)
                     .id("branch-pill")
                     .cursor_pointer()
+                    .on_mouse_down(MouseButton::Left, keep_click)
                     .hover(|style| style.bg(theme.surface_selected))
                     .on_click(cx.listener(|_, _, window, cx| {
                         window.dispatch_action(Box::new(ToggleBranches), cx)
@@ -248,6 +272,7 @@ impl Render for TitleBar {
                     .text_color(theme.text)
                     .font_weight(gpui::FontWeight::SEMIBOLD)
                     .cursor_pointer()
+                    .on_mouse_down(MouseButton::Left, keep_click)
                     .on_click(cx.listener(|this, _, _, cx| {
                         this.repo_state
                             .update(cx, |state, cx| state.cancel_sync(cx))
@@ -275,6 +300,7 @@ impl Render for TitleBar {
                     .text_color(theme.accent_text)
                     .font_weight(gpui::FontWeight::SEMIBOLD)
                     .cursor_pointer()
+                    .on_mouse_down(MouseButton::Left, keep_click)
                     .on_click(cx.listener(move |this, _, _, cx| {
                         this.repo_state.update(cx, |state, cx| state.sync(kind, cx))
                     }))
@@ -302,6 +328,7 @@ impl Render for TitleBar {
                         .text_color(theme.accent_text)
                         .font_weight(gpui::FontWeight::SEMIBOLD)
                         .cursor_pointer()
+                        .on_mouse_down(MouseButton::Left, keep_click)
                         .on_click(cx.listener(|_, _, window, cx| {
                             window.dispatch_action(Box::new(NewBranchHere), cx)
                         }))
@@ -322,6 +349,7 @@ impl Render for TitleBar {
                         .text_color(theme.accent_soft)
                         .font_weight(gpui::FontWeight::SEMIBOLD)
                         .cursor_pointer()
+                        .on_mouse_down(MouseButton::Left, keep_click)
                         .hover(|b| b.bg(theme.surface_selected))
                         .on_click(cx.listener(|_, _, window, cx| {
                             window.dispatch_action(Box::new(AddRemote), cx)
@@ -344,6 +372,7 @@ impl Render for TitleBar {
                     .bg(theme.surface)
                     .text_color(theme.text_muted)
                     .cursor_pointer()
+                    .on_mouse_down(MouseButton::Left, keep_click)
                     .hover(|b| b.bg(theme.surface_selected))
                     .on_click(cx.listener(|_, _, window, cx| {
                         window.dispatch_action(Box::new(TogglePalette), cx)
@@ -378,6 +407,7 @@ impl Render for TitleBar {
                                 .items_center()
                                 .rounded(px(16.))
                                 .cursor_pointer()
+                                .on_mouse_down(MouseButton::Left, keep_click)
                                 .when(active, |pill| {
                                     pill.bg(theme.pill_active)
                                         .font_weight(gpui::FontWeight::SEMIBOLD)

@@ -31,7 +31,9 @@ mod workspace;
 mod worktree_popover;
 mod worktrees_view;
 
-use gpui::{AppContext, Bounds, KeyBinding, WindowBounds, WindowOptions, px, size};
+use gpui::{
+    AppContext, Bounds, KeyBinding, TitlebarOptions, WindowBounds, WindowOptions, point, px, size,
+};
 
 use crate::{
     accounts::AccountsState,
@@ -109,6 +111,17 @@ fn main() {
             cx.open_window(
                 WindowOptions {
                     window_bounds: Some(WindowBounds::Windowed(bounds)),
+                    // No native title bar: our own bar is the top of the window, with the
+                    // traffic lights inside it, and it moves the window itself.
+                    titlebar: Some(TitlebarOptions {
+                        title: Some("Ramus".into()),
+                        appears_transparent: true,
+                        traffic_light_position: Some(point(
+                            px(title_bar::TRAFFIC_LIGHTS_POSITION.0),
+                            px(title_bar::TRAFFIC_LIGHTS_POSITION.1),
+                        )),
+                    }),
+                    app_owns_titlebar_drag: true,
                     ..Default::default()
                 },
                 |window, cx| {
