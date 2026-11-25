@@ -12,6 +12,7 @@ use gpui_component::input::{Input, InputEvent, InputState};
 use crate::{
     repo_state::RepoState,
     theme::{MONO_FONT, Theme},
+    ui::icon,
 };
 
 /// One line of the list: a section title or a branch (an index into the shown branches).
@@ -161,7 +162,9 @@ impl BranchPopover {
                     .w(px(14.))
                     .flex_none()
                     .text_color(theme.accent_soft)
-                    .child(if branch.is_current { "✓" } else { "" }),
+                    .when(branch.is_current, |mark| {
+                        mark.child(icon("check", 14., theme.accent_soft))
+                    }),
             )
             .child(
                 div()

@@ -1,6 +1,6 @@
 # Ramus
 
-<p align="center"><img src="assets/icon/ramus-1024.png" width="160" alt="Ramus icon: a trunk branching into three"></p>
+<p align="center"><img src="assets/icon/ramus-1024.png" width="160" alt="Ramus icon: an R whose leg ends in a commit dot"></p>
 
 A Git desktop client for macOS, written in Rust with [GPUI](https://www.gpui.rs). It aims to
 replace GitHub Desktop for daily work: fast, keyboard-friendly, and careful about what a

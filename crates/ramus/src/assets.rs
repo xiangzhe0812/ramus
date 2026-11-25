@@ -5,23 +5,35 @@ use std::borrow::Cow;
 use anyhow::Result;
 use gpui::{AssetSource, SharedString};
 
-/// The icons, compiled in so the app is a single file with nothing to find at run time.
-const ICONS: [(&str, &[u8]); 4] = [
+/// The icons (a solid set), compiled in so the app is a single file with nothing to find at run time.
+const ICONS: [(&str, &[u8]); 7] = [
     (
-        "icons/folder.svg",
-        include_bytes!("../assets/icons/folder.svg"),
-    ),
-    (
-        "icons/branch.svg",
-        include_bytes!("../assets/icons/branch.svg"),
+        "icons/repository.svg",
+        include_bytes!("../assets/icons/repository.svg"),
     ),
     (
         "icons/worktree.svg",
         include_bytes!("../assets/icons/worktree.svg"),
     ),
     (
+        "icons/branch.svg",
+        include_bytes!("../assets/icons/branch.svg"),
+    ),
+    (
         "icons/search.svg",
         include_bytes!("../assets/icons/search.svg"),
+    ),
+    (
+        "icons/clone.svg",
+        include_bytes!("../assets/icons/clone.svg"),
+    ),
+    (
+        "icons/close.svg",
+        include_bytes!("../assets/icons/close.svg"),
+    ),
+    (
+        "icons/check.svg",
+        include_bytes!("../assets/icons/check.svg"),
     ),
 ];
 
@@ -78,6 +90,22 @@ mod tests {
     fn an_unknown_path_is_not_an_error() {
         assert!(Assets.load("icons/nope.svg").unwrap().is_none());
         assert_eq!(Assets.list("icons/").unwrap().len(), ICONS.len());
+    }
+
+    #[test]
+    fn the_solid_icon_set_is_bundled() {
+        for name in [
+            "repository",
+            "worktree",
+            "branch",
+            "search",
+            "clone",
+            "close",
+            "check",
+        ] {
+            let path = format!("icons/{name}.svg");
+            assert!(Assets.load(&path).unwrap().is_some(), "{path} is missing");
+        }
     }
 
     #[test]

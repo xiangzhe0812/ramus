@@ -202,7 +202,7 @@ impl Render for TitleBar {
                     .on_click(cx.listener(|_, _, window, cx| {
                         window.dispatch_action(Box::new(ToggleRepositories), cx)
                     }))
-                    .child(icon("folder", 16., theme.text_muted))
+                    .child(icon("repository", 16., theme.text_muted))
                     .child(
                         div()
                             .flex_1()

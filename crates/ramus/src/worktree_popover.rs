@@ -12,6 +12,7 @@ use gpui_component::input::{Input, InputEvent, InputState};
 use crate::{
     repo_state::RepoState,
     theme::{MONO_FONT, Theme},
+    ui::icon,
 };
 
 /// One line of the list: a section title or a worktree (an index into the shown ones).
@@ -179,7 +180,9 @@ impl WorktreePopover {
                     .w(px(14.))
                     .flex_none()
                     .text_color(theme.accent_soft)
-                    .child(if is_open { "✓" } else { "" }),
+                    .when(is_open, |mark| {
+                        mark.child(icon("check", 14., theme.accent_soft))
+                    }),
             )
             .child(
                 div()

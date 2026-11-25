@@ -16,6 +16,7 @@ use crate::{
     repo_state::RepoState,
     settings::RecentRepository,
     theme::{MONO_FONT, Theme},
+    ui::icon,
 };
 
 /// The repository switcher: a filter, the remembered repositories, then Add and Clone.
@@ -158,7 +159,9 @@ impl RepositoryPopover {
                     .w(px(14.))
                     .flex_none()
                     .text_color(theme.accent_soft)
-                    .child(if is_open { "✓" } else { "" }),
+                    .when(is_open, |mark| {
+                        mark.child(icon("check", 14., theme.accent_soft))
+                    }),
             )
             .child(
                 div()
@@ -203,14 +206,14 @@ impl RepositoryPopover {
                                 .update(cx, |state, cx| state.forget_repository(&forgotten, cx))
                         })
                     })
-                    .child("✕")
+                    .child(icon("close", 12., theme.text_muted))
             })
             .into_any_element()
     }
 
     fn action_row(
-        &self,
         id: &'static str,
+        icon_name: &'static str,
         label: &'static str,
         shortcut: &'static str,
         action: Box<dyn Action>,
@@ -231,6 +234,7 @@ impl RepositoryPopover {
                 cx.emit(DismissEvent);
                 window.dispatch_action(action.boxed_clone(), cx);
             }))
+            .child(icon(icon_name, 14., theme.text_muted))
             .child(div().flex_1().child(label))
             .child(
                 div()
@@ -314,16 +318,18 @@ impl Render for RepositoryPopover {
                     .py(px(4.))
                     .border_t_1()
                     .border_color(theme.border)
-                    .child(self.action_row(
+                    .child(Self::action_row(
                         "add-local-repository",
+                        "repository",
                         "Add local repository…",
                         "⌘ O",
                         Box::new(OpenRepository),
                         &theme,
                         cx,
                     ))
-                    .child(self.action_row(
+                    .child(Self::action_row(
                         "clone-repository",
+                        "clone",
                         "Clone repository…",
                         "⇧ ⌘ O",
                         Box::new(CloneRepository),
