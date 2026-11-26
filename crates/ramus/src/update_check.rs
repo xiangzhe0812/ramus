@@ -1,7 +1,10 @@
 //! Finding out whether a newer Ramus release is out, so the title bar can say so. Only a
 //! version number is read; nothing is downloaded or installed.
 
-use std::{fmt, time::Duration};
+use std::{
+    fmt,
+    time::{Duration, SystemTime},
+};
 
 use gpui::{Context, Task};
 use serde::Deserialize;
@@ -13,13 +16,18 @@ const RELEASES_PAGE: &str = "https://github.com/xiangzhe0812/ramus/releases/tag"
 /// GitHub's newest published release; drafts and pre-releases are left out.
 const LATEST_RELEASE_PATH: &str = "/repos/xiangzhe0812/ramus/releases/latest";
 
-/// How long to wait between checks while the app stays open.
+/// How long to wait between checks while the app stays open, by the wall clock.
 const CHECK_EVERY: Duration = Duration::from_secs(24 * 60 * 60);
+/// How often to look at the wall clock. GPUI's timers stop while the Mac sleeps, so a
+/// single day-long timer could take several days on a laptop; short ones catch up.
+const WAKE_EVERY: Duration = Duration::from_secs(60 * 60);
 
 /// Whether a newer release is out. Checks at launch, once `start`ed, then every day.
 pub struct UpdateCheck {
     endpoints: Endpoints,
     available: Option<Version>,
+    /// When GitHub was last asked, by the wall clock.
+    last_attempt: Option<SystemTime>,
     _task: Option<Task<()>>,
 }
 
@@ -29,32 +37,45 @@ impl UpdateCheck {
         Self {
             endpoints,
             available: None,
+            last_attempt: None,
             _task: None,
         }
     }
 
-    /// Starts checking: now, then every `CHECK_EVERY`. A failed check is only logged; the
-    /// last answer stands until the next one.
+    /// Starts checking: now, then once `CHECK_EVERY` has passed on the wall clock. A failed
+    /// check is only logged; the last answer stands until the next one.
     pub fn start(&mut self, cx: &mut Context<Self>) {
         let endpoints = self.endpoints.clone();
         self._task = Some(cx.spawn(async move |this, cx| {
             loop {
-                let endpoints = endpoints.clone();
-                let latest = cx
-                    .background_executor()
-                    .spawn(async move { fetch_latest_tag(&endpoints) })
-                    .await;
-                let alive = this.update(cx, |this, cx| match latest {
-                    Ok(tag) => {
-                        this.available = newer_release(&tag, Version::current());
-                        cx.notify();
+                let Ok(is_due) = this.update(cx, |this, _| {
+                    let now = SystemTime::now();
+                    let is_due = due(this.last_attempt, now);
+                    if is_due {
+                        this.last_attempt = Some(now);
                     }
-                    Err(error) => eprintln!("[update check] {error}"),
-                });
-                if alive.is_err() {
+                    is_due
+                }) else {
                     break;
+                };
+                if is_due {
+                    let endpoints = endpoints.clone();
+                    let latest = cx
+                        .background_executor()
+                        .spawn(async move { fetch_latest_tag(&endpoints) })
+                        .await;
+                    let alive = this.update(cx, |this, cx| match latest {
+                        Ok(tag) => {
+                            this.available = newer_release(&tag, Version::current());
+                            cx.notify();
+                        }
+                        Err(error) => eprintln!("[update check] {error}"),
+                    });
+                    if alive.is_err() {
+                        break;
+                    }
                 }
-                cx.background_executor().timer(CHECK_EVERY).await;
+                cx.background_executor().timer(WAKE_EVERY).await;
             }
         }));
     }
@@ -62,6 +83,17 @@ impl UpdateCheck {
     /// The newer release, if one is out.
     pub fn available(&self) -> Option<Version> {
         self.available
+    }
+}
+
+/// Whether it's time to ask GitHub again: never asked, a day has passed, or the clock was
+/// set back past the last attempt.
+fn due(last_attempt: Option<SystemTime>, now: SystemTime) -> bool {
+    match last_attempt {
+        None => true,
+        Some(last) => now
+            .duration_since(last)
+            .map_or(true, |elapsed| elapsed >= CHECK_EVERY),
     }
 }
 
@@ -141,7 +173,7 @@ pub fn release_page(version: Version) -> String {
 
 #[cfg(test)]
 mod tests {
-    use std::time::Duration;
+    use std::time::{Duration, SystemTime};
 
     use gpui::{AppContext, Entity, TestAppContext};
 
@@ -184,15 +216,20 @@ mod tests {
     }
 
     #[gpui::test]
-    async fn the_check_runs_again_a_day_later(cx: &mut TestAppContext) {
-        let fake = Fake::default().reply(
-            LATEST,
-            &[r#"{"tag_name":"v0.0.0"}"#, r#"{"tag_name":"v999.0.0"}"#],
-        );
+    async fn a_failed_check_is_tried_again_once_a_day_of_clock_time_has_passed(
+        cx: &mut TestAppContext,
+    ) {
+        // `{}` has no tag, so the first check fails, as it would offline.
+        let fake = Fake::default().reply(LATEST, &[r#"{}"#, r#"{"tag_name":"v999.0.0"}"#]);
         let check = started_check(cx, &fake);
         assert_eq!(check.read_with(cx, |check, _| check.available()), None);
 
-        cx.executor().advance_clock(CHECK_EVERY);
+        // A day passes on the wall clock, though the app's timers saw only an hour (the
+        // Mac slept through the rest).
+        check.update(cx, |check, _| {
+            check.last_attempt = Some(SystemTime::now() - CHECK_EVERY - Duration::from_secs(60));
+        });
+        cx.executor().advance_clock(WAKE_EVERY);
         for _ in 0..200 {
             cx.executor().run_until_parked();
             if check.read_with(cx, |check, _| check.available()).is_some() {
@@ -203,6 +240,33 @@ mod tests {
 
         let available = check.read_with(cx, |check, _| check.available());
         assert_eq!(available, Version::parse_tag("v999.0.0"));
+    }
+
+    #[gpui::test]
+    async fn waking_before_a_day_has_passed_asks_github_nothing(cx: &mut TestAppContext) {
+        let fake = Fake::default().reply(LATEST, &[r#"{"tag_name":"v0.0.0"}"#]);
+        let _check = started_check(cx, &fake);
+
+        cx.executor().advance_clock(WAKE_EVERY);
+        cx.executor().run_until_parked();
+
+        assert_eq!(fake.count(LATEST), 1);
+    }
+
+    #[test]
+    fn a_check_is_due_when_none_was_made_or_a_day_has_passed() {
+        let now = SystemTime::now();
+
+        assert!(due(None, now));
+        assert!(due(Some(now - CHECK_EVERY), now));
+        assert!(!due(Some(now - CHECK_EVERY + Duration::from_secs(60)), now));
+    }
+
+    #[test]
+    fn a_clock_set_backwards_makes_a_check_due() {
+        let now = SystemTime::now();
+
+        assert!(due(Some(now + Duration::from_secs(3600)), now));
     }
 
     const LATEST: &str = "/repos/xiangzhe0812/ramus/releases/latest";
