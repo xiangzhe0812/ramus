@@ -255,7 +255,7 @@ impl Render for TitleBar {
                     pill
                 }
                 .child(icon("branch", 16., theme.text_muted))
-                .child(div().flex_1().child(label))
+                .child(div().flex_1().min_w_0().truncate().child(label))
             }))
             .children(operation.map(|label| {
                 // While something runs, the button shows it, and clicking it cancels.
