@@ -16,6 +16,7 @@ mod graph;
 mod history_view;
 mod palette;
 mod palette_view;
+mod pull_requests;
 mod repo_state;
 mod repository_popover;
 mod secrets;
