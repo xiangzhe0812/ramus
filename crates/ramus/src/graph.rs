@@ -38,9 +38,21 @@ impl GraphRow {
 #[derive(Clone, Debug, Default)]
 pub struct Graph {
     lanes: Vec<Option<String>>,
+    /// Lane 0 is being kept for the current commit, which hasn't been reached yet; nothing
+    /// is drawn in it until then.
+    waiting: bool,
 }
 
 impl Graph {
+    /// A layout that keeps the first lane for `head`, the current commit, so the current
+    /// branch runs down the left edge even when newer branch tips are listed above it.
+    pub fn reserving(head: &str) -> Self {
+        Self {
+            lanes: vec![Some(head.to_owned())],
+            waiting: true,
+        }
+    }
+
     /// Lays out the next commit in History's order (children before parents).
     pub fn push(&mut self, id: &str, parents: &[String]) -> GraphRow {
         let incoming: Vec<usize> = self.lanes_heading_to(id).collect();
@@ -50,15 +62,19 @@ impl Graph {
             Some(&lane) => lane,
             None => self.free_lane(),
         };
+        let waiting = self.waiting;
         let top = self
             .lanes
             .iter()
             .enumerate()
-            .filter(|(_, slot)| slot.is_some())
+            .filter(|(i, slot)| slot.is_some() && !(waiting && *i == 0))
             .map(|(i, slot)| (i, if slot.as_deref() == Some(id) { lane } else { i }))
             .collect();
         for &i in &incoming {
             self.lanes[i] = None;
+        }
+        if incoming.contains(&0) {
+            self.waiting = false;
         }
 
         // The first parent carries on in the dot's lane. Another parent joins a lane
@@ -81,11 +97,12 @@ impl Graph {
             }
         }
 
+        let waiting = self.waiting;
         let mut bottom: Vec<Segment> = self
             .lanes
             .iter()
             .enumerate()
-            .filter(|(_, slot)| slot.is_some())
+            .filter(|(i, slot)| slot.is_some() && !(waiting && *i == 0))
             .map(|(i, _)| {
                 if started.contains(&i) {
                     (lane, i)
@@ -240,6 +257,31 @@ mod tests {
             "it joins the lane already going to b"
         );
         assert!(rows[1].bottom.contains(&(1, 1)), "and that lane carries on");
+    }
+
+    #[test]
+    fn the_current_commit_keeps_the_first_lane_even_below_newer_tips() {
+        // All branches: x is a newer tip than HEAD, listed first.
+        let mut graph = Graph::reserving("head");
+        let rows: Vec<GraphRow> = [("x", &["a"][..]), ("head", &["a"][..]), ("a", &[][..])]
+            .iter()
+            .map(|(id, parents)| graph.push(id, &ids(parents)))
+            .collect();
+
+        assert_eq!(rows[0].lane, 1, "the newer tip steps aside");
+        assert_eq!(
+            rows[0].bottom,
+            [(1, 1)],
+            "nothing is drawn in the waiting lane"
+        );
+        assert_eq!(rows[1].lane, 0);
+        assert_eq!(
+            rows[1].top,
+            [(1, 1)],
+            "no line comes down into the current commit"
+        );
+        assert_eq!(rows[2].lane, 0);
+        assert_eq!(rows[2].top, [(0, 0), (1, 0)]);
     }
 
     #[test]

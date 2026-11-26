@@ -287,7 +287,15 @@ impl HistoryView {
         }
         self.loaded_for = key;
         self.commits.clear();
-        self.graph = Graph::default();
+        // The current branch keeps the graph's first lane in both views.
+        self.graph = match self
+            .loaded_for
+            .as_ref()
+            .and_then(|(_, head, _)| head.as_deref())
+        {
+            Some(head) => Graph::reserving(head),
+            None => Graph::default(),
+        };
         self.graph_rows.clear();
         self.labels.clear();
         self.unpushed.clear();
