@@ -82,7 +82,7 @@ pub enum Poll {
     Denied,
 }
 
-fn agent() -> ureq::Agent {
+pub(crate) fn agent() -> ureq::Agent {
     let builder = ureq::Agent::config_builder()
         .timeout_global(Some(Duration::from_secs(20)))
         // GitHub reports device-flow problems in a 200 body, and some as 4xx; read both.
@@ -96,7 +96,7 @@ fn agent() -> ureq::Agent {
     builder.build().into()
 }
 
-fn describe(error: ureq::Error) -> String {
+pub(crate) fn describe(error: ureq::Error) -> String {
     format!("couldn't reach GitHub: {error}")
 }
 

@@ -26,6 +26,7 @@ mod testutil;
 mod theme;
 mod title_bar;
 mod ui;
+mod update_check;
 mod welcome;
 mod workspace;
 mod worktree_popover;
@@ -46,6 +47,7 @@ use crate::{
     repo_state::RepoState,
     secrets::Keychain,
     theme::Theme,
+    update_check::UpdateCheck,
     workspace::Workspace,
 };
 
@@ -135,7 +137,13 @@ fn main() {
                             crate::github::client_id(),
                         )
                     });
-                    let workspace = cx.new(|cx| Workspace::new(repo_state, accounts, window, cx));
+                    let update_check = cx.new(|cx| {
+                        let mut check = UpdateCheck::new(Endpoints::default());
+                        check.start(cx);
+                        check
+                    });
+                    let workspace =
+                        cx.new(|cx| Workspace::new(repo_state, accounts, update_check, window, cx));
                     cx.new(|cx| gpui_component::Root::new(workspace, window, cx))
                 },
             )
