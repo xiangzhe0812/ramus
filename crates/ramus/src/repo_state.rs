@@ -772,7 +772,7 @@ impl RepoState {
 
     /// The other worktree that has local `branch` checked out, if its folder is still
     /// there. A missing one is left to git, whose refusal names the folder.
-    fn worktree_holding(&self, branch: &Branch) -> Option<Worktree> {
+    pub fn worktree_holding(&self, branch: &Branch) -> Option<Worktree> {
         if branch.kind != BranchKind::Local {
             return None;
         }

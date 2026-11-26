@@ -51,6 +51,15 @@ fn matches_filter(branch: &Branch, filter: &str) -> bool {
 /// The rows to show for `branches` under `filter`: local branches, then remote-only
 /// ones, each under a title that appears only if it has something under it. Returns the
 /// branches that survived the filter alongside the rows that index into them.
+/// The tag shown on a branch another worktree has checked out: that worktree's folder name.
+fn worktree_tag(path: &std::path::Path) -> SharedString {
+    path.file_name()
+        .unwrap_or(path.as_os_str())
+        .to_string_lossy()
+        .into_owned()
+        .into()
+}
+
 fn rows_for(local: &[Branch], remote_only: &[Branch], filter: &str) -> (Vec<Branch>, Vec<Row>) {
     let mut shown = Vec::new();
     let mut rows = Vec::new();
@@ -145,6 +154,12 @@ impl BranchPopover {
     ) -> AnyElement {
         let view = cx.entity();
         let picked = branch.clone();
+        // Picking this branch opens the worktree that has it, so the row says which one.
+        let held_by = self
+            .repo_state
+            .read(cx)
+            .worktree_holding(branch)
+            .map(|worktree| worktree_tag(&worktree.path));
         div()
             .id(("branch", ix))
             .w_full()
@@ -200,6 +215,18 @@ impl BranchPopover {
                     )
                 },
             )
+            .children(held_by.map(|folder| {
+                div()
+                    .flex_none()
+                    .max_w(px(140.))
+                    .flex()
+                    .items_center()
+                    .gap(px(4.))
+                    .text_size(px(theme.metrics.text_sm))
+                    .text_color(theme.text_muted)
+                    .child(icon("worktree", 12., theme.text_muted))
+                    .child(div().min_w_0().truncate().child(folder))
+            }))
             .children(branch.last_commit.map(|time| {
                 div()
                     .flex_none()
@@ -437,6 +464,14 @@ mod tests {
         assert!(matches_filter(&b, "  "));
         assert!(!matches_filter(&b, "stage"));
         assert!(!matches_filter(&b, "feat stage"));
+    }
+
+    #[test]
+    fn a_worktree_tag_names_the_worktree_folder() {
+        assert_eq!(
+            worktree_tag(std::path::Path::new("/work/ramus-feature")),
+            "ramus-feature"
+        );
     }
 
     #[test]

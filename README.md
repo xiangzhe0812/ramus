@@ -21,10 +21,17 @@ repository is allowed to run on your machine.
 - **Conflicts:** when a merge, cherry-pick or revert stops, resolve each conflicting region
   (ours, theirs or both) or edit the result, then continue or abort.
 - **Stashes:** stash (including untracked files), apply, pop and drop.
+- **Worktrees:** list the repository's other checkouts, open one, make a new one on a new
+  branch, and remove one (it warns first about anything that would be lost). Switch between
+  them from the worktree pill (⇧⌘B). Picking a branch another worktree has checked out opens
+  that worktree, and the branch list marks those branches with the worktree's folder.
 - **Repositories:** every repository you open or clone is remembered; switch between them from
   the repository pill (⌘T), and the last one reopens when Ramus starts.
 - **Clone** any Git address, and a **command palette** (⌘K) for everything above.
 - **GitHub sign-in** (OAuth device flow, token kept in the macOS keychain).
+- **Update notice:** once a day Ramus asks GitHub for the latest release, and when it is newer
+  an "Update · vX.Y.Z" pill appears in the title bar; clicking it opens the release page. Ramus
+  never downloads or installs anything itself.
 
 Ramus deliberately has no commit-graph view. Not built yet: a light theme (dark only for now), rebase, per-host repository lists for Clone.
 
@@ -36,7 +43,8 @@ Ramus deliberately has no commit-graph view. Not built yet: a light theme (dark 
 | ⌘O / ⇧⌘O | Open / clone a repository |
 | ⌘T | Switch repository |
 | ⌘B | Branch switcher |
-| ⌘1 / ⌘2 / ⌘3 | Changes / History / Stashes |
+| ⇧⌘B | Worktree switcher |
+| ⌘1 / ⌘2 / ⌘3 / ⌘4 | Changes / History / Stashes / Worktrees |
 | ⌘⌫ | Discard selected changes |
 | ↑ ↓ Space | Move through files / include or exclude a file |
 
