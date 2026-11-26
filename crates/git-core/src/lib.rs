@@ -24,7 +24,7 @@ pub use diff::{DiffHunk, DiffLine, DiffLineKind, FileDiff, FileDiffs};
 pub use discard::DiscardBackup;
 pub use error::Error;
 pub use failure::FailureKind;
-pub use history::{CommitFile, CommitInfo};
+pub use history::{CommitFile, CommitInfo, LabelKind, LogScope, RefLabel};
 pub use repo::{DiffOptions, Repo};
 pub use stash::{Stash, StashFile, parse_stash_subject};
 pub use status::{BranchStatus, ChangeKind, FileChange, Head, RepoStatus};

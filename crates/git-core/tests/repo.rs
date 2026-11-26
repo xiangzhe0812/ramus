@@ -5,7 +5,9 @@ use std::{
     sync::Once,
 };
 
-use git_core::{ChangeKind, Error, Head, RemovalCheck, Repo, Worktree, worktree_folder_name};
+use git_core::{
+    ChangeKind, Error, Head, LogScope, RemovalCheck, Repo, Worktree, worktree_folder_name,
+};
 use tempfile::TempDir;
 
 fn git(dir: &Path, args: &[&str]) {
@@ -2234,7 +2236,7 @@ mod history {
     use super::*;
 
     fn log_all(repo: &Repo) -> Vec<CommitInfo> {
-        repo.log(0, 1000).unwrap()
+        repo.log(0, 1000, LogScope::Head).unwrap()
     }
 
     fn head_subject(dir: &Path) -> String {
@@ -2253,7 +2255,7 @@ mod history {
         assert!(
             Repo::open(dir.path())
                 .unwrap()
-                .log(0, 10)
+                .log(0, 10, LogScope::Head)
                 .unwrap()
                 .is_empty()
         );
@@ -2280,7 +2282,7 @@ mod history {
             ]
         );
 
-        let page_two = repo.log(2, 2).unwrap();
+        let page_two = repo.log(2, 2, LogScope::Head).unwrap();
         assert_eq!(
             page_two
                 .iter()
@@ -2620,7 +2622,9 @@ mod history {
         commit_file(dir.path(), "b.txt", "b\n");
         let repo = Repo::open(dir.path()).unwrap();
 
-        let commits = repo.log(0, 50).expect("the log must still be readable");
+        let commits = repo
+            .log(0, 50, LogScope::Head)
+            .expect("the log must still be readable");
 
         assert_eq!(commits.len(), 3);
         let sneaky = commits
@@ -3107,7 +3111,10 @@ mod untrusted_signature_verification {
     fn reading_the_log_never_runs_a_repo_configured_signature_program() {
         let (dir, _outside, marker) = repo_that_verifies_signatures_with_a_hostile_program();
 
-        let commits = Repo::open(dir.path()).unwrap().log(0, 10).unwrap();
+        let commits = Repo::open(dir.path())
+            .unwrap()
+            .log(0, 10, LogScope::Head)
+            .unwrap();
 
         assert_eq!(commits.len(), 2, "the log should still be readable");
         assert!(!marker.exists(), "the log ran the repository's gpg program");
@@ -3915,12 +3922,12 @@ mod resolving_conflicts {
             String::from_utf8_lossy(&out.stdout).trim().to_owned()
         };
         let commit = repo
-            .log(0, 50)
+            .log(0, 50, LogScope::Head)
             .unwrap()
             .into_iter()
             .chain({
                 git(dir.path(), &["switch", "-q", "feature"]);
-                let all = repo.log(0, 50).unwrap();
+                let all = repo.log(0, 50, LogScope::Head).unwrap();
                 git(dir.path(), &["switch", "-q", "main"]);
                 all
             })
@@ -5050,5 +5057,115 @@ mod undo_and_rename {
 
         assert_eq!(repo.unmerged_commits("merged").unwrap(), 0);
         assert_eq!(repo.unmerged_commits("work").unwrap(), 2);
+    }
+}
+
+mod commit_graph {
+    use git_core::{LabelKind, RefLabel};
+
+    use super::*;
+
+    fn subjects(repo: &Repo, scope: LogScope) -> Vec<String> {
+        repo.log(0, 100, scope)
+            .unwrap()
+            .into_iter()
+            .map(|commit| commit.subject)
+            .collect()
+    }
+
+    /// main: a, b, merge of side; side (off a): s1, s2; other (off b): o1, unmerged.
+    fn branched_repo() -> TempDir {
+        let dir = new_repo();
+        commit_file(dir.path(), "a.txt", "a\n");
+        git(dir.path(), &["checkout", "-q", "-b", "side"]);
+        commit_file(dir.path(), "s1.txt", "1\n");
+        commit_file(dir.path(), "s2.txt", "2\n");
+        git(dir.path(), &["checkout", "-q", "main"]);
+        commit_file(dir.path(), "b.txt", "b\n");
+        git(dir.path(), &["checkout", "-q", "-b", "other"]);
+        commit_file(dir.path(), "o1.txt", "o\n");
+        git(dir.path(), &["checkout", "-q", "main"]);
+        git(
+            dir.path(),
+            &["merge", "-q", "--no-ff", "-m", "merge side", "side"],
+        );
+        dir
+    }
+
+    #[test]
+    fn head_scope_lists_only_the_current_branch() {
+        let dir = branched_repo();
+        let repo = Repo::open(dir.path()).unwrap();
+
+        let listed = subjects(&repo, LogScope::Head);
+
+        assert!(
+            listed.contains(&"add s1.txt".to_owned()),
+            "merged in, so on main"
+        );
+        assert!(!listed.contains(&"add o1.txt".to_owned()));
+    }
+
+    #[test]
+    fn all_scope_includes_other_branches() {
+        let dir = branched_repo();
+        let repo = Repo::open(dir.path()).unwrap();
+
+        let listed = subjects(&repo, LogScope::All);
+
+        assert!(listed.contains(&"add o1.txt".to_owned()));
+        assert_eq!(listed.len(), 6);
+    }
+
+    #[test]
+    fn topo_order_keeps_a_branch_together() {
+        let dir = branched_repo();
+        let repo = Repo::open(dir.path()).unwrap();
+
+        let listed = subjects(&repo, LogScope::Head);
+
+        // side's two commits sit next to each other, not interleaved with main's by date.
+        let s2 = listed.iter().position(|s| s == "add s2.txt").unwrap();
+        assert_eq!(listed[s2 + 1], "add s1.txt", "{listed:?}");
+        assert_eq!(listed.first().map(String::as_str), Some("merge side"));
+    }
+
+    #[test]
+    fn ref_labels_name_branches_remotes_and_tags() {
+        let remote = TempDir::new().unwrap();
+        git(remote.path(), &["init", "-q", "--bare", "-b", "main"]);
+        let dir = branched_repo();
+        git(
+            dir.path(),
+            &["remote", "add", "origin", remote.path().to_str().unwrap()],
+        );
+        git(dir.path(), &["push", "-q", "-u", "origin", "main"]);
+        git(dir.path(), &["remote", "set-head", "origin", "main"]);
+        git(dir.path(), &["tag", "-a", "v1", "-m", "release"]);
+        let repo = Repo::open(dir.path()).unwrap();
+        let head = repo.status().unwrap().branch.oid.unwrap();
+
+        let labels = repo.ref_labels().unwrap();
+
+        let mut on_head = labels.get(&head).cloned().unwrap();
+        on_head.sort();
+        assert_eq!(
+            on_head,
+            [
+                RefLabel {
+                    kind: LabelKind::Local,
+                    name: "main".into()
+                },
+                RefLabel {
+                    kind: LabelKind::Remote,
+                    name: "origin/main".into()
+                },
+                RefLabel {
+                    kind: LabelKind::Tag,
+                    name: "v1".into()
+                },
+            ],
+            "the annotated tag is peeled to its commit; origin/HEAD is left out"
+        );
     }
 }
