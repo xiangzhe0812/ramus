@@ -1,10 +1,35 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use crate::{
     DiffOptions, Error, FileDiff, OperationKind, Repo,
     diff::parse_diff,
     runner::{run_git, run_git_allowing, run_git_hookless},
 };
+
+/// Which commits a log reads.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum LogScope {
+    /// The current branch: HEAD and its ancestors.
+    #[default]
+    Head,
+    /// Every local and remote branch, and HEAD (which may be detached).
+    All,
+}
+
+/// What kind of name points at a commit.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum LabelKind {
+    Local,
+    Remote,
+    Tag,
+}
+
+/// A branch or tag name pointing at a commit, short form ("main", "origin/main", "v1").
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct RefLabel {
+    pub kind: LabelKind,
+    pub name: String,
+}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CommitInfo {
@@ -113,26 +138,74 @@ pub(crate) fn parse_numstat(output: &[u8]) -> Result<Vec<CommitFile>, Error> {
 
 impl Repo {
     /// Commits reachable from HEAD, newest first: `limit` of them after skipping `skip`.
-    pub fn log(&self, skip: usize, limit: usize) -> Result<Vec<CommitInfo>, Error> {
+    pub fn log(
+        &self,
+        skip: usize,
+        limit: usize,
+        scope: LogScope,
+    ) -> Result<Vec<CommitInfo>, Error> {
         if run_git(self.root(), &["rev-parse", "--verify", "--quiet", "HEAD"]).is_err() {
             return Ok(Vec::new());
         }
         let skip = skip.to_string();
         let limit = limit.to_string();
-        parse_log(&run_git(
+        let mut args = vec![
+            "log",
+            "--no-color",
+            // Verifying signatures would run a program named by the repo's config.
+            "--no-show-signature",
+            // Children before parents, and a branch's commits together: what a graph needs.
+            "--topo-order",
+            LOG_FORMAT,
+            "--skip",
+            &skip,
+            "--max-count",
+            &limit,
+        ];
+        if scope == LogScope::All {
+            args.extend(["--branches", "--remotes", "HEAD"]);
+        }
+        parse_log(&run_git(self.root(), &args)?)
+    }
+
+    /// The branches and tags pointing at each commit, keyed by full commit id. Annotated
+    /// tags count for the commit they point at; symbolic refs like `origin/HEAD` are left
+    /// out, since they only repeat another branch.
+    pub fn ref_labels(&self) -> Result<HashMap<String, Vec<RefLabel>>, Error> {
+        let output = run_git(
             self.root(),
             &[
-                "log",
-                "--no-color",
-                // Verifying signatures would run a program named by the repo's config.
-                "--no-show-signature",
-                LOG_FORMAT,
-                "--skip",
-                &skip,
-                "--max-count",
-                &limit,
+                "for-each-ref",
+                "--format=%(objectname)%00%(*objectname)%00%(symref)%00%(refname)",
+                "refs/heads",
+                "refs/remotes",
+                "refs/tags",
             ],
-        )?)
+        )?;
+        let mut labels: HashMap<String, Vec<RefLabel>> = HashMap::new();
+        for line in String::from_utf8_lossy(&output).lines() {
+            let [object, peeled, symref, refname] = line.split('\0').collect::<Vec<_>>()[..] else {
+                return Err(Error::Parse(format!("bad ref line {line:?}")));
+            };
+            if !symref.is_empty() {
+                continue;
+            }
+            let (kind, name) = if let Some(name) = refname.strip_prefix("refs/heads/") {
+                (LabelKind::Local, name)
+            } else if let Some(name) = refname.strip_prefix("refs/remotes/") {
+                (LabelKind::Remote, name)
+            } else if let Some(name) = refname.strip_prefix("refs/tags/") {
+                (LabelKind::Tag, name)
+            } else {
+                continue;
+            };
+            let commit = if peeled.is_empty() { object } else { peeled };
+            labels.entry(commit.to_owned()).or_default().push(RefLabel {
+                kind,
+                name: name.to_owned(),
+            });
+        }
+        Ok(labels)
     }
 
     /// Ids of the commits on this branch that its upstream doesn't have yet. Empty when

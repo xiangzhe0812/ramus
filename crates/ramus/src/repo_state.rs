@@ -2905,7 +2905,7 @@ mod tests {
         state: &gpui::Entity<RepoState>,
     ) -> git_core::CommitInfo {
         let repo = state.read_with(cx, |s, _| s.repo().unwrap().clone());
-        repo.log(0, 1).unwrap().remove(0)
+        repo.log(0, 1, git_core::LogScope::Head).unwrap().remove(0)
     }
 
     #[gpui::test]

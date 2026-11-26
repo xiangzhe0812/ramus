@@ -195,7 +195,7 @@ impl HistoryView {
             let result = cx
                 .background_executor()
                 .spawn(async move {
-                    let commits = repo.log(skip, PAGE)?;
+                    let commits = repo.log(skip, PAGE, git_core::LogScope::Head)?;
                     // Which commits are unpushed doesn't change as pages arrive.
                     let unpushed = if skip == 0 {
                         Some((repo.unpushed_commits()?, repo.has_upstream()))
