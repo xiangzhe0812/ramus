@@ -72,7 +72,8 @@ pub fn fetch_my_repositories(
     struct Owner {
         login: String,
     }
-    let path = "/user/repos?per_page=100&sort=pushed&affiliation=owner,collaborator,organization_member";
+    let path =
+        "/user/repos?per_page=100&sort=pushed&affiliation=owner,collaborator,organization_member";
     let listed: Vec<Listed> = get_json(endpoints, Some(token), path)?.unwrap_or_default();
     Ok(listed
         .iter()
@@ -109,7 +110,8 @@ mod tests {
     use super::*;
     use crate::github::fake::Fake;
 
-    const MINE: &str = "/user/repos?per_page=100&sort=pushed&affiliation=owner,collaborator,organization_member";
+    const MINE: &str =
+        "/user/repos?per_page=100&sort=pushed&affiliation=owner,collaborator,organization_member";
 
     fn endpoints(fake: &Fake) -> Endpoints {
         let address = fake.serve();

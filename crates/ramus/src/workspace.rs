@@ -401,7 +401,16 @@ impl Workspace {
             return;
         }
         self.close_modal(window, cx);
-        let dialog = cx.new(|cx| CloneDialog::new(self.repo_state.clone(), window, cx));
+        let token = self.accounts.read(cx).token().cloned();
+        let dialog = cx.new(|cx| {
+            CloneDialog::new(
+                self.repo_state.clone(),
+                token,
+                Endpoints::default(),
+                window,
+                cx,
+            )
+        });
         self.close_on_dismiss(&dialog, window, cx);
         self.show_modal(Modal::Clone(dialog), cx);
     }
