@@ -443,6 +443,17 @@ impl Workspace {
             Command::UnstageAll => self
                 .repo_state
                 .update(cx, |state, cx| state.unstage_all(cx)),
+            Command::UndoLastCommit => {
+                let head = self
+                    .repo_state
+                    .read(cx)
+                    .status()
+                    .and_then(|status| status.branch.oid.clone());
+                if let Some(head) = head {
+                    self.repo_state
+                        .update(cx, |state, cx| state.undo_last_commit(head, cx));
+                }
+            }
             Command::SetAppearance(appearance) => {
                 self.repo_state
                     .update(cx, |state, cx| state.set_appearance(appearance, cx));

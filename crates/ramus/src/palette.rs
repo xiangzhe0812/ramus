@@ -23,6 +23,7 @@ pub enum Command {
     StageAll,
     UnstageAll,
     DiscardSelected,
+    UndoLastCommit,
     SetAppearance(Appearance),
 }
 
@@ -157,6 +158,11 @@ fn all_commands(situation: &Situation) -> Vec<Entry> {
         Command::ShowWorktrees,
     ));
     entries.push(Entry::command("Stash changes", None, Command::StashChanges));
+    entries.push(Entry::command(
+        "Undo last commit",
+        None,
+        Command::UndoLastCommit,
+    ));
     if !situation.busy {
         let primary = situation.primary_sync.as_ref();
         if let Some((kind, label)) = primary {
@@ -288,6 +294,14 @@ mod tests {
                 "Appearance: Dark",
             ]
         );
+    }
+
+    #[test]
+    fn undo_is_offered_with_a_repository() {
+        let found = entries(&situation(&[], &[]), "undo");
+
+        assert_eq!(labels(&found), ["Undo last commit"]);
+        assert_eq!(found[0].target, Target::Command(Command::UndoLastCommit));
     }
 
     #[test]

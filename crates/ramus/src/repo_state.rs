@@ -50,10 +50,15 @@ pub struct Operation {
 }
 
 /// Things views react to that aren't just "state changed".
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum RepoEvent {
     /// A commit succeeded, so the commit message can be cleared.
     Committed,
+    /// The last commit was taken back; its message goes back in the commit boxes.
+    CommitUndone {
+        summary: String,
+        description: String,
+    },
 }
 
 /// The open repository and its latest status, shared by every view.
@@ -686,6 +691,25 @@ impl RepoState {
         }
     }
 
+    /// Renames local branch `old`. A ref write with hooks off, so it is allowed before the
+    /// repository is trusted.
+    pub fn rename_branch(&mut self, old: String, new: String, cx: &mut Context<Self>) {
+        self.write_returning(
+            cx,
+            move |repo| repo.rename_branch(&old, &new),
+            |this, (), cx| this.load_branches(cx),
+        );
+    }
+
+    /// Deletes local branch `name`, unmerged commits and all; the caller asks first.
+    pub fn delete_branch(&mut self, name: String, cx: &mut Context<Self>) {
+        self.write_returning(
+            cx,
+            move |repo| repo.delete_branch(&name),
+            |this, (), cx| this.load_branches(cx),
+        );
+    }
+
     pub fn create_branch(&mut self, name: String, cx: &mut Context<Self>) {
         if self.require_trust("create a branch", cx) {
             self.branches = None;
@@ -963,6 +987,22 @@ impl RepoState {
         self.write(cx, Some(RepoEvent::Committed), move |repo| {
             repo.amend(&summary, &description)
         });
+    }
+
+    /// Takes back the last commit, `shown`, if it isn't pushed: its changes stay staged and
+    /// its message is announced so the commit boxes can show it again. A ref write with
+    /// hooks off, so it is allowed before the repository is trusted, like stashing.
+    pub fn undo_last_commit(&mut self, shown: String, cx: &mut Context<Self>) {
+        self.write_returning(
+            cx,
+            move |repo| repo.undo_last_commit(&shown),
+            |_, (summary, description), cx| {
+                cx.emit(RepoEvent::CommitUndone {
+                    summary,
+                    description,
+                })
+            },
+        );
     }
 
     pub fn stage(&mut self, paths: Vec<String>, cx: &mut Context<Self>) {
@@ -2718,6 +2758,90 @@ mod tests {
         assert_eq!(last_subject(dir.path()), "Reworded");
         assert_eq!(commit_count(dir.path()), commits_before, "no new commit");
         assert!(announced.get(), "the message boxes should be told to clear");
+    }
+
+    fn local_branch_names(cx: &mut TestAppContext, state: &gpui::Entity<RepoState>) -> Vec<String> {
+        state.read_with(cx, |state, _| {
+            state
+                .branches()
+                .unwrap()
+                .local
+                .iter()
+                .map(|b| b.name.clone())
+                .collect()
+        })
+    }
+
+    #[gpui::test]
+    async fn renaming_a_branch_reloads_the_list(cx: &mut TestAppContext) {
+        let dir = repo_without_hooks();
+        git(dir.path(), &["branch", "old"]);
+        let state = cx.new(|_| RepoState::default());
+        state.update(cx, |state, cx| state.open(dir.path().to_owned(), cx));
+        state.update(cx, |state, cx| state.load_branches(cx));
+        cx.executor().run_until_parked();
+
+        state.update(cx, |state, cx| {
+            state.rename_branch("old".into(), "new".into(), cx)
+        });
+        cx.executor().run_until_parked();
+
+        let names = local_branch_names(cx, &state);
+        assert!(names.contains(&"new".to_owned()) && !names.contains(&"old".to_owned()));
+    }
+
+    #[gpui::test]
+    async fn deleting_a_branch_removes_it_from_the_list(cx: &mut TestAppContext) {
+        let dir = repo_without_hooks();
+        git(dir.path(), &["branch", "gone"]);
+        let state = cx.new(|_| RepoState::default());
+        state.update(cx, |state, cx| state.open(dir.path().to_owned(), cx));
+        state.update(cx, |state, cx| state.load_branches(cx));
+        cx.executor().run_until_parked();
+
+        state.update(cx, |state, cx| state.delete_branch("gone".into(), cx));
+        cx.executor().run_until_parked();
+
+        assert!(!local_branch_names(cx, &state).contains(&"gone".to_owned()));
+    }
+
+    #[gpui::test]
+    async fn undoing_the_last_commit_announces_its_message(cx: &mut TestAppContext) {
+        let dir = repo_without_hooks();
+        fs::write(dir.path().join("b.txt"), "b\n").unwrap();
+        git(dir.path(), &["add", "b.txt"]);
+        git(dir.path(), &["commit", "-q", "-m", "Add b", "-m", "Why b."]);
+        // Untrusted on purpose: undo writes a ref with hooks off, like stash.
+        let state = cx.new(|_| RepoState::default());
+        state.update(cx, |state, cx| state.open(dir.path().to_owned(), cx));
+        cx.executor().run_until_parked();
+        let announced = std::rc::Rc::new(std::cell::RefCell::new(None));
+        let seen = announced.clone();
+        let _subscription = cx.update(|cx| {
+            cx.subscribe(&state, move |_, event: &RepoEvent, _| {
+                if let RepoEvent::CommitUndone {
+                    summary,
+                    description,
+                } = event
+                {
+                    *seen.borrow_mut() = Some((summary.clone(), description.clone()));
+                }
+            })
+        });
+
+        let head = state.read_with(cx, |state, _| state.status().unwrap().branch.oid.clone());
+        state.update(cx, |state, cx| state.undo_last_commit(head.unwrap(), cx));
+        cx.executor().run_until_parked();
+
+        assert_eq!(last_subject(dir.path()), "base");
+        assert_eq!(
+            *announced.borrow(),
+            Some(("Add b".to_owned(), "Why b.".to_owned()))
+        );
+        let staged = state.read_with(cx, |state, _| {
+            state.status().unwrap().files.iter().all(|f| f.is_staged())
+        });
+        assert!(staged, "the undone commit's changes stay included");
     }
 
     #[gpui::test]

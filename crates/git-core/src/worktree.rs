@@ -259,6 +259,49 @@ impl Repo {
         run_git_hookless(self.root(), &["branch", "-D", name]).map(drop)
     }
 
+    /// Renames local branch `old` to `new`, keeping its commits and upstream setting.
+    /// Hooks are off, as for other ref writes allowed in an untrusted repository.
+    pub fn rename_branch(&self, old: &str, new: &str) -> Result<(), Error> {
+        let new = new.trim();
+        for name in [old, new] {
+            if !self.is_plain_branch_name(name) {
+                return Err(Error::InvalidBranchName(name.to_owned()));
+            }
+        }
+        let taken = format!("refs/heads/{new}");
+        if run_git(self.root(), &["rev-parse", "--verify", "--quiet", &taken]).is_ok() {
+            return Err(Error::BranchExists(new.to_owned()));
+        }
+        run_git_hookless(self.root(), &["branch", "-m", old, new]).map(drop)
+    }
+
+    /// How many commits on local branch `name` are on no other branch, local or remote:
+    /// what deleting it would lose.
+    pub fn unmerged_commits(&self, name: &str) -> Result<usize, Error> {
+        if !self.is_plain_branch_name(name) {
+            return Err(Error::InvalidBranchName(name.to_owned()));
+        }
+        let branch = format!("refs/heads/{name}");
+        let itself = format!("--exclude={name}");
+        let output = run_git(
+            self.root(),
+            &[
+                "rev-list",
+                "--count",
+                &branch,
+                "--not",
+                &itself,
+                "--branches",
+                "--remotes",
+            ],
+        )?;
+        let count = String::from_utf8_lossy(&output);
+        count
+            .trim()
+            .parse()
+            .map_err(|_| Error::Parse(format!("commit count {count:?}")))
+    }
+
     /// The git folder every worktree of this repository shares, absolute and canonical.
     pub fn common_dir(&self) -> Result<PathBuf, Error> {
         let output = run_git(

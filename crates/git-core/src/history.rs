@@ -3,7 +3,7 @@ use std::collections::HashSet;
 use crate::{
     DiffOptions, Error, FileDiff, OperationKind, Repo,
     diff::parse_diff,
-    runner::{run_git, run_git_allowing},
+    runner::{run_git, run_git_allowing, run_git_hookless},
 };
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -219,6 +219,46 @@ impl Repo {
         args.extend(file.original_path.as_deref());
         args.push(&file.path);
         parse_diff(&run_git(self.root(), &args)?)
+    }
+
+    /// Whether the branch has an upstream to compare with: one is configured and its
+    /// remote-tracking branch still exists (a branch deleted on the remote and pruned has
+    /// none).
+    pub fn has_upstream(&self) -> bool {
+        run_git(
+            self.root(),
+            &["rev-parse", "--verify", "--quiet", "@{upstream}"],
+        )
+        .is_ok()
+    }
+
+    /// Takes back the last commit, `expected_head`: the branch moves to its parent, and
+    /// the commit's changes stay staged. Returns the commit's summary and description, to
+    /// commit again with. Refuses when HEAD is no longer `expected_head` (so the commit the
+    /// user looked at is the one removed); while a merge, cherry-pick or revert is
+    /// unfinished (a reset would silently end it); for the first commit, which has no
+    /// parent; and for a commit the upstream already has, which only a revert can undo
+    /// without rewriting shared history. Hooks are off, as for other ref writes allowed in
+    /// an untrusted repository.
+    pub fn undo_last_commit(&self, expected_head: &str) -> Result<(String, String), Error> {
+        let head = run_git(self.root(), &["rev-parse", "--verify", "--quiet", "HEAD"])
+            .map_err(|_| Error::NothingToUndo)?;
+        let head = String::from_utf8_lossy(&head).trim().to_owned();
+        if head != expected_head {
+            return Err(Error::HeadMoved);
+        }
+        if self.in_progress()?.is_some() {
+            return Err(Error::OperationInProgress);
+        }
+        if run_git(self.root(), &["rev-parse", "--verify", "--quiet", "HEAD^"]).is_err() {
+            return Err(Error::NothingToUndo);
+        }
+        if self.has_upstream() && !self.unpushed_commits()?.contains(&head) {
+            return Err(Error::AlreadyPushed);
+        }
+        let message = self.last_commit_message()?.ok_or(Error::NothingToUndo)?;
+        run_git_hookless(self.root(), &["reset", "--soft", "HEAD~1"])?;
+        Ok(message)
     }
 
     /// Adds a commit that undoes `commit`. If it conflicts, the revert stays in progress
