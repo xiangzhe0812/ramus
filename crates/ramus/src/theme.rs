@@ -96,6 +96,8 @@ pub struct Theme {
     pub error_background: Rgba,
     pub error_border: Rgba,
     pub error_text: Rgba,
+    /// The commit graph's lane colours, used in turn.
+    pub graph_lanes: [Rgba; 6],
     pub metrics: Metrics,
 }
 
@@ -179,6 +181,14 @@ impl Theme {
             error_background: rgb(0x40242a),
             error_border: rgb(0x6b3640),
             error_text: rgb(0xfbe3e5),
+            graph_lanes: [
+                rgb(0x6aa5ff),
+                rgb(0x4cc38a),
+                rgb(0xf0c878),
+                rgb(0xc9a9f7),
+                rgb(0xf0707a),
+                rgb(0x5fd4d4),
+            ],
             metrics: METRICS,
         }
     }
@@ -224,6 +234,14 @@ impl Theme {
             error_background: rgb(0xfde8ea),
             error_border: rgb(0xf3b8bf),
             error_text: rgb(0x8f1d2a),
+            graph_lanes: [
+                rgb(0x2563c9),
+                rgb(0x1f8a4c),
+                rgb(0x9a6200),
+                rgb(0x7a3fc4),
+                rgb(0xc93c45),
+                rgb(0x0e7f80),
+            ],
             metrics: METRICS,
         }
     }
@@ -348,6 +366,25 @@ mod tests {
                     ratio >= 4.5,
                     "{} theme: {name} is {ratio:.2}:1",
                     if theme.is_dark() { "dark" } else { "light" }
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn graph_lanes_stand_out_from_the_page_and_from_each_other() {
+        for theme in [Theme::dark(), Theme::light()] {
+            for (i, lane) in theme.graph_lanes.iter().enumerate() {
+                // Lines and dots are graphics: 3:1 is the bar for those.
+                let ratio = contrast(*lane, theme.surface);
+                assert!(
+                    ratio >= 3.,
+                    "lane {i} is {ratio:.2}:1 (dark: {})",
+                    theme.is_dark()
+                );
+                assert!(
+                    !theme.graph_lanes[..i].contains(lane),
+                    "lane {i} repeats a colour"
                 );
             }
         }

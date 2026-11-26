@@ -1,16 +1,24 @@
-use std::{collections::HashSet, ops::Range};
+use std::{
+    collections::{HashMap, HashSet},
+    ops::Range,
+};
 
-use git_core::{CommitFile, CommitInfo, DiffOptions, FileDiffs, relative_time};
+use git_core::{
+    CommitFile, CommitInfo, DiffOptions, FileDiffs, Head, LabelKind, LogScope, RefLabel,
+    relative_time,
+};
 use gpui::{
-    AnyElement, AppContext, Context, Entity, InteractiveElement, IntoElement, ParentElement,
-    Render, SharedString, StatefulInteractiveElement, Styled, Subscription, Task, Window, div,
-    prelude::FluentBuilder, px, uniform_list,
+    AnyElement, AppContext, Bounds, Context, Entity, InteractiveElement, IntoElement,
+    ParentElement, PathBuilder, Pixels, Point, Render, Rgba, SharedString,
+    StatefulInteractiveElement, Styled, Subscription, Task, Window, canvas, div, fill, point,
+    prelude::FluentBuilder, px, size, uniform_list,
 };
 use gpui_component::input::{Input, InputEvent, InputState};
 
 use crate::{
     diff_rows::HunkControls,
     diff_view::{DiffContent, DiffInteraction, diff_body, message},
+    graph::{Graph, GraphRow},
     repo_state::RepoState,
     theme::{MONO_FONT, Theme},
     ui::panel,
@@ -18,6 +26,17 @@ use crate::{
 
 /// How many commits are read at a time.
 const PAGE: usize = 300;
+
+/// One lane of the commit graph, in pixels.
+const LANE_WIDTH: f32 = 10.;
+/// Lanes past this many are cut off, so a wide graph doesn't squeeze out the commit text.
+const MAX_LANES: usize = 8;
+const DOT_RADIUS: f32 = 3.5;
+const LINE_WIDTH: f32 = 1.5;
+/// Labels shown on one commit row; the rest are counted ("+2").
+const MAX_LABELS: usize = 2;
+/// The commit list's rows, in pixels.
+const COMMIT_ROW_HEIGHT: f32 = 48.;
 
 /// A row of the commit list.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -32,6 +51,14 @@ pub struct HistoryView {
     filter: Entity<InputState>,
     commits: Vec<CommitInfo>,
     unpushed: HashSet<String>,
+    /// The current branch, or every branch.
+    scope: LogScope,
+    /// The graph's lanes after the commits read so far, so the next page carries on.
+    graph: Graph,
+    /// The graph row for each entry of `commits`.
+    graph_rows: Vec<GraphRow>,
+    /// Branch and tag names, by the commit they point at.
+    labels: HashMap<String, Vec<RefLabel>>,
     /// The branch's upstream exists, by git-core's rule, so "not unpushed" means pushed.
     has_upstream: bool,
     has_more: bool,
@@ -75,6 +102,86 @@ fn undo_offer(
         UndoOffer::Undo
     } else {
         UndoOffer::PushedHint
+    }
+}
+
+/// A commit's labels in the order shown: the current branch first, then local branches,
+/// remote branches and tags, each alphabetically.
+fn ordered_labels(labels: &[RefLabel], current_branch: Option<&str>) -> Vec<RefLabel> {
+    let mut ordered = labels.to_vec();
+    ordered.sort_by_key(|label| {
+        let current = label.kind == LabelKind::Local && Some(label.name.as_str()) == current_branch;
+        (!current, label.kind, label.name.clone())
+    });
+    ordered
+}
+
+/// One row of the commit graph, `lanes` wide, drawn over the row's full height.
+fn graph_cell(row: &GraphRow, lanes: usize, theme: &Theme) -> AnyElement {
+    let row = row.clone();
+    let colors = theme.graph_lanes;
+    // A merge's dot is hollow: filled with the list's own colour.
+    let hole = theme.surface;
+    canvas(
+        |_, _, _| {},
+        move |bounds, (), window, _| paint_graph_row(&row, bounds, &colors, hole, window),
+    )
+    .w(px(LANE_WIDTH * lanes as f32))
+    .h_full()
+    .flex_none()
+    .into_any_element()
+}
+
+fn paint_graph_row(
+    row: &GraphRow,
+    bounds: Bounds<Pixels>,
+    colors: &[Rgba],
+    hole: Rgba,
+    window: &mut Window,
+) {
+    let x = |lane: usize| bounds.origin.x + px(LANE_WIDTH * (lane as f32 + 0.5));
+    let color = |lane: usize| colors[lane % colors.len()];
+    let (top, middle, bottom) = (bounds.top(), bounds.center().y, bounds.bottom());
+    let drawn = |(from, to): &(usize, usize)| from.max(to) < &MAX_LANES;
+    // A line coming down into the dot bends at the dot's height; one leaving the dot bends
+    // there too, then runs straight down its lane.
+    for (from, to) in row.top.iter().filter(|segment| drawn(segment)) {
+        let (start, end) = (point(x(*from), top), point(x(*to), middle));
+        stroke(window, start, end, point(x(*from), middle), color(*from));
+    }
+    for (from, to) in row.bottom.iter().filter(|segment| drawn(segment)) {
+        let (start, end) = (point(x(*from), middle), point(x(*to), bottom));
+        stroke(window, start, end, point(x(*to), middle), color(*to));
+    }
+    if row.lane < MAX_LANES {
+        let lane_color = color(row.lane);
+        let diameter = px(DOT_RADIUS * 2.);
+        let dot = Bounds::centered_at(point(x(row.lane), middle), size(diameter, diameter));
+        let quad = fill(dot, if row.merge { hole } else { lane_color })
+            .corner_radii(px(DOT_RADIUS))
+            .border_widths(px(if row.merge { LINE_WIDTH } else { 0. }))
+            .border_color(lane_color);
+        window.paint_quad(quad);
+    }
+}
+
+/// A line from `start` to `end`: straight within a lane, curved (around `bend`) across.
+fn stroke(
+    window: &mut Window,
+    start: Point<Pixels>,
+    end: Point<Pixels>,
+    bend: Point<Pixels>,
+    color: Rgba,
+) {
+    let mut path = PathBuilder::stroke(px(LINE_WIDTH));
+    path.move_to(start);
+    if start.x == end.x {
+        path.line_to(end);
+    } else {
+        path.curve_to(end, bend);
+    }
+    if let Ok(path) = path.build() {
+        window.paint_path(path, color);
     }
 }
 
@@ -143,6 +250,10 @@ impl HistoryView {
             filter,
             commits: Vec::new(),
             unpushed: HashSet::new(),
+            scope: LogScope::Head,
+            graph: Graph::default(),
+            graph_rows: Vec::new(),
+            labels: HashMap::new(),
             has_upstream: false,
             has_more: false,
             loaded_for: None,
@@ -176,6 +287,9 @@ impl HistoryView {
         }
         self.loaded_for = key;
         self.commits.clear();
+        self.graph = Graph::default();
+        self.graph_rows.clear();
+        self.labels.clear();
         self.unpushed.clear();
         self.has_more = false;
         self.files.clear();
@@ -191,14 +305,19 @@ impl HistoryView {
             return;
         };
         let generation = self.list_generation;
+        let scope = self.scope;
         self.tasks.push(cx.spawn(async move |this, cx| {
             let result = cx
                 .background_executor()
                 .spawn(async move {
-                    let commits = repo.log(skip, PAGE, git_core::LogScope::Head)?;
+                    let commits = repo.log(skip, PAGE, scope)?;
                     // Which commits are unpushed doesn't change as pages arrive.
                     let unpushed = if skip == 0 {
-                        Some((repo.unpushed_commits()?, repo.has_upstream()))
+                        Some((
+                            repo.unpushed_commits()?,
+                            repo.has_upstream(),
+                            repo.ref_labels()?,
+                        ))
                     } else {
                         None
                     };
@@ -212,10 +331,15 @@ impl HistoryView {
                 match result {
                     Ok((commits, unpushed)) => {
                         this.has_more = commits.len() == PAGE;
+                        for commit in &commits {
+                            let row = this.graph.push(&commit.id, &commit.parents);
+                            this.graph_rows.push(row);
+                        }
                         this.commits.extend(commits);
-                        if let Some((unpushed, has_upstream)) = unpushed {
+                        if let Some((unpushed, has_upstream, labels)) = unpushed {
                             this.unpushed = unpushed;
                             this.has_upstream = has_upstream;
+                            this.labels = labels;
                         }
                         // Keep the selection if it is still there, otherwise show the newest.
                         let still_there = this
@@ -343,6 +467,47 @@ impl HistoryView {
         }));
     }
 
+    /// "This branch | All branches": which commits the list and its graph show.
+    fn scope_switch(&self, theme: &Theme, cx: &mut Context<Self>) -> AnyElement {
+        let option = |id: &'static str, label: &'static str, scope: LogScope| {
+            let picked = self.scope == scope;
+            div()
+                .id(id)
+                .flex_1()
+                .h(px(24.))
+                .flex()
+                .items_center()
+                .justify_center()
+                .rounded(px(theme.metrics.radius_md))
+                .text_size(px(theme.metrics.text_sm))
+                .cursor_pointer()
+                .text_color(if picked { theme.text } else { theme.text_muted })
+                .when(picked, |option| option.bg(theme.pill_active))
+                .on_click(cx.listener(move |this, _, _, cx| this.set_scope(scope, cx)))
+                .child(label)
+        };
+        div()
+            .flex()
+            .gap(px(2.))
+            .p(px(2.))
+            .rounded(px(theme.metrics.radius_md))
+            .border_1()
+            .border_color(theme.border)
+            .child(option("scope-head", "This branch", LogScope::Head))
+            .child(option("scope-all", "All branches", LogScope::All))
+            .into_any_element()
+    }
+
+    /// Shows the current branch's commits or every branch's, reading the list again.
+    fn set_scope(&mut self, scope: LogScope, cx: &mut Context<Self>) {
+        if self.scope == scope {
+            return;
+        }
+        self.scope = scope;
+        self.loaded_for = None;
+        self.reload_if_needed(cx);
+    }
+
     fn toggle_whitespace(&mut self, cx: &mut Context<Self>) {
         self.hide_whitespace = !self.hide_whitespace;
         self.diff = None;
@@ -351,10 +516,14 @@ impl HistoryView {
         cx.notify();
     }
 
+    /// One commit in the list. `graph` is its graph row and the column's width in lanes,
+    /// or `None` to show the author's initials instead (while filtering).
     fn commit_row(
         &self,
         ix: usize,
         commit: &CommitInfo,
+        graph: Option<(&GraphRow, usize)>,
+        current_branch: Option<&str>,
         theme: &Theme,
         cx: &mut Context<Self>,
     ) -> AnyElement {
@@ -362,10 +531,27 @@ impl HistoryView {
         let unpushed = self.unpushed.contains(&commit.id);
         let view = cx.entity();
         let id = commit.id.clone();
+        let labels = self
+            .labels
+            .get(&commit.id)
+            .map(|labels| ordered_labels(labels, current_branch))
+            .unwrap_or_default();
+        let hidden_labels = labels.len().saturating_sub(MAX_LABELS);
+        let avatar = div()
+            .size(px(30.))
+            .flex_none()
+            .rounded_full()
+            .bg(theme.pill_active)
+            .text_size(px(theme.metrics.text_xs))
+            .font_weight(gpui::FontWeight::SEMIBOLD)
+            .flex()
+            .items_center()
+            .justify_center()
+            .child(initials(&commit.author));
         div()
             .id(("commit", ix))
             .w_full()
-            .h(px(48.))
+            .h(px(COMMIT_ROW_HEIGHT))
             .px(px(10.))
             .flex()
             .items_center()
@@ -376,19 +562,10 @@ impl HistoryView {
             .on_click(move |_, _, cx| {
                 view.update(cx, |this, cx| this.select_commit(id.clone(), cx))
             })
-            .child(
-                div()
-                    .size(px(30.))
-                    .flex_none()
-                    .rounded_full()
-                    .bg(theme.pill_active)
-                    .text_size(px(theme.metrics.text_xs))
-                    .font_weight(gpui::FontWeight::SEMIBOLD)
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .child(initials(&commit.author)),
-            )
+            .child(match graph {
+                Some((row, lanes)) => graph_cell(row, lanes, theme),
+                None => avatar.into_any_element(),
+            })
             .child(
                 div()
                     .flex_1()
@@ -398,9 +575,43 @@ impl HistoryView {
                     .gap(px(2.))
                     .child(
                         div()
-                            .truncate()
-                            .font_weight(gpui::FontWeight::MEDIUM)
-                            .child(SharedString::from(commit.subject.clone())),
+                            .flex()
+                            .items_center()
+                            .gap(px(6.))
+                            .child(
+                                div()
+                                    .min_w_0()
+                                    .truncate()
+                                    .font_weight(gpui::FontWeight::MEDIUM)
+                                    .child(SharedString::from(commit.subject.clone())),
+                            )
+                            .children(labels.into_iter().take(MAX_LABELS).map(|label| {
+                                let color = match label.kind {
+                                    LabelKind::Local => theme.accent_soft,
+                                    LabelKind::Remote => theme.text_muted,
+                                    LabelKind::Tag => theme.syntax_type,
+                                };
+                                div()
+                                    .flex_none()
+                                    .max_w(px(120.))
+                                    .truncate()
+                                    .px(px(6.))
+                                    .rounded(px(theme.metrics.radius_sm))
+                                    .bg(theme.pill_active)
+                                    .text_size(px(theme.metrics.text_xs))
+                                    .font_family(MONO_FONT)
+                                    .text_color(color)
+                                    .child(SharedString::from(label.name))
+                            }))
+                            .when(hidden_labels > 0, |line| {
+                                line.child(
+                                    div()
+                                        .flex_none()
+                                        .text_size(px(theme.metrics.text_xs))
+                                        .text_color(theme.text_muted)
+                                        .child(format!("+{hidden_labels}")),
+                                )
+                            }),
                     )
                     .child(
                         div()
@@ -696,6 +907,19 @@ impl Render for HistoryView {
         let theme = cx.global::<Theme>().clone();
         let filter = self.filter.read(cx).value().to_string();
         let rows = rows_for(&self.commits, &filter, self.has_more);
+        // Filtered rows would break the graph's lines, so it shows only for the full list.
+        let lanes = filter.trim().is_empty().then(|| {
+            self.graph_rows
+                .iter()
+                .map(GraphRow::width)
+                .max()
+                .unwrap_or(1)
+                .clamp(1, MAX_LANES)
+        });
+        let current_branch = match self.repo_state.read(cx).status().map(|s| &s.branch.head) {
+            Some(Head::Branch(name)) => Some(name.clone()),
+            _ => None,
+        };
 
         let list: AnyElement = if rows.is_empty() {
             message(
@@ -719,7 +943,16 @@ impl Render for HistoryView {
                         .filter_map(|ix| match rows.get(ix)? {
                             Row::Commit(commit_ix) => {
                                 let commit = this.commits.get(*commit_ix)?.clone();
-                                Some(this.commit_row(ix, &commit, &row_theme, cx))
+                                let graph_row = this.graph_rows.get(*commit_ix).cloned();
+                                let graph = lanes.zip(graph_row.as_ref()).map(|(w, r)| (r, w));
+                                Some(this.commit_row(
+                                    ix,
+                                    &commit,
+                                    graph,
+                                    current_branch.as_deref(),
+                                    &row_theme,
+                                    cx,
+                                ))
                             }
                             Row::LoadMore => {
                                 let view = cx.entity();
@@ -727,7 +960,7 @@ impl Render for HistoryView {
                                     div()
                                         .id("load-more")
                                         .w_full()
-                                        .h(px(48.))
+                                        .h(px(COMMIT_ROW_HEIGHT))
                                         .flex()
                                         .items_center()
                                         .justify_center()
@@ -766,7 +999,11 @@ impl Render for HistoryView {
                             .p(px(10.))
                             .border_b_1()
                             .border_color(theme.border)
-                            .child(Input::new(&self.filter).aria_label("Filter commits")),
+                            .flex()
+                            .flex_col()
+                            .gap(px(8.))
+                            .child(Input::new(&self.filter).aria_label("Filter commits"))
+                            .child(self.scope_switch(&theme, cx)),
                     )
                     .child(list),
             )
@@ -832,6 +1069,28 @@ mod tests {
             undo_offer(&commit("base", "Sam"), true, true, false, false),
             UndoOffer::Nothing
         );
+    }
+
+    fn label(kind: LabelKind, name: &str) -> RefLabel {
+        RefLabel {
+            kind,
+            name: name.into(),
+        }
+    }
+
+    #[test]
+    fn the_current_branch_label_comes_first_then_branches_remotes_and_tags() {
+        let labels = [
+            label(LabelKind::Tag, "v1"),
+            label(LabelKind::Remote, "origin/main"),
+            label(LabelKind::Local, "zeta"),
+            label(LabelKind::Local, "main"),
+        ];
+
+        let ordered = ordered_labels(&labels, Some("zeta"));
+
+        let names: Vec<_> = ordered.iter().map(|l| l.name.as_str()).collect();
+        assert_eq!(names, ["zeta", "main", "origin/main", "v1"]);
     }
 
     #[test]
