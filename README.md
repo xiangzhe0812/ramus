@@ -13,7 +13,8 @@ repository is allowed to run on your machine.
 ## What it does
 
 - **Changes:** stage and unstage per file, per hunk or per line, with syntax-coloured diffs; commit and amend; discard with undo.
-- **History:** browse commits and their diffs; revert, cherry-pick and merge. Undo the last
+- **History:** browse commits and their diffs with a commit graph, for the current branch or
+  all branches at once, with branch and tag labels; revert, cherry-pick and merge. Undo the last
   commit while it is unpushed: its changes and message come back, ready to commit again.
 - **Branches:** switch, create, merge, rename and delete from a searchable popover. Deleting a
   branch whose commits are on no other branch asks first.
@@ -38,7 +39,7 @@ repository is allowed to run on your machine.
   an "Update · vX.Y.Z" pill appears in the title bar; clicking it opens the release page. Ramus
   never downloads or installs anything itself.
 
-Ramus deliberately has no commit-graph view. Not built yet: rebase, per-host repository lists for Clone.
+Not built yet: rebase, per-host repository lists for Clone.
 
 ## Keyboard
 
