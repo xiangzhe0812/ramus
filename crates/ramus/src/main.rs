@@ -26,6 +26,7 @@ mod testutil;
 mod theme;
 mod title_bar;
 mod ui;
+mod update_check;
 mod welcome;
 mod workspace;
 mod worktree_popover;
