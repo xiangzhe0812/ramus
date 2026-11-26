@@ -17,7 +17,7 @@ use std::{
 
 use crate::{
     Error, OperationKind, Repo,
-    runner::{defended_command, run_git},
+    runner::{defended_command, run_git, run_git_allowing},
 };
 
 /// Shared flag a caller sets to stop a running operation.
@@ -224,6 +224,17 @@ impl Repo {
             .map(str::to_owned)
             .filter(|name| !name.is_empty())
             .collect())
+    }
+
+    /// The address remote `name` fetches from, or `None` when there is no such remote.
+    pub fn remote_url(&self, name: &str) -> Result<Option<String>, Error> {
+        if name.is_empty() || name.starts_with('-') {
+            return Ok(None);
+        }
+        // Exit status 2 means "no such remote".
+        let output = run_git_allowing(self.root(), &["remote", "get-url", name], &[0, 2])?;
+        let url = String::from_utf8_lossy(&output).trim().to_owned();
+        Ok(Some(url).filter(|url| !url.is_empty()))
     }
 
     /// Gives a repository with no remote one called `origin`. Refuses if it has any, so it

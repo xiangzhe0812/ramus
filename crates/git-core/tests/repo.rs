@@ -5169,3 +5169,21 @@ mod commit_graph {
         );
     }
 }
+
+mod remote_urls {
+    use super::*;
+
+    #[test]
+    fn remote_url_reads_the_address_and_is_none_without_that_remote() {
+        let dir = new_repo();
+        let repo = Repo::open(dir.path()).unwrap();
+        assert_eq!(repo.remote_url("origin").unwrap(), None);
+
+        git(dir.path(), &["remote", "add", "origin", "git@github.com:owner/repo.git"]);
+
+        assert_eq!(
+            repo.remote_url("origin").unwrap().as_deref(),
+            Some("git@github.com:owner/repo.git")
+        );
+    }
+}
