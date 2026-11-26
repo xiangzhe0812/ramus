@@ -31,6 +31,7 @@ use crate::{
         BRANCH_PILL_LEFT, POPOVER_TOP, REPO_PILL_LEFT, Tab, TabRequested, TitleBar,
         WORKTREE_PILL_LEFT,
     },
+    update_check::UpdateCheck,
     welcome::Welcome,
     worktree_popover::WorktreePopover,
     worktrees_view::WorktreesView,
@@ -74,6 +75,7 @@ impl Workspace {
     pub fn new(
         repo_state: Entity<RepoState>,
         accounts: Entity<AccountsState>,
+        update_check: Entity<UpdateCheck>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
@@ -109,7 +111,7 @@ impl Workspace {
         let stashes = cx.new(|cx| StashView::new(repo_state.clone(), window, cx));
         let worktrees = cx.new(|cx| WorktreesView::new(repo_state.clone(), window, cx));
         let conflicts = cx.new(|cx| ConflictsView::new(repo_state.clone(), window, cx));
-        let title_bar = cx.new(|cx| TitleBar::new(repo_state.clone(), cx));
+        let title_bar = cx.new(|cx| TitleBar::new(repo_state.clone(), update_check, cx));
         cx.subscribe(&title_bar, |this, _, event: &TabRequested, cx| {
             this.show(event.0, cx)
         })
@@ -984,8 +986,11 @@ mod tests {
                 String::new(),
             )
         });
-        let (workspace, cx) =
-            cx.add_window_view(|window, cx| Workspace::new(repo_state, accounts, window, cx));
+        // Never started, so tests don't reach GitHub.
+        let update_check = cx.new(|_| UpdateCheck::new(Endpoints::default()));
+        let (workspace, cx) = cx.add_window_view(|window, cx| {
+            Workspace::new(repo_state, accounts, update_check, window, cx)
+        });
         cx.run_until_parked();
         (workspace, cx)
     }
@@ -1097,8 +1102,11 @@ mod tests {
                 String::new(),
             )
         });
-        let (workspace, cx) =
-            cx.add_window_view(|window, cx| Workspace::new(repo_state, accounts, window, cx));
+        // Never started, so tests don't reach GitHub.
+        let update_check = cx.new(|_| UpdateCheck::new(Endpoints::default()));
+        let (workspace, cx) = cx.add_window_view(|window, cx| {
+            Workspace::new(repo_state, accounts, update_check, window, cx)
+        });
         cx.run_until_parked();
 
         show(cx, ToggleRepositories);

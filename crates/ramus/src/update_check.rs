@@ -1,8 +1,9 @@
 //! Finding out whether a newer Ramus release is out, so the title bar can say so. Only a
 //! version number is read; nothing is downloaded or installed.
 
-use std::fmt;
+use std::{fmt, time::Duration};
 
+use gpui::{Context, Task};
 use serde::Deserialize;
 
 use crate::github::{Endpoints, agent, describe};
@@ -11,6 +12,58 @@ use crate::github::{Endpoints, agent, describe};
 const RELEASES_PAGE: &str = "https://github.com/xiangzhe0812/ramus/releases/tag";
 /// GitHub's newest published release; drafts and pre-releases are left out.
 const LATEST_RELEASE_PATH: &str = "/repos/xiangzhe0812/ramus/releases/latest";
+
+/// How long to wait between checks while the app stays open.
+const CHECK_EVERY: Duration = Duration::from_secs(24 * 60 * 60);
+
+/// Whether a newer release is out. Checks at launch, once `start`ed, then every day.
+pub struct UpdateCheck {
+    endpoints: Endpoints,
+    available: Option<Version>,
+    _task: Option<Task<()>>,
+}
+
+impl UpdateCheck {
+    /// A check that hasn't asked GitHub anything yet.
+    pub fn new(endpoints: Endpoints) -> Self {
+        Self {
+            endpoints,
+            available: None,
+            _task: None,
+        }
+    }
+
+    /// Starts checking: now, then every `CHECK_EVERY`. A failed check is only logged; the
+    /// last answer stands until the next one.
+    pub fn start(&mut self, cx: &mut Context<Self>) {
+        let endpoints = self.endpoints.clone();
+        self._task = Some(cx.spawn(async move |this, cx| {
+            loop {
+                let endpoints = endpoints.clone();
+                let latest = cx
+                    .background_executor()
+                    .spawn(async move { fetch_latest_tag(&endpoints) })
+                    .await;
+                let alive = this.update(cx, |this, cx| match latest {
+                    Ok(tag) => {
+                        this.available = newer_release(&tag, Version::current());
+                        cx.notify();
+                    }
+                    Err(error) => eprintln!("[update check] {error}"),
+                });
+                if alive.is_err() {
+                    break;
+                }
+                cx.background_executor().timer(CHECK_EVERY).await;
+            }
+        }));
+    }
+
+    /// The newer release, if one is out.
+    pub fn available(&self) -> Option<Version> {
+        self.available
+    }
+}
 
 /// The tag of the newest release on GitHub. Blocks, so run it on a background executor.
 pub fn fetch_latest_tag(endpoints: &Endpoints) -> Result<String, String> {
@@ -88,8 +141,69 @@ pub fn release_page(version: Version) -> String {
 
 #[cfg(test)]
 mod tests {
+    use std::time::Duration;
+
+    use gpui::{AppContext, Entity, TestAppContext};
+
     use super::*;
     use crate::github::fake::Fake;
+
+    /// A started check against `fake`, stepped until its first request has been answered
+    /// (the fake answers on real threads, so the test clock alone can't wait for it).
+    fn started_check(cx: &mut TestAppContext, fake: &Fake) -> Entity<UpdateCheck> {
+        let check = cx.new(|_| UpdateCheck::new(endpoints(fake)));
+        check.update(cx, |check, cx| check.start(cx));
+        for _ in 0..200 {
+            cx.executor().run_until_parked();
+            if fake.count(LATEST) > 0 {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        cx.executor().run_until_parked();
+        check
+    }
+
+    #[gpui::test]
+    async fn a_newer_release_on_github_becomes_available(cx: &mut TestAppContext) {
+        let fake = Fake::default().reply(LATEST, &[r#"{"tag_name":"v999.0.0"}"#]);
+
+        let check = started_check(cx, &fake);
+
+        let available = check.read_with(cx, |check, _| check.available());
+        assert_eq!(available, Version::parse_tag("v999.0.0"));
+    }
+
+    #[gpui::test]
+    async fn a_failed_check_leaves_nothing_available(cx: &mut TestAppContext) {
+        let fake = Fake::default();
+
+        let check = started_check(cx, &fake);
+
+        assert_eq!(check.read_with(cx, |check, _| check.available()), None);
+    }
+
+    #[gpui::test]
+    async fn the_check_runs_again_a_day_later(cx: &mut TestAppContext) {
+        let fake = Fake::default().reply(
+            LATEST,
+            &[r#"{"tag_name":"v0.0.0"}"#, r#"{"tag_name":"v999.0.0"}"#],
+        );
+        let check = started_check(cx, &fake);
+        assert_eq!(check.read_with(cx, |check, _| check.available()), None);
+
+        cx.executor().advance_clock(CHECK_EVERY);
+        for _ in 0..200 {
+            cx.executor().run_until_parked();
+            if check.read_with(cx, |check, _| check.available()).is_some() {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+
+        let available = check.read_with(cx, |check, _| check.available());
+        assert_eq!(available, Version::parse_tag("v999.0.0"));
+    }
 
     const LATEST: &str = "/repos/xiangzhe0812/ramus/releases/latest";
 

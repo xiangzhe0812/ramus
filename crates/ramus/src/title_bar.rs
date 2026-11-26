@@ -13,6 +13,7 @@ use crate::{
     repo_state::{RepoState, SyncKind},
     theme::{MONO_FONT, TITLE_BAR_HEIGHT, Theme},
     ui::icon,
+    update_check::{UpdateCheck, release_page},
 };
 
 /// The views the window can show.
@@ -31,15 +32,24 @@ impl EventEmitter<TabRequested> for TitleBar {}
 
 pub struct TitleBar {
     repo_state: Entity<RepoState>,
+    update_check: Entity<UpdateCheck>,
     tab: Tab,
-    _observe: Subscription,
+    _observe: Vec<Subscription>,
 }
 
 impl TitleBar {
-    pub fn new(repo_state: Entity<RepoState>, cx: &mut Context<Self>) -> Self {
-        let _observe = cx.observe(&repo_state, |_, _, cx| cx.notify());
+    pub fn new(
+        repo_state: Entity<RepoState>,
+        update_check: Entity<UpdateCheck>,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        let _observe = vec![
+            cx.observe(&repo_state, |_, _, cx| cx.notify()),
+            cx.observe(&update_check, |_, _, cx| cx.notify()),
+        ];
         Self {
             repo_state,
+            update_check,
             tab: Tab::Changes,
             _observe,
         }
@@ -147,6 +157,7 @@ impl Render for TitleBar {
         // The open worktree's folder name. The pill shows whenever a repository is open.
         let worktree_name = state.repo().map(|repo| repo.name());
         let branch = state.status().map(|status| &status.branch);
+        let update = self.update_check.read(cx).available();
 
         let branch_label = branch.map(|branch| match &branch.head {
             Head::Branch(name) if branch.oid.is_none() => format!("{name} (no commits)"),
@@ -360,6 +371,24 @@ impl Render for TitleBar {
                 )
             })
             .child(div().flex_1())
+            .children(update.map(|version| {
+                // Opens the release's page; installing stays in the user's hands.
+                div()
+                    .id("update")
+                    .h(px(theme.metrics.control_height))
+                    .px(px(12.))
+                    .flex()
+                    .flex_none()
+                    .items_center()
+                    .rounded(px(theme.metrics.radius_md))
+                    .bg(theme.accent)
+                    .text_color(theme.accent_text)
+                    .font_weight(gpui::FontWeight::SEMIBOLD)
+                    .cursor_pointer()
+                    .on_mouse_down(MouseButton::Left, keep_click)
+                    .on_click(move |_, _, cx| cx.open_url(&release_page(version)))
+                    .child(format!("Update · {version}"))
+            }))
             .child(
                 div()
                     .id("palette-button")
