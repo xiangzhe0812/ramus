@@ -7,7 +7,12 @@ use crate::theme::{MONO_FONT, Theme, UI_FONT};
 
 pub fn apply(theme: &Theme, cx: &mut App) {
     // Switching modes reloads the library's colors, so set the mode before overriding them.
-    gpui_component::Theme::change(ThemeMode::Dark, None, cx);
+    let mode = if theme.is_dark() {
+        ThemeMode::Dark
+    } else {
+        ThemeMode::Light
+    };
+    gpui_component::Theme::change(mode, None, cx);
 
     let component = gpui_component::Theme::global_mut(cx);
     let colors = &mut component.colors;

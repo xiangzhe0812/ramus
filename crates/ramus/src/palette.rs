@@ -3,7 +3,7 @@
 
 use git_core::Branch;
 
-use crate::repo_state::SyncKind;
+use crate::{repo_state::SyncKind, settings::Appearance};
 
 /// Something the palette can do. Most map onto an action the keyboard already has.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -23,6 +23,7 @@ pub enum Command {
     StageAll,
     UnstageAll,
     DiscardSelected,
+    SetAppearance(Appearance),
 }
 
 /// What running an entry does.
@@ -63,6 +64,8 @@ pub struct Situation<'a> {
     pub busy: bool,
     /// The sync the title-bar button would run, and its label ("Push origin").
     pub primary_sync: Option<(SyncKind, String)>,
+    /// The theme choice in effect, marked "(current)" in the list.
+    pub appearance: Appearance,
     pub local: &'a [Branch],
     pub remote_only: &'a [Branch],
 }
@@ -104,6 +107,22 @@ fn all_commands(situation: &Situation) -> Vec<Entry> {
         ));
     }
     entries.push(Entry::command("Accounts…", None, Command::ShowAccounts));
+    for (name, appearance) in [
+        ("Match macOS", Appearance::System),
+        ("Light", Appearance::Light),
+        ("Dark", Appearance::Dark),
+    ] {
+        let current = if appearance == situation.appearance {
+            " (current)"
+        } else {
+            ""
+        };
+        entries.push(Entry::command(
+            format!("Appearance: {name}{current}"),
+            None,
+            Command::SetAppearance(appearance),
+        ));
+    }
     if !situation.has_repo {
         return entries;
     }
@@ -244,6 +263,7 @@ mod tests {
             has_recent: false,
             busy: false,
             primary_sync: Some((SyncKind::Push, "Push origin".into())),
+            appearance: Appearance::System,
             local,
             remote_only,
         }
@@ -259,7 +279,35 @@ mod tests {
         s.has_repo = false;
         assert_eq!(
             labels(&entries(&s, "")),
-            ["Open repository…", "Clone repository…", "Accounts…"]
+            [
+                "Open repository…",
+                "Clone repository…",
+                "Accounts…",
+                "Appearance: Match macOS (current)",
+                "Appearance: Light",
+                "Appearance: Dark",
+            ]
+        );
+    }
+
+    #[test]
+    fn the_current_appearance_is_marked() {
+        let mut s = situation(&[], &[]);
+        s.appearance = Appearance::Dark;
+
+        let found = entries(&s, "appearance");
+
+        assert_eq!(
+            labels(&found),
+            [
+                "Appearance: Match macOS",
+                "Appearance: Light",
+                "Appearance: Dark (current)",
+            ]
+        );
+        assert_eq!(
+            found[1].target,
+            Target::Command(Command::SetAppearance(Appearance::Light))
         );
     }
 
