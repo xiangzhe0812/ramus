@@ -10,6 +10,7 @@ use crate::{
         AddRemote, NewBranchHere, ToggleBranches, TogglePalette, ToggleRepositories,
         ToggleWorktrees,
     },
+    pull_requests::{Checks, PrLink, PullRequestState},
     repo_state::{RepoState, SyncKind},
     theme::{MONO_FONT, TITLE_BAR_HEIGHT, Theme},
     ui::icon,
@@ -33,6 +34,7 @@ impl EventEmitter<TabRequested> for TitleBar {}
 pub struct TitleBar {
     repo_state: Entity<RepoState>,
     update_check: Entity<UpdateCheck>,
+    pull_requests: Entity<PullRequestState>,
     tab: Tab,
     _observe: Vec<Subscription>,
 }
@@ -41,15 +43,18 @@ impl TitleBar {
     pub fn new(
         repo_state: Entity<RepoState>,
         update_check: Entity<UpdateCheck>,
+        pull_requests: Entity<PullRequestState>,
         cx: &mut Context<Self>,
     ) -> Self {
         let _observe = vec![
             cx.observe(&repo_state, |_, _, cx| cx.notify()),
             cx.observe(&update_check, |_, _, cx| cx.notify()),
+            cx.observe(&pull_requests, |_, _, cx| cx.notify()),
         ];
         Self {
             repo_state,
             update_check,
+            pull_requests,
             tab: Tab::Changes,
             _observe,
         }
@@ -158,6 +163,14 @@ impl Render for TitleBar {
         let worktree_name = state.repo().map(|repo| repo.name());
         let branch = state.status().map(|status| &status.branch);
         let update = self.update_check.read(cx).available();
+        let pull = match self.pull_requests.read(cx).link() {
+            Some(PrLink::Open {
+                number,
+                checks,
+                url,
+            }) => Some((number, checks, url)),
+            _ => None,
+        };
 
         let branch_label = branch.map(|branch| match &branch.head {
             Head::Branch(name) if branch.oid.is_none() => format!("{name} (no commits)"),
@@ -267,6 +280,43 @@ impl Render for TitleBar {
                 }
                 .child(icon("branch", 16., theme.text_muted))
                 .child(div().flex_1().min_w_0().truncate().child(label))
+            }))
+            .children(pull.map(|(number, checks, url)| {
+                // The branch's open pull request and where its checks stand; opens it.
+                let mark = match checks {
+                    Checks::Passing => {
+                        Some(icon("check", 12., theme.diff_added_sign).into_any_element())
+                    }
+                    Checks::Failing => {
+                        Some(icon("close", 12., theme.deleted.text).into_any_element())
+                    }
+                    Checks::Running => Some(
+                        div()
+                            .size(px(6.))
+                            .rounded_full()
+                            .bg(theme.modified.text)
+                            .into_any_element(),
+                    ),
+                    Checks::None => None,
+                };
+                div()
+                    .id("pull-request")
+                    .h(px(theme.metrics.control_height))
+                    .px(px(10.))
+                    .flex()
+                    .flex_none()
+                    .items_center()
+                    .gap(px(6.))
+                    .rounded(px(theme.metrics.radius_md))
+                    .border_1()
+                    .border_color(theme.border)
+                    .text_color(theme.text)
+                    .cursor_pointer()
+                    .hover(|pill| pill.bg(theme.surface_selected))
+                    .on_mouse_down(MouseButton::Left, keep_click)
+                    .on_click(move |_, _, cx| cx.open_url(&url))
+                    .child(format!("#{number}"))
+                    .children(mark)
             }))
             .child(div().flex_1())
             .children(operation.map(|label| {

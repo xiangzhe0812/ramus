@@ -40,6 +40,9 @@ pub struct AccountsState {
     endpoints: Endpoints,
     client_id: String,
     account: Option<Account>,
+    /// The signed-in token, kept from the keychain read at launch or the sign-in, so
+    /// GitHub requests don't read the keychain each time.
+    token: Option<Secret>,
     flow: Flow,
     /// The sign-in in progress; dropping it stops the polling.
     task: Option<Task<()>>,
@@ -48,21 +51,27 @@ pub struct AccountsState {
 impl AccountsState {
     pub fn new(store: Arc<dyn SecretStore>, endpoints: Endpoints, client_id: String) -> Self {
         let mut flow = Flow::Idle;
-        let account = match store.get() {
-            Ok(Some(text)) => serde_json::from_str::<Saved>(&text)
-                .ok()
-                .map(|saved| Account { login: saved.login }),
+        let saved = match store.get() {
+            Ok(Some(text)) => serde_json::from_str::<Saved>(&text).ok(),
             Ok(None) => None,
             Err(error) => {
                 flow = Flow::Failed(error);
                 None
             }
         };
+        let (account, token) = match saved {
+            Some(saved) => (
+                Some(Account { login: saved.login }),
+                Some(Secret(saved.token)),
+            ),
+            None => (None, None),
+        };
         Self {
             store,
             endpoints,
             client_id,
             account,
+            token,
             flow,
             task: None,
         }
@@ -70,6 +79,11 @@ impl AccountsState {
 
     pub fn account(&self) -> Option<&Account> {
         self.account.as_ref()
+    }
+
+    /// The signed-in token, for GitHub requests.
+    pub fn token(&self) -> Option<&Secret> {
+        self.token.as_ref()
     }
 
     pub fn flow(&self) -> &Flow {
@@ -106,8 +120,9 @@ impl AccountsState {
             let outcome = run_flow(&this, cx, endpoints, client_id, store).await;
             this.update(cx, |this, cx| {
                 match outcome {
-                    Ok(account) => {
+                    Ok((account, token)) => {
                         this.account = Some(account);
+                        this.token = Some(token);
                         this.flow = Flow::Idle;
                     }
                     Err(message) => this.flow = Flow::Failed(message),
@@ -135,6 +150,7 @@ impl AccountsState {
         match self.store.delete() {
             Ok(()) => {
                 self.account = None;
+                self.token = None;
                 self.flow = Flow::Idle;
             }
             // Still signed in: say so rather than pretend.
@@ -152,7 +168,7 @@ async fn run_flow(
     endpoints: Endpoints,
     client_id: String,
     store: Arc<dyn SecretStore>,
-) -> Result<Account, String> {
+) -> Result<(Account, Secret), String> {
     let code = {
         let (endpoints, client_id) = (endpoints.clone(), client_id.clone());
         cx.background_executor()
@@ -205,15 +221,15 @@ fn finish(
     endpoints: &Endpoints,
     token: Secret,
     store: &dyn SecretStore,
-) -> Result<Account, String> {
+) -> Result<(Account, Secret), String> {
     let login = github::fetch_login(endpoints, &token)?;
     let saved = serde_json::to_string(&Saved {
         login: login.clone(),
-        token: token.0,
+        token: token.0.clone(),
     })
     .map_err(|error| error.to_string())?;
     store.set(&saved)?;
-    Ok(Account { login })
+    Ok((Account { login }, token))
 }
 
 #[cfg(test)]
@@ -284,6 +300,7 @@ mod tests {
         state.read_with(cx, |s, _| {
             assert_eq!(s.account().unwrap().login, "octocat");
             assert_eq!(s.flow, Flow::Idle);
+            assert_eq!(s.token(), Some(&Secret("gho_secret".into())));
         });
         let saved = store.get().unwrap().unwrap();
         assert!(
@@ -300,8 +317,13 @@ mod tests {
             .unwrap();
         let state = state(cx, &Fake::default(), store);
         state.read_with(cx, |s, _| {
-            assert_eq!(s.account().map(|a| a.login.as_str()), Some("octocat"))
+            assert_eq!(s.account().map(|a| a.login.as_str()), Some("octocat"));
+            assert_eq!(s.token(), Some(&Secret("gho_secret".into())));
         });
+
+        state.update(cx, |s, cx| s.sign_out(cx));
+
+        assert_eq!(state.read_with(cx, |s, _| s.token().cloned()), None);
     }
 
     #[gpui::test]

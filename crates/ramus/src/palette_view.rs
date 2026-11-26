@@ -8,6 +8,7 @@ use gpui_component::input::{Input, InputEvent, InputState};
 
 use crate::{
     palette::{Entry, Situation, Target, entries, move_selection, row_positions},
+    pull_requests::PrLink,
     repo_state::RepoState,
     theme::{MONO_FONT, Theme},
     title_bar::primary_sync,
@@ -19,6 +20,7 @@ pub struct RunEntry(pub Target);
 /// The command palette: one box to find a command or a branch.
 pub struct PaletteView {
     repo_state: Entity<RepoState>,
+    pull_request: Option<PrLink>,
     query: Entity<InputState>,
     selected: usize,
     /// The list scrolls when there are more rows than room.
@@ -39,7 +41,13 @@ impl Focusable for PaletteView {
 }
 
 impl PaletteView {
-    pub fn new(repo_state: Entity<RepoState>, window: &mut Window, cx: &mut Context<Self>) -> Self {
+    /// `pull_request` is what GitHub has for the current branch as the palette opens.
+    pub fn new(
+        repo_state: Entity<RepoState>,
+        pull_request: Option<PrLink>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
         // Branches are only listed once something is typed, but load them now so they
         // are there by then.
         repo_state.update(cx, |state, cx| state.load_branches(cx));
@@ -66,6 +74,7 @@ impl PaletteView {
 
         Self {
             repo_state,
+            pull_request,
             query,
             selected: 0,
             list_scroll: ScrollHandle::new(),
@@ -89,6 +98,7 @@ impl PaletteView {
                 .filter(|_| state.has_remote())
                 .map(|action| (action.kind, action.label)),
             appearance: state.appearance(),
+            pull_request: self.pull_request.clone(),
             local: branches.map_or(&[], |list| list.local.as_slice()),
             remote_only: branches.map_or(&[], |list| list.remote_only.as_slice()),
         };
@@ -296,7 +306,8 @@ mod tests {
             cx.set_global(Theme::dark());
         });
         let state = cx.new(|_| RepoState::default());
-        let (palette, cx) = cx.add_window_view(|window, cx| PaletteView::new(state, window, cx));
+        let (palette, cx) =
+            cx.add_window_view(|window, cx| PaletteView::new(state, None, window, cx));
         cx.run_until_parked();
         (palette, cx)
     }
@@ -359,7 +370,8 @@ mod tests {
         });
         let state = cx.new(|_| RepoState::default());
         state.update(cx, |state, cx| state.open(dir.path().to_owned(), cx));
-        let (palette, cx) = cx.add_window_view(|window, cx| PaletteView::new(state, window, cx));
+        let (palette, cx) =
+            cx.add_window_view(|window, cx| PaletteView::new(state, None, window, cx));
         cx.run_until_parked();
         let ran = record_runs(&palette, cx);
 
