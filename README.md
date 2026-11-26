@@ -32,6 +32,10 @@ repository is allowed to run on your machine.
   the repository pill (⌘T), and the last one reopens when Ramus starts.
 - **Clone** any Git address, and a **command palette** (⌘K) for everything above.
 - **GitHub sign-in** (OAuth device flow, token kept in the macOS keychain).
+- **Pull requests:** once the current branch is pushed to a github.com `origin`, ⌘K offers
+  "Create pull request" (GitHub's form, in your browser). An open pull request shows in the
+  title bar with its checks (passing, failing or running); clicking it opens the PR. Works
+  for public repositories without any extra GitHub permission; private ones show nothing.
 - **Light and dark:** Ramus follows macOS's appearance, switching when macOS does. To pick
   one regardless, choose "Appearance: Light", "Appearance: Dark" or "Appearance: Match macOS"
   in the command palette; the choice is remembered.
