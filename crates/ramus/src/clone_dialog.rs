@@ -1,17 +1,54 @@
 use std::path::{Path, PathBuf};
 
 use gpui::{
-    AppContext, Context, DismissEvent, Entity, EventEmitter, FocusHandle, Focusable,
+    AnyElement, AppContext, Context, DismissEvent, Entity, EventEmitter, FocusHandle, Focusable,
     InteractiveElement, IntoElement, MouseButton, ParentElement, PathPromptOptions, Render,
-    SharedString, StatefulInteractiveElement, Styled, Subscription, Window, div,
+    SharedString, StatefulInteractiveElement, Styled, Subscription, Task, Window, div,
     prelude::FluentBuilder, px,
 };
 use gpui_component::input::{Input, InputEvent, InputState};
 
 use crate::{
+    actions::ShowAccounts,
+    github::{Endpoints, Secret},
+    github_repos::{GithubRepo, clone_address, fetch_my_repositories},
     repo_state::RepoState,
     theme::{MONO_FONT, Theme},
 };
+
+/// The height the repository list may take before it scrolls.
+const LIST_MAX_HEIGHT: f32 = 200.;
+
+/// The signed-in user's repositories, for picking one instead of typing an address.
+enum Listing {
+    SignedOut,
+    Loading,
+    Loaded(Vec<GithubRepo>),
+    Failed,
+}
+
+/// The repositories to list for what is typed: all of them for an empty box, those whose
+/// `owner/name` contains every typed word otherwise, and none once the box holds an
+/// address (a URL, an ssh address or a path), which is cloned as typed.
+fn matching<'a>(repos: &'a [GithubRepo], query: &str) -> Vec<&'a GithubRepo> {
+    let query = query.trim();
+    let address = query.contains("://")
+        || query.contains('@')
+        || query.starts_with('/')
+        || query.starts_with('~');
+    if address {
+        return Vec::new();
+    }
+    repos
+        .iter()
+        .filter(|repo| {
+            let name = repo.full_name().to_lowercase();
+            query
+                .split_whitespace()
+                .all(|word| name.contains(&word.to_lowercase()))
+        })
+        .collect()
+}
 
 /// The folder name git would pick for `url`: the last path part without `.git`.
 /// `https://host/a/b.git`, `git@host:a/b.git`, `/path/to/b/` and `b` all give `b`.
@@ -36,6 +73,9 @@ pub struct CloneDialog {
     parent: PathBuf,
     /// A clone started from this dialog is running or has just ended.
     started: bool,
+    endpoints: Endpoints,
+    repositories: Listing,
+    _listing: Option<Task<()>>,
     focus_handle: FocusHandle,
     _subscriptions: Vec<Subscription>,
 }
@@ -49,7 +89,15 @@ impl Focusable for CloneDialog {
 }
 
 impl CloneDialog {
-    pub fn new(repo_state: Entity<RepoState>, window: &mut Window, cx: &mut Context<Self>) -> Self {
+    /// `token` is the signed-in GitHub token, if any: with one, the user's repositories
+    /// are listed to pick from.
+    pub fn new(
+        repo_state: Entity<RepoState>,
+        token: Option<Secret>,
+        endpoints: Endpoints,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
         let url = cx
             .new(|cx| InputState::new(window, cx).placeholder("https://github.com/owner/repo.git"));
         url.update(cx, |input, cx| input.focus(window, cx));
@@ -83,9 +131,113 @@ impl CloneDialog {
                 .map(PathBuf::from)
                 .unwrap_or_default(),
             started: false,
+            repositories: if token.is_some() {
+                Listing::Loading
+            } else {
+                Listing::SignedOut
+            },
+            _listing: token.map(|token| Self::list_repositories(endpoints.clone(), token, cx)),
+            endpoints,
             focus_handle: cx.focus_handle(),
             _subscriptions,
         }
+    }
+
+    fn list_repositories(endpoints: Endpoints, token: Secret, cx: &mut Context<Self>) -> Task<()> {
+        cx.spawn(async move |this, cx| {
+            let listed = cx
+                .background_executor()
+                .spawn(async move { fetch_my_repositories(&endpoints, &token) })
+                .await;
+            this.update(cx, |this, cx| {
+                this.repositories = match listed {
+                    Ok(repos) => Listing::Loaded(repos),
+                    Err(error) => {
+                        eprintln!("[clone] {error}");
+                        Listing::Failed
+                    }
+                };
+                cx.notify();
+            })
+            .ok();
+        })
+    }
+
+    /// Fills the address box with `repo`'s address, ready to clone.
+    fn pick(&mut self, repo: &GithubRepo, window: &mut Window, cx: &mut Context<Self>) {
+        let address = clone_address(&self.endpoints, repo);
+        self.url
+            .update(cx, |input, cx| input.set_value(address, window, cx));
+        cx.notify();
+    }
+
+    /// Below the address: the user's repositories to pick from, or why there are none.
+    fn repository_list(&self, query: &str, theme: &Theme, cx: &mut Context<Self>) -> AnyElement {
+        let note = |text: &'static str| {
+            div()
+                .text_size(px(theme.metrics.text_sm))
+                .text_color(theme.text_muted)
+                .child(text)
+                .into_any_element()
+        };
+        let repos = match &self.repositories {
+            Listing::SignedOut => {
+                return div()
+                    .id("clone-sign-in")
+                    .text_size(px(theme.metrics.text_sm))
+                    .text_color(theme.accent_soft)
+                    .cursor_pointer()
+                    .on_click(cx.listener(|_, _, window, cx| {
+                        window.dispatch_action(Box::new(ShowAccounts), cx)
+                    }))
+                    .child("Sign in to GitHub to pick from your repositories")
+                    .into_any_element();
+            }
+            Listing::Loading => return note("Loading your repositories…"),
+            Listing::Failed => return note("Couldn't load your repositories"),
+            Listing::Loaded(repos) if repos.is_empty() => {
+                return note("No public repositories on your GitHub account");
+            }
+            Listing::Loaded(repos) => repos,
+        };
+        let shown: Vec<GithubRepo> = matching(repos, query).into_iter().cloned().collect();
+        if shown.is_empty() {
+            return div().into_any_element();
+        }
+        div()
+            .flex()
+            .flex_col()
+            .gap(px(4.))
+            .child(note("Your repositories"))
+            .child(
+                div()
+                    .id("clone-repositories")
+                    .max_h(px(LIST_MAX_HEIGHT))
+                    .overflow_y_scroll()
+                    .rounded(px(theme.metrics.radius_md))
+                    .border_1()
+                    .border_color(theme.border)
+                    .children(shown.into_iter().enumerate().map(|(ix, repo)| {
+                        let name = repo.full_name();
+                        div()
+                            .id(("clone-repository", ix))
+                            .h(px(theme.metrics.row_height))
+                            .px(px(10.))
+                            .flex()
+                            .items_center()
+                            .cursor_pointer()
+                            .font_family(MONO_FONT)
+                            .text_size(px(theme.metrics.text_sm))
+                            .hover(|row| row.bg(theme.surface_selected))
+                            .on_click(
+                                cx.listener(move |this, _, window, cx| {
+                                    this.pick(&repo, window, cx)
+                                }),
+                            )
+                            .child(SharedString::from(name))
+                    })),
+            )
+            .into_any_element()
     }
 
     fn start(&mut self, cx: &mut Context<Self>) {
@@ -211,6 +363,7 @@ impl Render for CloneDialog {
                             .child("Repository address"),
                     )
                     .child(Input::new(&self.url).aria_label("Repository address"))
+                    .child(self.repository_list(&url, &theme, cx))
                     .child(
                         div()
                             .mt(px(8.))
@@ -294,6 +447,52 @@ impl Render for CloneDialog {
 mod tests {
     use super::*;
 
+    fn repos(names: &[&str]) -> Vec<GithubRepo> {
+        names
+            .iter()
+            .map(|full| {
+                let (owner, name) = full.split_once('/').unwrap();
+                GithubRepo {
+                    owner: owner.into(),
+                    name: name.into(),
+                }
+            })
+            .collect()
+    }
+
+    fn names(found: Vec<&GithubRepo>) -> Vec<String> {
+        found.iter().map(|repo| repo.full_name()).collect()
+    }
+
+    #[test]
+    fn an_empty_box_lists_every_repository() {
+        let list = repos(&["alex/ramus", "acme/site"]);
+        assert_eq!(names(matching(&list, "  ")), ["alex/ramus", "acme/site"]);
+    }
+
+    #[test]
+    fn typing_narrows_the_list_by_every_word_ignoring_case() {
+        let list = repos(&["alex/ramus", "acme/site", "acme/ramus-docs"]);
+        assert_eq!(
+            names(matching(&list, "RAMUS")),
+            ["alex/ramus", "acme/ramus-docs"]
+        );
+        assert_eq!(names(matching(&list, "acme ramus")), ["acme/ramus-docs"]);
+    }
+
+    #[test]
+    fn a_typed_address_hides_the_list() {
+        let list = repos(&["alex/ramus"]);
+        for address in [
+            "https://github.com/alex/ramus.git",
+            "git@github.com:alex/ramus.git",
+            "/Users/me/ramus",
+            "~/ramus",
+        ] {
+            assert!(matching(&list, address).is_empty(), "{address}");
+        }
+    }
+
     #[test]
     fn the_folder_name_is_the_last_part_without_dot_git() {
         for (url, name) in [
@@ -361,7 +560,8 @@ mod tests {
             let (dialog, cx) = cx.add_window_view({
                 let state = state.clone();
                 move |window, cx| {
-                    let mut dialog = CloneDialog::new(state, window, cx);
+                    let mut dialog =
+                        CloneDialog::new(state, None, Endpoints::default(), window, cx);
                     dialog.parent = parent;
                     dialog
                 }

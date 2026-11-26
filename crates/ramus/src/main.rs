@@ -12,6 +12,7 @@ mod diff_rows;
 mod diff_view;
 mod error_banner;
 mod github;
+mod github_repos;
 mod graph;
 mod history_view;
 mod palette;

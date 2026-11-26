@@ -401,7 +401,16 @@ impl Workspace {
             return;
         }
         self.close_modal(window, cx);
-        let dialog = cx.new(|cx| CloneDialog::new(self.repo_state.clone(), window, cx));
+        let token = self.accounts.read(cx).token().cloned();
+        let dialog = cx.new(|cx| {
+            CloneDialog::new(
+                self.repo_state.clone(),
+                token,
+                Endpoints::default(),
+                window,
+                cx,
+            )
+        });
         self.close_on_dismiss(&dialog, window, cx);
         self.show_modal(Modal::Clone(dialog), cx);
     }
@@ -548,6 +557,8 @@ impl Workspace {
                     .inset_0()
                     .flex()
                     .justify_center()
+                    // A dialog takes its own height, rather than stretching to the bottom.
+                    .items_start()
                     .pt(px(top))
                     .bg(theme.scrim)
                     .on_mouse_down(

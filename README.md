@@ -30,7 +30,9 @@ repository is allowed to run on your machine.
   that worktree, and the branch list marks those branches with the worktree's folder.
 - **Repositories:** every repository you open or clone is remembered; switch between them from
   the repository pill (⌘T), and the last one reopens when Ramus starts.
-- **Clone** any Git address, and a **command palette** (⌘K) for everything above.
+- **Clone** any Git address, or, when signed in to GitHub, pick one of your repositories
+  from a list (public ones; type to narrow it). A **command palette** (⌘K) covers
+  everything above.
 - **GitHub sign-in** (OAuth device flow, token kept in the macOS keychain).
 - **Pull requests:** once the current branch is pushed to a github.com `origin`, ⌘K offers
   "Create pull request" (GitHub's form, in your browser). An open pull request shows in the
@@ -43,7 +45,7 @@ repository is allowed to run on your machine.
   an "Update · vX.Y.Z" pill appears in the title bar; clicking it opens the release page. Ramus
   never downloads or installs anything itself.
 
-Not built yet: rebase, per-host repository lists for Clone.
+Not built yet: rebase.
 
 ## Keyboard
 
