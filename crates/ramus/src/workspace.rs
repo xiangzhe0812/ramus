@@ -557,6 +557,8 @@ impl Workspace {
                     .inset_0()
                     .flex()
                     .justify_center()
+                    // A dialog takes its own height, rather than stretching to the bottom.
+                    .items_start()
                     .pt(px(top))
                     .bg(theme.scrim)
                     .on_mouse_down(
