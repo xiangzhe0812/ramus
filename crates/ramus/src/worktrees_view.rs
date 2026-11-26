@@ -404,8 +404,10 @@ impl Render for WorktreesView {
             message(&theme, "Loading worktrees…")
         } else {
             div()
+                .id("worktree-list")
                 .flex_1()
                 .min_h_0()
+                .overflow_y_scroll()
                 .py(px(6.))
                 .children(worktrees.iter().enumerate().map(|(ix, worktree)| {
                     let path = worktree.path.clone();

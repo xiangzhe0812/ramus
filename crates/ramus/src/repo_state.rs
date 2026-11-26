@@ -8,8 +8,8 @@ use std::{
 use crate::settings::{self, RecentRepository, Settings};
 
 use git_core::{
-    Branch, BranchList, CancelToken, CommitInfo, DiffHunk, DiscardBackup, FileChange, Head,
-    InProgress, Progress, Repo, RepoStatus, Stash, Worktree, worktree_folder_name,
+    Branch, BranchKind, BranchList, CancelToken, CommitInfo, DiffHunk, DiscardBackup, FileChange,
+    Head, InProgress, Progress, Repo, RepoStatus, Stash, Worktree, worktree_folder_name,
 };
 use gpui::{Context, EventEmitter, SharedString, Task};
 
@@ -639,7 +639,13 @@ impl RepoState {
         self.write(cx, None, move |repo| repo.add_origin(&url));
     }
 
+    /// Checks out `branch`, or, when another worktree has it checked out (git allows a
+    /// branch in only one worktree), opens that worktree instead.
     pub fn switch_branch(&mut self, branch: Branch, cx: &mut Context<Self>) {
+        if let Some(worktree) = self.worktree_holding(&branch) {
+            self.switch_worktree(&worktree, cx);
+            return;
+        }
         if self.require_trust("switch branches", cx) {
             self.branches = None;
             self.write(cx, None, move |repo| repo.switch_branch(&branch));
@@ -762,6 +768,22 @@ impl RepoState {
             .open_worktree
             .and_then(|index| self.worktrees()?.get(index));
         open.is_some_and(|open| open.path == worktree.path)
+    }
+
+    /// The other worktree that has local `branch` checked out, if its folder is still
+    /// there. A missing one is left to git, whose refusal names the folder.
+    fn worktree_holding(&self, branch: &Branch) -> Option<Worktree> {
+        if branch.kind != BranchKind::Local {
+            return None;
+        }
+        self.worktrees()?
+            .iter()
+            .find(|worktree| {
+                worktree.head == Head::Branch(branch.name.clone())
+                    && !worktree.missing
+                    && !self.is_open_worktree(worktree)
+            })
+            .cloned()
     }
 
     /// Opens `worktree` in this window. Ignored while a write, a sync or another open is
@@ -2104,6 +2126,31 @@ mod tests {
         assert!(listed(cx, &state).is_empty());
         assert!(Settings::load(&settings_path).repositories.is_empty());
         assert_eq!(open_root(cx, &state), repo.path().canonicalize().unwrap());
+    }
+
+    #[gpui::test]
+    async fn switching_to_a_branch_another_worktree_has_opens_that_worktree(
+        cx: &mut TestAppContext,
+    ) {
+        let (_parent, main, linked) = repo_with_linked_worktree();
+        let state = open_trusted(cx, &main);
+        state.update(cx, |state, cx| state.load_branches(cx));
+        cx.executor().run_until_parked();
+        let feature = state.read_with(cx, |state, _| {
+            let branches = &state.branches().unwrap().local;
+            branches
+                .iter()
+                .find(|b| b.name == "feature")
+                .unwrap()
+                .clone()
+        });
+
+        state.update(cx, |state, cx| state.switch_branch(feature, cx));
+        cx.executor().run_until_parked();
+
+        assert_eq!(open_root(cx, &state), linked.canonicalize().unwrap());
+        assert_eq!(current_branch(&main), "main");
+        assert!(state.read_with(cx, |state, _| state.error().is_none()));
     }
 
     #[gpui::test]
