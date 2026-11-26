@@ -5,7 +5,7 @@ use std::{
     time::Duration,
 };
 
-use crate::settings::{self, RecentRepository, Settings};
+use crate::settings::{self, Appearance, RecentRepository, Settings};
 
 use git_core::{
     Branch, BranchKind, BranchList, CancelToken, CommitInfo, DiffHunk, DiscardBackup, FileChange,
@@ -171,6 +171,18 @@ impl RepoState {
             .trust(self.common_dir.as_deref().unwrap_or(repo.root()));
         self.trusted = true;
         self.save_settings("the trust setting");
+        cx.notify();
+    }
+
+    /// The theme the user picked: light, dark, or whatever macOS is using.
+    pub fn appearance(&self) -> Appearance {
+        self.settings.appearance
+    }
+
+    /// Remembers the user's theme choice.
+    pub fn set_appearance(&mut self, appearance: Appearance, cx: &mut Context<Self>) {
+        self.settings.appearance = appearance;
+        self.save_settings("the appearance setting");
         cx.notify();
     }
 
@@ -1108,6 +1120,21 @@ mod tests {
 
     use super::*;
     use crate::testutil::git;
+
+    #[gpui::test]
+    fn setting_the_appearance_is_saved(cx: &mut TestAppContext) {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("settings.json");
+        let state = cx.new(|_| RepoState::with_settings(Settings::default(), Some(path.clone())));
+
+        state.update(cx, |state, cx| state.set_appearance(Appearance::Dark, cx));
+
+        assert_eq!(
+            state.read_with(cx, |state, _| state.appearance()),
+            Appearance::Dark
+        );
+        assert_eq!(Settings::load(&path).appearance, Appearance::Dark);
+    }
 
     /// A repo with one commit and a hook that rejects every commit.
     fn repo_with_rejecting_hook() -> TempDir {

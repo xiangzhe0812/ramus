@@ -46,7 +46,6 @@ use crate::{
     github::Endpoints,
     repo_state::RepoState,
     secrets::Keychain,
-    theme::Theme,
     update_check::UpdateCheck,
     workspace::Workspace,
 };
@@ -85,9 +84,6 @@ fn main() {
                 .add_fonts(assets::fonts())
                 .expect("the bundled fonts load");
             gpui_component::init(cx);
-            let theme = Theme::dark();
-            component_theme::apply(&theme, cx);
-            cx.set_global(theme);
             cx.bind_keys([
                 KeyBinding::new("cmd-o", OpenRepository, None),
                 KeyBinding::new("cmd-b", ToggleBranches, None),

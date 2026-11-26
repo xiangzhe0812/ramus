@@ -29,11 +29,14 @@ repository is allowed to run on your machine.
   the repository pill (⌘T), and the last one reopens when Ramus starts.
 - **Clone** any Git address, and a **command palette** (⌘K) for everything above.
 - **GitHub sign-in** (OAuth device flow, token kept in the macOS keychain).
+- **Light and dark:** Ramus follows macOS's appearance, switching when macOS does. To pick
+  one regardless, choose "Appearance: Light", "Appearance: Dark" or "Appearance: Match macOS"
+  in the command palette; the choice is remembered.
 - **Update notice:** once a day Ramus asks GitHub for the latest release, and when it is newer
   an "Update · vX.Y.Z" pill appears in the title bar; clicking it opens the release page. Ramus
   never downloads or installs anything itself.
 
-Ramus deliberately has no commit-graph view. Not built yet: a light theme (dark only for now), rebase, per-host repository lists for Clone.
+Ramus deliberately has no commit-graph view. Not built yet: rebase, per-host repository lists for Clone.
 
 ## Keyboard
 

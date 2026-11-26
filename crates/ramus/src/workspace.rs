@@ -1,5 +1,5 @@
 use gpui::{
-    AnyElement, AppContext, Context, Entity, FocusHandle, Focusable, InteractiveElement,
+    AnyElement, App, AppContext, Context, Entity, FocusHandle, Focusable, InteractiveElement,
     IntoElement, ParentElement, PathPromptOptions, Render, SharedString,
     StatefulInteractiveElement, Styled, Window, div, prelude::FluentBuilder, px,
 };
@@ -18,6 +18,7 @@ use crate::{
     branch_popover::BranchPopover,
     changes_view::{ChangesEvent, ChangesView},
     clone_dialog::CloneDialog,
+    component_theme,
     conflicts_view::{ConflictsView, abort_label, operation_summary},
     error_banner,
     history_view::HistoryView,
@@ -25,6 +26,7 @@ use crate::{
     palette_view::{PaletteView, RunEntry},
     repo_state::RepoState,
     repository_popover::RepositoryPopover,
+    settings::Appearance,
     stash_view::StashView,
     theme::{MONO_FONT, Theme, UI_FONT},
     title_bar::{
@@ -36,6 +38,14 @@ use crate::{
     worktree_popover::WorktreePopover,
     worktrees_view::WorktreesView,
 };
+
+/// Puts the theme for `choice` in place, given what macOS is using right now, and redraws.
+fn apply_theme(choice: Appearance, window: &mut Window, cx: &mut App) {
+    let theme = Theme::resolve(choice, window.appearance());
+    component_theme::apply(&theme, cx);
+    cx.set_global(theme);
+    window.refresh();
+}
 
 /// How often the open repository is fetched in the background.
 const AUTO_FETCH_EVERY: std::time::Duration = std::time::Duration::from_secs(300);
@@ -80,6 +90,11 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) -> Self {
         cx.observe(&repo_state, |_, _, cx| cx.notify()).detach();
+
+        apply_theme(repo_state.read(cx).appearance(), window, cx);
+        // macOS switching between light and dark while the app is open.
+        cx.observe_window_appearance(window, |this, window, cx| this.apply_theme(window, cx))
+            .detach();
 
         // Edits made outside the app (a terminal commit, an editor save) show up on return.
         cx.observe_window_activation(window, |this, window, cx| {
@@ -394,6 +409,11 @@ impl Workspace {
         self.show_modal(Modal::Palette(palette), cx);
     }
 
+    /// Re-applies the theme for the current choice and macOS appearance.
+    fn apply_theme(&self, window: &mut Window, cx: &mut Context<Self>) {
+        apply_theme(self.repo_state.read(cx).appearance(), window, cx);
+    }
+
     fn run(&mut self, target: Target, window: &mut Window, cx: &mut Context<Self>) {
         let command = match target {
             Target::SwitchTo(branch) => {
@@ -423,6 +443,11 @@ impl Workspace {
             Command::UnstageAll => self
                 .repo_state
                 .update(cx, |state, cx| state.unstage_all(cx)),
+            Command::SetAppearance(appearance) => {
+                self.repo_state
+                    .update(cx, |state, cx| state.set_appearance(appearance, cx));
+                self.apply_theme(window, cx);
+            }
         }
     }
 
@@ -962,7 +987,7 @@ mod tests {
     use gpui::{Action, TestAppContext, VisualTestContext};
 
     use super::*;
-    use crate::{github::Endpoints, secrets::MemoryStore, testutil};
+    use crate::{github::Endpoints, secrets::MemoryStore, settings::Appearance, testutil};
 
     /// A workspace over a real repository, with an in-memory account store, so nothing
     /// here can reach the user's keychain.
@@ -993,6 +1018,30 @@ mod tests {
         });
         cx.run_until_parked();
         (workspace, cx)
+    }
+
+    #[gpui::test]
+    async fn the_theme_follows_macos_until_a_choice_is_picked(cx: &mut TestAppContext) {
+        let dir = tempfile::TempDir::new().unwrap();
+        let (workspace, cx) = open(cx, dir.path());
+        // The test window reports macOS's light appearance.
+        assert!(!cx.update(|_, cx| cx.global::<Theme>().is_dark()));
+
+        workspace.update_in(cx, |workspace, window, cx| {
+            workspace.run(
+                Target::Command(Command::SetAppearance(Appearance::Dark)),
+                window,
+                cx,
+            );
+            // What a macOS appearance change runs: it must not undo the choice.
+            workspace.apply_theme(window, cx);
+        });
+
+        assert!(cx.update(|_, cx| cx.global::<Theme>().is_dark()));
+        let choice = workspace.update(cx, |workspace, cx| {
+            workspace.repo_state.read(cx).appearance()
+        });
+        assert_eq!(choice, Appearance::Dark);
     }
 
     fn show(cx: &mut VisualTestContext, action: impl Action) {
