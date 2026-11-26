@@ -358,13 +358,13 @@ impl Render for TitleBar {
                         .flex()
                         .items_center()
                         .rounded(px(theme.metrics.radius_md))
-                        .border_1()
-                        .border_color(theme.accent)
-                        .text_color(theme.accent_soft)
+                        // The same as the sync button, whose place it takes in a local-only
+                        // repository.
+                        .bg(theme.accent)
+                        .text_color(theme.accent_text)
                         .font_weight(gpui::FontWeight::SEMIBOLD)
                         .cursor_pointer()
                         .on_mouse_down(MouseButton::Left, keep_click)
-                        .hover(|b| b.bg(theme.surface_selected))
                         .on_click(cx.listener(|_, _, window, cx| {
                             window.dispatch_action(Box::new(AddRemote), cx)
                         }))
