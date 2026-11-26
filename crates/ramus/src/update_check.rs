@@ -3,8 +3,33 @@
 
 use std::fmt;
 
+use serde::Deserialize;
+
+use crate::github::{Endpoints, agent, describe};
+
 /// Where releases are published, and where the user goes to download one.
 const RELEASES_PAGE: &str = "https://github.com/xiangzhe0812/ramus/releases/tag";
+/// GitHub's newest published release; drafts and pre-releases are left out.
+const LATEST_RELEASE_PATH: &str = "/repos/xiangzhe0812/ramus/releases/latest";
+
+/// The tag of the newest release on GitHub. Blocks, so run it on a background executor.
+pub fn fetch_latest_tag(endpoints: &Endpoints) -> Result<String, String> {
+    let mut response = agent()
+        .get(format!("{}{LATEST_RELEASE_PATH}", endpoints.api))
+        .header("Accept", "application/vnd.github+json")
+        .header("User-Agent", format!("Ramus/{}", env!("CARGO_PKG_VERSION")))
+        .call()
+        .map_err(describe)?;
+    if !response.status().is_success() {
+        return Err(format!("GitHub answered {}", response.status()));
+    }
+    #[derive(Deserialize)]
+    struct Release {
+        tag_name: String,
+    }
+    let release: Release = response.body_mut().read_json().map_err(describe)?;
+    Ok(release.tag_name)
+}
 
 /// A release version, `vMAJOR.MINOR.PATCH`. Compares part by part, as numbers.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -64,6 +89,52 @@ pub fn release_page(version: Version) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::github::fake::Fake;
+
+    const LATEST: &str = "/repos/xiangzhe0812/ramus/releases/latest";
+
+    fn endpoints(fake: &Fake) -> Endpoints {
+        let address = fake.serve();
+        Endpoints {
+            web: address.clone(),
+            api: address,
+        }
+    }
+
+    #[test]
+    fn the_latest_tag_is_read_from_github() {
+        let fake = Fake::default().reply(
+            LATEST,
+            &[r#"{"tag_name":"v0.3.0","html_url":"https://evil.example"}"#],
+        );
+
+        let tag = fetch_latest_tag(&endpoints(&fake));
+
+        assert_eq!(tag.unwrap(), "v0.3.0");
+    }
+
+    #[test]
+    fn the_request_names_ramus_and_its_version_and_carries_no_token() {
+        let fake = Fake::default().reply(LATEST, &[r#"{"tag_name":"v0.3.0"}"#]);
+
+        fetch_latest_tag(&endpoints(&fake)).unwrap();
+
+        let requests = fake.requests.lock().unwrap();
+        let (_, text) = requests.iter().find(|(path, _)| path == LATEST).unwrap();
+        let text = text.to_lowercase();
+        assert!(text.contains(&format!("user-agent: ramus/{}", env!("CARGO_PKG_VERSION"))));
+        assert!(!text.contains("authorization"));
+    }
+
+    #[test]
+    fn a_reply_without_a_tag_is_an_error() {
+        // The fake answers `{}` for a path it has no reply for, as when there is no release.
+        let fake = Fake::default();
+
+        let tag = fetch_latest_tag(&endpoints(&fake));
+
+        assert!(tag.is_err());
+    }
 
     #[test]
     fn a_newer_release_is_reported() {
