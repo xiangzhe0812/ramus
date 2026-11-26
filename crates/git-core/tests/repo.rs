@@ -4820,3 +4820,235 @@ fn add_worktree_starts_from_the_main_branch_even_when_a_tag_shares_its_name() {
     );
     assert_eq!(repo.default_base().unwrap(), "main");
 }
+
+mod undo_and_rename {
+    use super::*;
+
+    fn head_id(dir: &Path) -> String {
+        let output = Command::new("git")
+            .arg("-C")
+            .arg(dir)
+            .args(["rev-parse", "HEAD"])
+            .output()
+            .unwrap();
+        String::from_utf8_lossy(&output.stdout).trim().to_owned()
+    }
+
+    #[test]
+    fn undo_refuses_while_a_cherry_pick_is_unfinished() {
+        let dir = new_repo();
+        commit_file(dir.path(), "a.txt", "a\n");
+        git(dir.path(), &["checkout", "-q", "-b", "side"]);
+        commit_file(dir.path(), "a.txt", "side\n");
+        git(dir.path(), &["checkout", "-q", "main"]);
+        commit_file(dir.path(), "a.txt", "main\n");
+        let conflicted = Command::new("git")
+            .arg("-C")
+            .arg(dir.path())
+            .args(["cherry-pick", "side"])
+            .output()
+            .unwrap();
+        assert!(!conflicted.status.success());
+        fs::write(dir.path().join("a.txt"), "resolved\n").unwrap();
+        git(dir.path(), &["add", "a.txt"]);
+        let repo = Repo::open(dir.path()).unwrap();
+
+        let error = repo.undo_last_commit(&head_id(dir.path())).unwrap_err();
+
+        assert!(matches!(error, Error::OperationInProgress), "{error:?}");
+        assert!(
+            repo.in_progress().unwrap().is_some(),
+            "the cherry-pick is still there"
+        );
+    }
+
+    #[test]
+    fn undo_refuses_when_the_last_commit_is_not_the_one_shown() {
+        let dir = new_repo();
+        commit_file(dir.path(), "a.txt", "a\n");
+        commit_file(dir.path(), "b.txt", "b\n");
+        let shown = head_id(dir.path());
+        commit_file(dir.path(), "c.txt", "c\n");
+        let repo = Repo::open(dir.path()).unwrap();
+
+        assert!(matches!(
+            repo.undo_last_commit(&shown),
+            Err(Error::HeadMoved)
+        ));
+        assert_eq!(head_subject(dir.path()), "add c.txt");
+    }
+
+    #[test]
+    fn a_branch_whose_upstream_was_deleted_has_no_upstream() {
+        let remote = TempDir::new().unwrap();
+        git(remote.path(), &["init", "-q", "--bare", "-b", "main"]);
+        let dir = new_repo();
+        commit_file(dir.path(), "a.txt", "a\n");
+        git(
+            dir.path(),
+            &["remote", "add", "origin", remote.path().to_str().unwrap()],
+        );
+        git(dir.path(), &["push", "-q", "-u", "origin", "main"]);
+        let repo = Repo::open(dir.path()).unwrap();
+        assert!(repo.has_upstream());
+
+        git(
+            dir.path(),
+            &["update-ref", "-d", "refs/remotes/origin/main"],
+        );
+
+        assert!(!repo.has_upstream());
+    }
+
+    fn head_subject(dir: &Path) -> String {
+        let output = Command::new("git")
+            .arg("-C")
+            .arg(dir)
+            .args(["log", "-1", "--format=%s"])
+            .output()
+            .unwrap();
+        String::from_utf8_lossy(&output.stdout).trim().to_owned()
+    }
+
+    #[test]
+    fn undo_puts_the_last_commit_back_as_staged_changes_and_returns_its_message() {
+        let dir = new_repo();
+        commit_file(dir.path(), "a.txt", "a\n");
+        fs::write(dir.path().join("b.txt"), "b\n").unwrap();
+        git(dir.path(), &["add", "b.txt"]);
+        git(
+            dir.path(),
+            &["commit", "-q", "-m", "Add b", "-m", "Because b."],
+        );
+        let repo = Repo::open(dir.path()).unwrap();
+
+        let message = repo.undo_last_commit(&head_id(dir.path())).unwrap();
+
+        assert_eq!(message, ("Add b".to_owned(), "Because b.".to_owned()));
+        assert_eq!(head_subject(dir.path()), "add a.txt");
+        let files = repo.status().unwrap().files;
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0].path, "b.txt");
+        assert!(files[0].is_staged());
+    }
+
+    #[test]
+    fn undo_keeps_unstaged_work() {
+        let dir = new_repo();
+        commit_file(dir.path(), "a.txt", "a\n");
+        commit_file(dir.path(), "b.txt", "b\n");
+        fs::write(dir.path().join("a.txt"), "edited\n").unwrap();
+        let repo = Repo::open(dir.path()).unwrap();
+
+        repo.undo_last_commit(&head_id(dir.path())).unwrap();
+
+        assert_eq!(
+            fs::read_to_string(dir.path().join("a.txt")).unwrap(),
+            "edited\n"
+        );
+        assert!(dir.path().join("b.txt").exists());
+    }
+
+    #[test]
+    fn undo_refuses_the_first_commit() {
+        let dir = new_repo();
+        commit_file(dir.path(), "a.txt", "a\n");
+        let repo = Repo::open(dir.path()).unwrap();
+
+        assert!(matches!(
+            repo.undo_last_commit(&head_id(dir.path())),
+            Err(Error::NothingToUndo)
+        ));
+        assert_eq!(head_subject(dir.path()), "add a.txt");
+    }
+
+    #[test]
+    fn undo_refuses_a_pushed_commit() {
+        let remote = TempDir::new().unwrap();
+        git(remote.path(), &["init", "-q", "--bare", "-b", "main"]);
+        let dir = new_repo();
+        commit_file(dir.path(), "a.txt", "a\n");
+        commit_file(dir.path(), "b.txt", "b\n");
+        git(
+            dir.path(),
+            &["remote", "add", "origin", remote.path().to_str().unwrap()],
+        );
+        git(dir.path(), &["push", "-q", "-u", "origin", "main"]);
+        let repo = Repo::open(dir.path()).unwrap();
+
+        assert!(matches!(
+            repo.undo_last_commit(&head_id(dir.path())),
+            Err(Error::AlreadyPushed)
+        ));
+        assert_eq!(head_subject(dir.path()), "add b.txt");
+    }
+
+    #[test]
+    fn undo_of_a_merge_goes_back_to_the_branch_it_was_on() {
+        let dir = new_repo();
+        commit_file(dir.path(), "a.txt", "a\n");
+        git(dir.path(), &["checkout", "-q", "-b", "side"]);
+        commit_file(dir.path(), "side.txt", "s\n");
+        git(dir.path(), &["checkout", "-q", "main"]);
+        commit_file(dir.path(), "main.txt", "m\n");
+        git(dir.path(), &["merge", "-q", "--no-edit", "side"]);
+        let repo = Repo::open(dir.path()).unwrap();
+
+        repo.undo_last_commit(&head_id(dir.path())).unwrap();
+
+        assert_eq!(head_subject(dir.path()), "add main.txt");
+    }
+
+    #[test]
+    fn rename_moves_the_branch() {
+        let dir = new_repo();
+        commit_file(dir.path(), "a.txt", "a\n");
+        git(dir.path(), &["branch", "old"]);
+        let repo = Repo::open(dir.path()).unwrap();
+
+        repo.rename_branch("old", "new").unwrap();
+
+        assert!(has_local_branch(&repo, "new"));
+        assert!(!has_local_branch(&repo, "old"));
+    }
+
+    #[test]
+    fn rename_to_a_taken_name_is_refused() {
+        let dir = new_repo();
+        commit_file(dir.path(), "a.txt", "a\n");
+        git(dir.path(), &["branch", "old"]);
+        let repo = Repo::open(dir.path()).unwrap();
+
+        let error = repo.rename_branch("old", "main").unwrap_err();
+
+        assert!(matches!(error, Error::BranchExists(name) if name == "main"));
+        assert!(has_local_branch(&repo, "old"));
+    }
+
+    #[test]
+    fn rename_refuses_an_option_looking_name() {
+        let dir = new_repo();
+        commit_file(dir.path(), "a.txt", "a\n");
+        let repo = Repo::open(dir.path()).unwrap();
+
+        assert!(matches!(
+            repo.rename_branch("main", "--force"),
+            Err(Error::InvalidBranchName(_))
+        ));
+    }
+
+    #[test]
+    fn unmerged_commits_counts_only_commits_nowhere_else() {
+        let dir = new_repo();
+        commit_file(dir.path(), "a.txt", "a\n");
+        git(dir.path(), &["branch", "merged"]);
+        git(dir.path(), &["checkout", "-q", "-b", "work"]);
+        commit_file(dir.path(), "w1.txt", "1\n");
+        commit_file(dir.path(), "w2.txt", "2\n");
+        git(dir.path(), &["checkout", "-q", "main"]);
+        let repo = Repo::open(dir.path()).unwrap();
+
+        assert_eq!(repo.unmerged_commits("merged").unwrap(), 0);
+        assert_eq!(repo.unmerged_commits("work").unwrap(), 2);
+    }
+}

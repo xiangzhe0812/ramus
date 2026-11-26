@@ -127,6 +127,10 @@ impl ChangesView {
                 window,
                 |this, _, event: &RepoEvent, window, cx| match event {
                     RepoEvent::Committed => this.clear_message(window, cx),
+                    RepoEvent::CommitUndone {
+                        summary,
+                        description,
+                    } => this.restore_undone_message(summary, description, window, cx),
                 },
             ),
         ];
@@ -244,6 +248,26 @@ impl ChangesView {
             .ok();
         })
         .detach();
+    }
+
+    /// After the last commit is undone: its message goes back in the boxes, unless the
+    /// user has their own text there (or saved before ticking Amend), which wins.
+    fn restore_undone_message(
+        &mut self,
+        summary: &str,
+        description: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let typed = (
+            self.summary.read(cx).value().to_string(),
+            self.description.read(cx).value().to_string(),
+        );
+        let draft = if self.amend { self.draft.take() } else { None };
+        self.amend = false;
+        let (summary, description) =
+            message_after_undo(typed, draft, (summary.to_owned(), description.to_owned()));
+        self.set_message(&summary, &description, window, cx);
     }
 
     fn set_message(
@@ -1068,6 +1092,63 @@ impl Render for ChangesView {
                     ),
             )
             .child(panel(&theme).flex_1().min_w_0().child(detail))
+    }
+}
+
+/// What the commit boxes hold after the last commit is undone. `typed` is what the boxes
+/// show; `amend_draft` is the text saved when Amend was ticked, if it is ticked (the boxes
+/// then show the last commit's own message). The user's own text wins, so nothing they
+/// wrote is lost; otherwise the undone commit's message comes back.
+fn message_after_undo(
+    typed: (String, String),
+    amend_draft: Option<(String, String)>,
+    undone: (String, String),
+) -> (String, String) {
+    let amending = amend_draft.is_some();
+    let own = amend_draft.unwrap_or(typed);
+    let blank = own.0.trim().is_empty() && own.1.trim().is_empty();
+    if blank || (amending && own == undone) {
+        undone
+    } else {
+        own
+    }
+}
+
+#[cfg(test)]
+mod undo_message_tests {
+    use super::message_after_undo;
+
+    fn pair(summary: &str, description: &str) -> (String, String) {
+        (summary.to_owned(), description.to_owned())
+    }
+
+    #[test]
+    fn empty_boxes_get_the_undone_commits_message() {
+        let kept = message_after_undo(pair("", " "), None, pair("Add b", "Why"));
+        assert_eq!(kept, pair("Add b", "Why"));
+    }
+
+    #[test]
+    fn text_the_user_typed_is_never_replaced() {
+        let kept = message_after_undo(pair("Next thing", ""), None, pair("Add b", "Why"));
+        assert_eq!(kept, pair("Next thing", ""));
+    }
+
+    #[test]
+    fn while_amending_the_text_from_before_amend_comes_back() {
+        // Amend shows the last commit's message; what was typed before it is the draft.
+        let kept = message_after_undo(
+            pair("Add b", "Why"),
+            Some(pair("My draft", "")),
+            pair("Add b", "Why"),
+        );
+        assert_eq!(kept, pair("My draft", ""));
+        let kept = message_after_undo(
+            pair("Add b", "Why"),
+            Some(pair("", "")),
+            pair("Add b", "Why"),
+        );
+        assert_eq!(kept, pair("Add b", "Why"));
     }
 }
 

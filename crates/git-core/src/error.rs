@@ -46,4 +46,12 @@ pub enum Error {
     NoDefaultBranch,
     #[error("unexpected git output: {0}")]
     Parse(String),
+    #[error("the first commit can't be undone")]
+    NothingToUndo,
+    #[error("the last commit is already pushed; revert it instead")]
+    AlreadyPushed,
+    #[error("finish or abort the merge, cherry-pick or revert first")]
+    OperationInProgress,
+    #[error("the last commit changed since it was shown; look again")]
+    HeadMoved,
 }

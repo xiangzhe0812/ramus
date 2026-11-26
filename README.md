@@ -13,8 +13,10 @@ repository is allowed to run on your machine.
 ## What it does
 
 - **Changes:** stage and unstage per file, per hunk or per line, with syntax-coloured diffs; commit and amend; discard with undo.
-- **History:** browse commits and their diffs; revert, cherry-pick and merge.
-- **Branches:** switch, create and merge from a searchable popover.
+- **History:** browse commits and their diffs; revert, cherry-pick and merge. Undo the last
+  commit while it is unpushed: its changes and message come back, ready to commit again.
+- **Branches:** switch, create, merge, rename and delete from a searchable popover. Deleting a
+  branch whose commits are on no other branch asks first.
 - **Sync:** fetch, pull and push with progress you can cancel; failures show a clear message with
   Retry and, for a rejected push, "Pull, then push". The open repository is fetched in the
   background every five minutes.

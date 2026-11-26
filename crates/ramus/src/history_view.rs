@@ -32,9 +32,12 @@ pub struct HistoryView {
     filter: Entity<InputState>,
     commits: Vec<CommitInfo>,
     unpushed: HashSet<String>,
+    /// The branch's upstream exists, by git-core's rule, so "not unpushed" means pushed.
+    has_upstream: bool,
     has_more: bool,
-    /// The repository and commit the list was read for; a change means read it again.
-    loaded_for: Option<(std::path::PathBuf, Option<String>)>,
+    /// The repository, commit and commits-ahead count the list was read for; a change
+    /// means read it again (a push changes only the count, and what is unpushed).
+    loaded_for: Option<(std::path::PathBuf, Option<String>, u32)>,
     list_generation: u64,
     selected: Option<String>,
     files: Vec<CommitFile>,
@@ -45,6 +48,34 @@ pub struct HistoryView {
     diff_generation: u64,
     tasks: Vec<Task<()>>,
     _subscriptions: Vec<Subscription>,
+}
+
+/// What the selected commit's header offers for taking it back.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum UndoOffer {
+    /// The newest commit, not pushed: it can simply be removed.
+    Undo,
+    /// The newest commit, already pushed: only a revert undoes it safely.
+    PushedHint,
+    Nothing,
+}
+
+/// Undo is for the newest commit (HEAD) when it has a parent to go back to, its upstream,
+/// if any, doesn't have it yet, and no merge, cherry-pick or revert is waiting to finish.
+fn undo_offer(
+    commit: &CommitInfo,
+    is_newest: bool,
+    unpushed: bool,
+    has_upstream: bool,
+    operation_unfinished: bool,
+) -> UndoOffer {
+    if !is_newest || commit.parents.is_empty() || operation_unfinished {
+        UndoOffer::Nothing
+    } else if unpushed || !has_upstream {
+        UndoOffer::Undo
+    } else {
+        UndoOffer::PushedHint
+    }
 }
 
 /// "Alex Xiang" → "AX", "alex" → "A".
@@ -112,6 +143,7 @@ impl HistoryView {
             filter,
             commits: Vec::new(),
             unpushed: HashSet::new(),
+            has_upstream: false,
             has_more: false,
             loaded_for: None,
             list_generation: 0,
@@ -132,10 +164,13 @@ impl HistoryView {
     /// Reads the log again when the repository or its current commit has changed.
     fn reload_if_needed(&mut self, cx: &mut Context<Self>) {
         let state = self.repo_state.read(cx);
-        let key = state
-            .repo()
-            .zip(state.status())
-            .map(|(repo, status)| (repo.root().to_owned(), status.branch.oid.clone()));
+        let key = state.repo().zip(state.status()).map(|(repo, status)| {
+            (
+                repo.root().to_owned(),
+                status.branch.oid.clone(),
+                status.branch.ahead,
+            )
+        });
         if key == self.loaded_for {
             return;
         }
@@ -163,7 +198,7 @@ impl HistoryView {
                     let commits = repo.log(skip, PAGE)?;
                     // Which commits are unpushed doesn't change as pages arrive.
                     let unpushed = if skip == 0 {
-                        Some(repo.unpushed_commits()?)
+                        Some((repo.unpushed_commits()?, repo.has_upstream()))
                     } else {
                         None
                     };
@@ -178,8 +213,9 @@ impl HistoryView {
                     Ok((commits, unpushed)) => {
                         this.has_more = commits.len() == PAGE;
                         this.commits.extend(commits);
-                        if let Some(unpushed) = unpushed {
+                        if let Some((unpushed, has_upstream)) = unpushed {
                             this.unpushed = unpushed;
+                            this.has_upstream = has_upstream;
                         }
                         // Keep the selection if it is still there, otherwise show the newest.
                         let still_there = this
@@ -414,7 +450,19 @@ impl HistoryView {
                 .cursor_pointer()
                 .hover(|button| button.bg(theme.surface_selected))
         };
-        let (revert, pick) = (commit.clone(), commit.clone());
+        let (revert, pick, undo) = (commit.clone(), commit.clone(), commit.id.clone());
+        let is_newest = self
+            .loaded_for
+            .as_ref()
+            .and_then(|(_, head, _)| head.as_deref())
+            == Some(commit.id.as_str());
+        let offer = undo_offer(
+            &commit,
+            is_newest,
+            self.unpushed.contains(&commit.id),
+            self.has_upstream,
+            self.repo_state.read(cx).in_progress().is_some(),
+        );
 
         let header = div()
             .flex_none()
@@ -464,6 +512,21 @@ impl HistoryView {
                         div().child(format!("Parent {}", &parent[..parent.len().min(7)]))
                     }))
                     .child(div().flex_1())
+                    .when(offer == UndoOffer::PushedHint, |row| {
+                        row.child("Pushed · Revert to undo it")
+                    })
+                    .when(offer == UndoOffer::Undo, |row| {
+                        row.child(
+                            button("undo")
+                                .text_color(theme.text)
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    let shown = undo.clone();
+                                    this.repo_state
+                                        .update(cx, |state, cx| state.undo_last_commit(shown, cx));
+                                }))
+                                .child("Undo"),
+                        )
+                    })
                     .child(
                         button("revert")
                             .text_color(theme.text)
@@ -731,6 +794,44 @@ mod tests {
             subject: subject.into(),
             body: String::new(),
         }
+    }
+
+    fn with_parent(mut commit: CommitInfo) -> CommitInfo {
+        commit.parents = vec!["0123456".into()];
+        commit
+    }
+
+    #[test]
+    fn the_newest_unpushed_commit_can_be_undone() {
+        let c = with_parent(commit("Add b", "Sam"));
+        assert_eq!(undo_offer(&c, true, true, true, false), UndoOffer::Undo);
+        // No upstream: nothing is pushed.
+        assert_eq!(undo_offer(&c, true, false, false, false), UndoOffer::Undo);
+    }
+
+    #[test]
+    fn no_undo_while_a_merge_or_pick_is_unfinished() {
+        let c = with_parent(commit("Add b", "Sam"));
+        assert_eq!(undo_offer(&c, true, true, true, true), UndoOffer::Nothing);
+    }
+
+    #[test]
+    fn a_pushed_newest_commit_points_at_revert() {
+        let c = with_parent(commit("Add b", "Sam"));
+        assert_eq!(
+            undo_offer(&c, true, false, true, false),
+            UndoOffer::PushedHint
+        );
+    }
+
+    #[test]
+    fn older_commits_and_the_first_commit_offer_no_undo() {
+        let c = with_parent(commit("Add b", "Sam"));
+        assert_eq!(undo_offer(&c, false, true, true, false), UndoOffer::Nothing);
+        assert_eq!(
+            undo_offer(&commit("base", "Sam"), true, true, false, false),
+            UndoOffer::Nothing
+        );
     }
 
     #[test]
