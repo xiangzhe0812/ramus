@@ -21,9 +21,11 @@ use crate::{
     component_theme,
     conflicts_view::{ConflictsView, abort_label, operation_summary},
     error_banner,
+    github::Endpoints,
     history_view::HistoryView,
     palette::{Command, Target},
     palette_view::{PaletteView, RunEntry},
+    pull_requests::{PrLink, PullRequestState},
     repo_state::RepoState,
     repository_popover::RepositoryPopover,
     settings::Appearance,
@@ -75,6 +77,8 @@ pub struct Workspace {
     /// The one overlay that can be open (branches, palette, Clone, Accounts, Add remote).
     modal: Option<Modal>,
     accounts: Entity<AccountsState>,
+    /// The current branch's pull request on GitHub.
+    pull_requests: Entity<PullRequestState>,
     error_details_open: bool,
     /// Files the user asked to discard, waiting for them to confirm.
     pending_discard: Option<Vec<git_core::FileChange>>,
@@ -126,7 +130,16 @@ impl Workspace {
         let stashes = cx.new(|cx| StashView::new(repo_state.clone(), window, cx));
         let worktrees = cx.new(|cx| WorktreesView::new(repo_state.clone(), window, cx));
         let conflicts = cx.new(|cx| ConflictsView::new(repo_state.clone(), window, cx));
-        let title_bar = cx.new(|cx| TitleBar::new(repo_state.clone(), update_check, cx));
+        let pull_requests = cx.new(|cx| {
+            PullRequestState::new(
+                repo_state.clone(),
+                accounts.clone(),
+                Endpoints::default(),
+                cx,
+            )
+        });
+        let title_bar =
+            cx.new(|cx| TitleBar::new(repo_state.clone(), update_check, pull_requests.clone(), cx));
         cx.subscribe(&title_bar, |this, _, event: &TabRequested, cx| {
             this.show(event.0, cx)
         })
@@ -155,6 +168,7 @@ impl Workspace {
             welcome: cx.new(|_| Welcome),
             modal: None,
             accounts,
+            pull_requests,
             error_details_open: false,
             pending_discard: None,
             repo_state,
@@ -398,7 +412,9 @@ impl Workspace {
             return;
         }
         self.close_modal(window, cx);
-        let palette = cx.new(|cx| PaletteView::new(self.repo_state.clone(), window, cx));
+        let pull_request = self.pull_requests.read(cx).link();
+        let palette =
+            cx.new(|cx| PaletteView::new(self.repo_state.clone(), pull_request, window, cx));
         self.close_on_dismiss(&palette, window, cx);
         cx.subscribe_in(&palette, window, |this, _, event: &RunEntry, window, cx| {
             // Close first: the commands below expect the workspace to hold focus.
@@ -443,6 +459,13 @@ impl Workspace {
             Command::UnstageAll => self
                 .repo_state
                 .update(cx, |state, cx| state.unstage_all(cx)),
+            Command::OpenPullRequest => {
+                if let Some(PrLink::Create { url } | PrLink::Open { url, .. }) =
+                    self.pull_requests.read(cx).link()
+                {
+                    cx.open_url(&url);
+                }
+            }
             Command::UndoLastCommit => {
                 let head = self
                     .repo_state
@@ -998,7 +1021,7 @@ mod tests {
     use gpui::{Action, TestAppContext, VisualTestContext};
 
     use super::*;
-    use crate::{github::Endpoints, secrets::MemoryStore, settings::Appearance, testutil};
+    use crate::{secrets::MemoryStore, settings::Appearance, testutil};
 
     /// A workspace over a real repository, with an in-memory account store, so nothing
     /// here can reach the user's keychain.

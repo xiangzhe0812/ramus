@@ -5179,7 +5179,10 @@ mod remote_urls {
         let repo = Repo::open(dir.path()).unwrap();
         assert_eq!(repo.remote_url("origin").unwrap(), None);
 
-        git(dir.path(), &["remote", "add", "origin", "git@github.com:owner/repo.git"]);
+        git(
+            dir.path(),
+            &["remote", "add", "origin", "git@github.com:owner/repo.git"],
+        );
 
         assert_eq!(
             repo.remote_url("origin").unwrap().as_deref(),

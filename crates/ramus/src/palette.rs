@@ -3,7 +3,7 @@
 
 use git_core::Branch;
 
-use crate::{repo_state::SyncKind, settings::Appearance};
+use crate::{pull_requests::PrLink, repo_state::SyncKind, settings::Appearance};
 
 /// Something the palette can do. Most map onto an action the keyboard already has.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -24,6 +24,8 @@ pub enum Command {
     UnstageAll,
     DiscardSelected,
     UndoLastCommit,
+    /// Opens the branch's pull request on GitHub, or GitHub's form for creating one.
+    OpenPullRequest,
     SetAppearance(Appearance),
 }
 
@@ -67,6 +69,8 @@ pub struct Situation<'a> {
     pub primary_sync: Option<(SyncKind, String)>,
     /// The theme choice in effect, marked "(current)" in the list.
     pub appearance: Appearance,
+    /// What GitHub has for the current branch, once it is pushed.
+    pub pull_request: Option<PrLink>,
     pub local: &'a [Branch],
     pub remote_only: &'a [Branch],
 }
@@ -157,6 +161,13 @@ fn all_commands(situation: &Situation) -> Vec<Entry> {
         Some("⌘4"),
         Command::ShowWorktrees,
     ));
+    if let Some(link) = &situation.pull_request {
+        let label = match link {
+            PrLink::Create { .. } => "Create pull request".to_owned(),
+            PrLink::Open { number, .. } => format!("Open pull request #{number}"),
+        };
+        entries.push(Entry::command(label, None, Command::OpenPullRequest));
+    }
     entries.push(Entry::command("Stash changes", None, Command::StashChanges));
     entries.push(Entry::command(
         "Undo last commit",
@@ -251,6 +262,7 @@ pub fn move_selection(selected: usize, delta: isize, len: usize) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::pull_requests::Checks;
     use git_core::BranchKind;
 
     fn branch(name: &str, is_current: bool, kind: BranchKind) -> Branch {
@@ -270,6 +282,7 @@ mod tests {
             busy: false,
             primary_sync: Some((SyncKind::Push, "Push origin".into())),
             appearance: Appearance::System,
+            pull_request: None,
             local,
             remote_only,
         }
@@ -294,6 +307,39 @@ mod tests {
                 "Appearance: Dark",
             ]
         );
+    }
+
+    #[test]
+    fn a_pushed_branch_offers_to_create_its_pull_request() {
+        let mut s = situation(&[], &[]);
+        s.pull_request = Some(PrLink::Create {
+            url: "https://github.com/o/r/compare/b?expand=1".into(),
+        });
+
+        let found = entries(&s, "pull request");
+
+        assert_eq!(labels(&found), ["Create pull request"]);
+        assert_eq!(found[0].target, Target::Command(Command::OpenPullRequest));
+    }
+
+    #[test]
+    fn an_open_pull_request_is_offered_by_number() {
+        let mut s = situation(&[], &[]);
+        s.pull_request = Some(PrLink::Open {
+            number: 42,
+            checks: Checks::Passing,
+            url: "https://github.com/o/r/pull/42".into(),
+        });
+
+        assert_eq!(
+            labels(&entries(&s, "pull request")),
+            ["Open pull request #42"]
+        );
+    }
+
+    #[test]
+    fn no_pull_request_entry_before_the_branch_is_pushed() {
+        assert!(entries(&situation(&[], &[]), "pull request").is_empty());
     }
 
     #[test]

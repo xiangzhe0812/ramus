@@ -318,8 +318,8 @@ pub fn fetch_pull_request(
         "/repos/{owner}/{name}/pulls?head={owner}:{}&state=open&per_page=1",
         encode(branch)
     );
-    let Some(pull) = get_json::<Vec<Pull>>(endpoints, token, &pulls)?
-        .and_then(|open| open.into_iter().next())
+    let Some(pull) =
+        get_json::<Vec<Pull>>(endpoints, token, &pulls)?.and_then(|open| open.into_iter().next())
     else {
         return Ok(None);
     };
@@ -458,12 +458,20 @@ mod tests {
         git(&["init", "-q", "-b", "main"]);
         git(&["commit", "-q", "--allow-empty", "-m", "base"]);
         git(&["checkout", "-q", "-b", "feature/login"]);
-        git(&["remote", "add", "origin", "https://github.com/owner/repo.git"]);
+        git(&[
+            "remote",
+            "add",
+            "origin",
+            "https://github.com/owner/repo.git",
+        ]);
         git(&["update-ref", "refs/remotes/origin/feature/login", "HEAD"]);
         git(&["branch", "-q", "--set-upstream-to=origin/feature/login"]);
         let fake = Fake::default()
             .reply(PULLS, &[r#"[{"number":42,"head":{"sha":"abc123"}}]"#])
-            .reply(CHECKS, &[r#"{"check_runs":[{"status":"completed","conclusion":"success"}]}"#]);
+            .reply(
+                CHECKS,
+                &[r#"{"check_runs":[{"status":"completed","conclusion":"success"}]}"#],
+            );
         let endpoints = endpoints(&fake);
         let repo_state = cx.new(|_| crate::repo_state::RepoState::default());
         repo_state.update(cx, |state, cx| state.open(dir.path().to_owned(), cx));
@@ -478,7 +486,11 @@ mod tests {
         let state = cx.new(|cx| PullRequestState::new(repo_state, accounts, endpoints, cx));
         for _ in 0..400 {
             cx.executor().run_until_parked();
-            if state.read_with(cx, |state, _| state.link().is_some_and(|l| matches!(l, PrLink::Open { .. }))) {
+            if state.read_with(cx, |state, _| {
+                state
+                    .link()
+                    .is_some_and(|l| matches!(l, PrLink::Open { .. }))
+            }) {
                 break;
             }
             std::thread::sleep(std::time::Duration::from_millis(5));
@@ -486,7 +498,14 @@ mod tests {
 
         let link = state.read_with(cx, |state, _| state.link());
         assert!(
-            matches!(link, Some(PrLink::Open { number: 42, checks: Checks::Passing, .. })),
+            matches!(
+                link,
+                Some(PrLink::Open {
+                    number: 42,
+                    checks: Checks::Passing,
+                    ..
+                })
+            ),
             "{link:?}"
         );
     }
@@ -573,8 +592,13 @@ mod tests {
         let fake = Fake::default().reply(PULLS, &["[]"]);
         let endpoints = endpoints(&fake);
 
-        fetch_pull_request(&endpoints, Some(&Secret("t0ken".into())), &repo(), "feature/login")
-            .unwrap();
+        fetch_pull_request(
+            &endpoints,
+            Some(&Secret("t0ken".into())),
+            &repo(),
+            "feature/login",
+        )
+        .unwrap();
         fetch_pull_request(&endpoints, None, &repo(), "feature/login").unwrap();
 
         let requests = fake.requests.lock().unwrap();
@@ -607,7 +631,10 @@ mod tests {
 
         assert_eq!(summarize(&[]), Checks::None);
         assert_eq!(summarize(&[passed.clone(), skipped]), Checks::Passing);
-        assert_eq!(summarize(&[passed.clone(), queued.clone()]), Checks::Running);
+        assert_eq!(
+            summarize(&[passed.clone(), queued.clone()]),
+            Checks::Running
+        );
         assert_eq!(summarize(&[queued, failed, passed]), Checks::Failing);
     }
 }
