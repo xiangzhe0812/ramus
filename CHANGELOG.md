@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.5.0](https://github.com/xiangzhe0812/ramus/compare/v0.4.0...v0.5.0) (2026-11-26)
+
+
+### New
+
+* clone from your GitHub repository list ([#16](https://github.com/xiangzhe0812/ramus/issues/16)) ([70c21be](https://github.com/xiangzhe0812/ramus/commit/70c21bea66c55fe2e2f99dc76b6b71b0e8ec4797))
+* commit graph in History, for this branch or all branches ([#11](https://github.com/xiangzhe0812/ramus/issues/11)) ([9258251](https://github.com/xiangzhe0812/ramus/commit/92582519bfd381fa5fa7ab15b738f70d6a704c35))
+* pull request status in the title bar, and Create pull request ([#15](https://github.com/xiangzhe0812/ramus/issues/15)) ([67aff3e](https://github.com/xiangzhe0812/ramus/commit/67aff3e770efeb69a41f61eb9ee3b3af0f795d2f))
+
+
+### Fixes
+
+* Add remote button matches the sync button it stands in for ([#12](https://github.com/xiangzhe0812/ramus/issues/12)) ([95a34a8](https://github.com/xiangzhe0812/ramus/commit/95a34a8f84b4fa9cd4d974740a8e90a18b009cd3))
+* the current branch keeps the commit graph's first lane ([#14](https://github.com/xiangzhe0812/ramus/issues/14)) ([f85513f](https://github.com/xiangzhe0812/ramus/commit/f85513fd8d01048921714eaa851ae7d5ca760f58))
+
 ## [0.4.0](https://github.com/xiangzhe0812/ramus/compare/v0.3.0...v0.4.0) (2026-11-26)
 
 
