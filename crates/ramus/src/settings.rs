@@ -18,6 +18,21 @@ pub struct Settings {
     pub trusted_repositories: BTreeSet<PathBuf>,
     /// Repositories the user has opened, most recent first, for the Repositories list.
     pub repositories: Vec<RecentRepository>,
+    /// Light or dark, or whatever macOS is using.
+    pub appearance: Appearance,
+}
+
+/// The theme the user picked from the palette.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Appearance {
+    Light,
+    Dark,
+    /// Follow macOS. Also what a value from a newer version reads as, so an unknown value
+    /// never costs the user the rest of their settings.
+    #[default]
+    #[serde(other)]
+    System,
 }
 
 /// One repository on the Repositories list.
@@ -131,6 +146,43 @@ mod tests {
     use tempfile::TempDir;
 
     use super::*;
+
+    #[test]
+    fn appearance_defaults_to_system_when_missing() {
+        let settings: Settings = serde_json::from_str("{}").unwrap();
+
+        assert_eq!(settings.appearance, Appearance::System);
+    }
+
+    #[test]
+    fn an_unknown_appearance_reads_as_system_and_keeps_the_rest() {
+        let text = r#"{"appearance": "sepia", "trusted_repositories": ["/work/repo"]}"#;
+
+        let settings: Settings = serde_json::from_str(text).unwrap();
+
+        assert_eq!(settings.appearance, Appearance::System);
+        assert!(
+            settings
+                .trusted_repositories
+                .contains(Path::new("/work/repo"))
+        );
+    }
+
+    #[test]
+    fn appearance_round_trips() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("settings.json");
+        let settings = Settings {
+            appearance: Appearance::Light,
+            ..Settings::default()
+        };
+
+        settings.save(&path).unwrap();
+
+        assert_eq!(Settings::load(&path).appearance, Appearance::Light);
+        let saved = fs::read_to_string(&path).unwrap();
+        assert!(saved.contains(r#""appearance": "light""#), "{saved}");
+    }
 
     #[test]
     fn a_missing_file_gives_defaults() {
