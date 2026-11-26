@@ -268,6 +268,7 @@ impl Render for TitleBar {
                 .child(icon("branch", 16., theme.text_muted))
                 .child(div().flex_1().min_w_0().truncate().child(label))
             }))
+            .child(div().flex_1())
             .children(operation.map(|label| {
                 // While something runs, the button shows it, and clicking it cancels.
                 div()
@@ -370,7 +371,6 @@ impl Render for TitleBar {
                         .child("Add remote…"),
                 )
             })
-            .child(div().flex_1())
             .children(update.map(|version| {
                 // Opens the release's page; installing stays in the user's hands.
                 div()
