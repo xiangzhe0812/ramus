@@ -98,6 +98,8 @@ pub struct RepoState {
     /// at another repository's git folder must not borrow that repository's trust.
     common_dir: Option<PathBuf>,
     worktrees_task: Option<Task<()>>,
+    /// A branch switch reading the worktree list before it decides what to do.
+    switch_task: Option<Task<()>>,
     /// Branches for the branch switcher, loaded when it opens.
     branches: Option<BranchList>,
     branches_task: Option<Task<()>>,
@@ -151,6 +153,7 @@ impl RepoState {
             open_worktree: None,
             common_dir: None,
             worktrees_task: None,
+            switch_task: None,
             branches: None,
             branches_task: None,
             stashes: None,
@@ -431,10 +434,13 @@ impl RepoState {
     }
 
     /// Reads the branch list in the background; the switcher shows it when it arrives.
+    /// Re-reads the branches, and the worktrees too: the branch list marks branches another
+    /// worktree has, and worktrees can come and go outside Ramus.
     pub fn load_branches(&mut self, cx: &mut Context<Self>) {
         let Some(repo) = self.repo.clone() else {
             return;
         };
+        self.load_worktrees(cx);
         self.branches_task = Some(cx.spawn(async move |this, cx| {
             let result = cx
                 .background_executor()
@@ -658,11 +664,46 @@ impl RepoState {
 
     /// Checks out `branch`, or, when another worktree has it checked out (git allows a
     /// branch in only one worktree), opens that worktree instead.
+    ///
+    /// For a local branch the worktree list is read again first: another tool (a terminal,
+    /// Orca) may have added a worktree since Ramus last read it.
     pub fn switch_branch(&mut self, branch: Branch, cx: &mut Context<Self>) {
-        if let Some(worktree) = self.worktree_holding(&branch) {
-            self.switch_worktree(&worktree, cx);
+        let Some(repo) = self
+            .repo
+            .clone()
+            .filter(|_| branch.kind == BranchKind::Local)
+        else {
+            self.check_out(branch, cx);
             return;
-        }
+        };
+        self.switch_task = Some(cx.spawn(async move |this, cx| {
+            let (repo, listed) = cx
+                .background_executor()
+                .spawn(async move {
+                    let listed = listed_worktrees(&repo);
+                    (repo, listed)
+                })
+                .await;
+            this.update(cx, |this, cx| {
+                // Another folder was opened meanwhile; this branch was in the old one.
+                if this.repo.as_ref().map(Repo::root) != Some(repo.root()) {
+                    return;
+                }
+                if let Some((worktrees, open)) = listed {
+                    this.worktrees = Some(worktrees);
+                    this.open_worktree = Some(open);
+                }
+                match this.worktree_holding(&branch) {
+                    Some(worktree) => this.switch_worktree(&worktree, cx),
+                    None => this.check_out(branch, cx),
+                }
+            })
+            .ok();
+        }));
+    }
+
+    /// Checks out `branch` here, which runs the repository's hooks.
+    fn check_out(&mut self, branch: Branch, cx: &mut Context<Self>) {
         if self.require_trust("switch branches", cx) {
             self.branches = None;
             self.write(cx, None, move |repo| repo.switch_branch(&branch));
@@ -2193,6 +2234,40 @@ mod tests {
         assert!(listed(cx, &state).is_empty());
         assert!(Settings::load(&settings_path).repositories.is_empty());
         assert_eq!(open_root(cx, &state), repo.path().canonicalize().unwrap());
+    }
+
+    #[gpui::test]
+    async fn a_worktree_made_outside_ramus_after_opening_is_still_found_when_switching(
+        cx: &mut TestAppContext,
+    ) {
+        let parent = TempDir::new().unwrap();
+        let main = parent.path().join("main");
+        fs::create_dir(&main).unwrap();
+        git(&main, &["init", "-q", "-b", "main"]);
+        git(&main, &["commit", "-q", "--allow-empty", "-m", "base"]);
+        let state = open_trusted(cx, &main);
+        // Another tool (Orca, a terminal) adds a worktree while the repository is open.
+        git(
+            &main,
+            &["worktree", "add", "-q", "-b", "feature", "../linked"],
+        );
+        state.update(cx, |state, cx| state.load_branches(cx));
+        cx.executor().run_until_parked();
+        let feature = state.read_with(cx, |state, _| {
+            let branches = &state.branches().unwrap().local;
+            branches
+                .iter()
+                .find(|b| b.name == "feature")
+                .unwrap()
+                .clone()
+        });
+
+        state.update(cx, |state, cx| state.switch_branch(feature, cx));
+        cx.executor().run_until_parked();
+
+        let linked = parent.path().join("linked").canonicalize().unwrap();
+        assert_eq!(open_root(cx, &state), linked);
+        assert!(state.read_with(cx, |state, _| state.error().is_none()));
     }
 
     #[gpui::test]
