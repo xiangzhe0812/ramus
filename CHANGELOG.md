@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.5.1](https://github.com/xiangzhe0812/ramus/compare/v0.5.0...v0.5.1) (2026-11-27)
+
+
+### Fixes
+
+* switching to a branch another worktree has works for worktrees made after Ramus opened ([#17](https://github.com/xiangzhe0812/ramus/issues/17)) ([299a6b8](https://github.com/xiangzhe0812/ramus/commit/299a6b8836e833c654812bb37d0d7c3fb636345e))
+
 ## [0.5.0](https://github.com/xiangzhe0812/ramus/compare/v0.4.0...v0.5.0) (2026-11-26)
 
 
